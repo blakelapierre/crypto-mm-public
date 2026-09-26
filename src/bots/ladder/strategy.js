@@ -30,10 +30,10 @@ export function printLadder(symbol, pair, ladder, book) {
   const now = new Date().toLocaleTimeString();
   console.log(`\n[${now}] ${symbol} ${pair} mid=${book.mid.toFixed(6)}`);
   for (const o of ladder.buys) {
-    console.log(`  BUY  L${o.level} ${o.size} @ ${o.price}  [${o.status}] ${o.orderId ? String(o.orderId).slice(0, 10) + '…' : ''}`);
+    console.log(`  BUY  L${o.level} ${o.size} @ ${o.price}  [${o.status}] ${o.orderId ? String(o.orderId).slice(0, 10) + '\u2026' : ''}`);
   }
   for (const o of ladder.sells) {
-    console.log(`  SELL L${o.level} ${o.size} @ ${o.price}  [${o.status}] ${o.orderId ? String(o.orderId).slice(0, 10) + '…' : ''}`);
+    console.log(`  SELL L${o.level} ${o.size} @ ${o.price}  [${o.status}] ${o.orderId ? String(o.orderId).slice(0, 10) + '\u2026' : ''}`);
   }
 }
 
@@ -41,7 +41,7 @@ export async function placeLadder(cfg, ex, pair, ladder) {
   for (const o of [...ladder.buys, ...ladder.sells]) {
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r?.order_id) { o.orderId = r.order_id; o.status = 'open'; }
-    else o.status = 'cancelled';
+    else o.status = 'pending';
     await sleep(cfg.rateLimitMs);
   }
 }
@@ -64,7 +64,11 @@ async function slideSameSide(cfg, ex, a, ladder, filledLeg) {
   const neu = { level: maxLevel + 1, side: filledLeg.side, price, size: filledLeg.size, orderId: null, status: 'pending' };
   console.log(`  SLIDE ${neu.side.toUpperCase()} ${a.symbol} ${neu.size} @ ${neu.price} (fill @ ${filledLeg.price})`);
   const r = await ex.limitOrder(a.pair, neu.side, neu.price, neu.size, { level: neu.level });
-  if (r?.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'cancelled';
+  if (r?.order_id) { neu.orderId = r.order_id; neu.status = 'open'; }
+  else {
+    neu.status = 'pending';
+    console.log(`  slide ${neu.side} ${a.symbol} left pending (place failed)`);
+  }
   sideLegs.push(neu);
   await sleep(cfg.rateLimitMs);
 }
@@ -95,7 +99,7 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
     ? formatPrice(best.price * (1 - tighten), a.pairDecimals)
     : formatPrice(best.price * (1 + tighten), a.pairDecimals);
   if (newPx === best.price) return;
-  console.log(`  SKEW replace ${otherSide.toUpperCase()} ${best.price} → ${newPx}`);
+  console.log(`  SKEW replace ${otherSide.toUpperCase()} ${best.price} -> ${newPx}`);
   await ex.cancelOrder(best.orderId);
   best.status = 'cancelled';
   const r = await ex.limitOrder(a.pair, otherSide, newPx, best.size, { level: best.level });
