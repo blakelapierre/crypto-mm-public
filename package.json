@@ -1,0 +1,15 @@
+{
+  "name": "crypto-mm",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ladder": "node src/bots/ladder/index.js",
+    "inventory": "node src/bots/inventory/index.js",
+    "xex": "node src/bots/xex/index.js",
+    "comp": "node src/bots/comp/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
