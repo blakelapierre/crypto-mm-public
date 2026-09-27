@@ -65,7 +65,7 @@ export function createPnl() {
     const s = snapshot(mids);
     console.log(`\n-- ${tag} --`);
     if (s.walletGain != null) {
-      console.log(`  WALLET  start=${s.startEquity.toFixed(4)}  now=${s.lastEquity.toFixed(4)}  gain=${s.walletGain >= 0 ? '+' : ''}${s.walletGain.toFixed(4)}`);
+      console.log(`  WALLET  start=${s.startEquity.toFixed(4)}  now=${s.lastEquity.toFixed(4)}  gain=${s.walletGain >= 0 ? '+' : ''}${s.walletGain.toFixed(4)}  (cash + holds + marked coins)`);
     }
     if (!s.rows.length) { console.log('  fills: none yet'); return s; }
     for (const r of s.rows) {
