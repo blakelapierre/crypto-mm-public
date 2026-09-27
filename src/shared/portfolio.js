@@ -9,6 +9,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   const quote = cfg.quote.toUpperCase();
   const positions = {};
   let freeQuote = 0;
+  let quoteHold = 0;
   if (venue === 'coinbase') {
     let cursor = null;
     const accounts = [];
@@ -22,12 +23,14 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     for (const a of accounts) {
       const cur = (a.currency || '').toUpperCase();
       const avail = parseFloat(a.available_balance?.value || 0);
-      if (!cur || avail <= 0) continue;
-      if (cur === quote) { freeQuote += avail; continue; }
-      if (STABLECOINS.has(cur)) continue;
+      const hold = parseFloat(a.hold?.value || 0);
+      const amt = avail + hold;
+      if (!cur || amt <= 0) continue;
+      if (cur === quote) { freeQuote += avail; quoteHold += hold; continue; }
+      if (STABLECOINS.has(cur) && cur !== quote) continue;
       const sym = normalizeAsset(cur);
       if (!positions[sym]) positions[sym] = { amount: 0, valueQuote: 0, mid: 0 };
-      positions[sym].amount += avail;
+      positions[sym].amount += amt;
     }
   } else if (venue === 'kraken') {
     const bal = await krakenPrivate(cfg, 'Balance');
@@ -41,15 +44,12 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
       positions[sym].amount += avail;
     }
   } else {
-    return { freeQuote: cfg.totalCapitalOverride || 100, positions: {}, positionsValue: 0, totalEquity: cfg.totalCapitalOverride || 100 };
+    return { freeQuote: cfg.totalCapitalOverride || 100, quoteHold: 0, positions: {}, positionsValue: 0, totalEquity: cfg.totalCapitalOverride || 100 };
   }
   let positionsValue = 0;
   for (const [sym, pos] of Object.entries(positions)) {
     const info = productMap[sym];
-    if (!info) {
-      console.warn(`  position ${sym} amt=${pos.amount} has no ${cfg.quote} product — skipped in mark`);
-      continue;
-    }
+    if (!info) { console.warn(`  position ${sym} amt=${pos.amount} has no ${cfg.quote} product`); continue; }
     const book = await ex.getBook(info.pair, venue);
     if (!book) continue;
     pos.mid = book.mid;
@@ -58,16 +58,24 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     if (pos.valueQuote < cfg.dustUsd) { delete positions[sym]; continue; }
     positionsValue += pos.valueQuote;
   }
-  return { freeQuote, positions, positionsValue, totalEquity: freeQuote + positionsValue };
+  let totalEquity = freeQuote + quoteHold + positionsValue;
+  if (venue === 'kraken') {
+    try {
+      const tb = await krakenPrivate(cfg, 'TradeBalance');
+      const eb = parseFloat(tb?.eb || tb?.e || 0);
+      if (eb > 0) totalEquity = eb;
+    } catch { /* keep marked sum */ }
+  }
+  return { freeQuote, quoteHold, positions, positionsValue, totalEquity };
 }
 
 export async function waitForSettlement(cfg, ex, productMap, label, venue) {
-  console.log(`\n── Settle: ${label} ──`);
+  console.log(`\nSettle: ${label}`);
   await sleep(cfg.settleWaitMs);
   let live = null;
   for (let i = 0; i < cfg.settlePolls; i++) {
     live = await fetchLivePortfolio(cfg, ex, productMap, venue);
-    console.log(`  ${i + 1}/${cfg.settlePolls} free=${live.freeQuote.toFixed(2)} pos=${(live.positionsValue || 0).toFixed(2)}`);
+    console.log(`  ${i + 1}/${cfg.settlePolls} free=${live.freeQuote.toFixed(2)} pos=${(live.positionsValue || 0).toFixed(2)} eq=${live.totalEquity.toFixed(2)}`);
     if (i < cfg.settlePolls - 1) await sleep(cfg.settlePollIntervalMs);
   }
   return live;
@@ -111,20 +119,19 @@ export function getMmOrderSizeUsd(cfg, mmCapital) {
 }
 
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
-  console.log('\n══ Combined rebalance (portfolio + MM inventory) ══\n');
+  console.log('\nCombined rebalance');
   for (const a of combinedTargets) {
     const heldVal = live.positions[a.symbol]?.valueQuote || 0;
     const heldAmt = live.positions[a.symbol]?.amount || 0;
     const target = a.combinedTarget;
     const excess = heldVal - target;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
-    console.log(`${a.symbol}: held ${heldVal.toFixed(2)} | port ${a.portTarget.toFixed(2)} + inv ${a.invTarget.toFixed(2)} = ${target.toFixed(2)}`);
+    console.log(`${a.symbol}: held ${heldVal.toFixed(2)} target ${target.toFixed(2)}`);
     if (excess <= tol || heldAmt <= 0) continue;
     const book = await ex.getBook(a.pair);
     if (!book) continue;
     let sellAmt = formatVolume(heldAmt * (excess / heldVal), a.lotDecimals);
     if (sellAmt < (a.ordermin || 0) * cfg.volumeSafetyMargin) continue;
-    console.log(`  MARKET SELL ${sellAmt} (excess above combined only)`);
     await ex.marketSell(a.pair, sellAmt);
     await sleep(cfg.rateLimitMs);
   }
@@ -139,14 +146,12 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     const book = await ex.getBook(a.pair);
     if (!book) continue;
     const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
-    console.log(`${a.symbol}: MARKET BUY ≈${safeQuoteSize(cfg, spendPlan)} toward ${target.toFixed(2)}`);
     if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
     await sleep(cfg.rateLimitMs);
   }
 }
 
 export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
-  console.log('\n── Combined buy pass after settlement ──');
   let budget = safeSpend(cfg, live.freeQuote);
   for (const a of combinedTargets) {
     const heldVal = live.positions[a.symbol]?.valueQuote || 0;
