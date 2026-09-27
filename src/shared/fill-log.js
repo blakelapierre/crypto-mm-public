@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { noteFeeFill } from './fee-spread.js';
 
 let resolved = null;
 
@@ -12,6 +13,8 @@ function filePath() {
 
 export function logFill(rec, extra = {}) {
   try {
+    const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
+    if (notional) noteFeeFill(rec.fee, notional);
     const dest = filePath();
     if (!dest) return;
     if (!resolved) {
@@ -32,7 +35,7 @@ export function logFill(rec, extra = {}) {
       fee: Number(rec.fee) || 0,
       mid: rec.mid != null ? Number(rec.mid) : null,
       filledValue: rec.filledValue != null ? Number(rec.filledValue) : null,
-      notional: rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null,
+      notional,
     };
     fs.appendFileSync(dest, JSON.stringify(row) + '\n');
   } catch (e) {
