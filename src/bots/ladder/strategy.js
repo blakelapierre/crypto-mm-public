@@ -32,7 +32,7 @@ export function syncLadderFromRegistry(ladder, orderRegistry) {
 }
 
 export function printLadder(symbol, pair, ladder, book) {
-  const live = (o) => o.status === 'open' || o.status === 'pending';
+  const live = (o) => o.status === 'open';
   const buys = ladder.buys.filter(live);
   const sells = ladder.sells.filter(live);
   if (!buys.length && !sells.length) return;
@@ -42,8 +42,8 @@ export function printLadder(symbol, pair, ladder, book) {
 }
 
 function pruneDone(ladder) {
-  ladder.buys = ladder.buys.filter((o) => o.status === 'open' || o.status === 'pending');
-  ladder.sells = ladder.sells.filter((o) => o.status === 'open' || o.status === 'pending');
+  ladder.buys = ladder.buys.filter((o) => o.status === 'open');
+  ladder.sells = ladder.sells.filter((o) => o.status === 'open');
 }
 
 function resizeLeg(cfg, a, o, live) {
@@ -67,7 +67,7 @@ function resizeLeg(cfg, a, o, live) {
 
 async function cancelSide(ex, legs) {
   for (const o of legs) {
-    if (o.orderId && (o.status === 'open' || o.status === 'pending')) {
+    if (o.orderId && o.status === 'open') {
       await ex.cancelOrder(o.orderId);
       o.status = 'cancelled';
     }
@@ -75,24 +75,21 @@ async function cancelSide(ex, legs) {
 }
 
 async function ensureBothSides(cfg, ex, a, ladder, book) {
-  const openS = ladder.sells.some((o) => o.status === 'open');
-  const pendS = ladder.sells.some((o) => o.status === 'pending');
-  const openB = ladder.buys.some((o) => o.status === 'open');
-  const pendB = ladder.buys.some((o) => o.status === 'pending');
+  const live = (o) => o.status === 'open';
   const size = [...ladder.sells, ...ladder.buys].find((o) => o.size > 0)?.size || 0;
   if (!size) return;
-  if (!openS && !pendS) {
+  if (!ladder.sells.some(live)) {
     const price = formatPrice(book.ask || book.mid, a.pairDecimals);
     console.log(`  ENSURE SELL ${a.symbol} ${size} @ ${price}`);
     const r = await ex.limitOrder(a.pair, 'sell', price, size, { level: 1 });
-    ladder.sells.push({ level: 1, side: 'sell', price, size, orderId: r?.order_id || null, status: r?.order_id ? 'open' : 'pending' });
+    ladder.sells.push({ level: 1, side: 'sell', price, size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
     await sleep(cfg.rateLimitMs);
   }
-  if (!openB && !pendB) {
+  if (!ladder.buys.some(live)) {
     const price = formatPrice(book.bid || book.mid, a.pairDecimals);
     console.log(`  ENSURE BUY ${a.symbol} ${size} @ ${price}`);
     const r = await ex.limitOrder(a.pair, 'buy', price, size, { level: 1 });
-    ladder.buys.push({ level: 1, side: 'buy', price, size, orderId: r?.order_id || null, status: r?.order_id ? 'open' : 'pending' });
+    ladder.buys.push({ level: 1, side: 'buy', price, size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
     await sleep(cfg.rateLimitMs);
   }
 }
@@ -102,12 +99,12 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
-      if (!resized) { o.status = 'pending'; console.log(`  ${o.side} L${o.level} ${a.symbol} skip`); continue; }
+      if (!resized) { o.status = 'failed'; console.log(`  ${o.side} L${o.level} ${a.symbol} skip`); continue; }
       if (resized !== o.size) { console.log(`  ${o.side} L${o.level} ${a.symbol} size ${o.size} -> ${resized}`); o.size = resized; }
     }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
-    if (r?.order_id) { o.orderId = r.order_id; o.status = 'open'; }
-    else o.status = 'pending';
+    if (r && r.order_id) { o.orderId = r.order_id; o.status = 'open'; }
+    else o.status = 'failed';
     await sleep(cfg.rateLimitMs);
   }
 }
@@ -120,14 +117,14 @@ function nextSlidePrice(cfg, filledLeg, pairDecimals) {
 
 async function slideSameSide(cfg, ex, a, ladder, filledLeg) {
   const sideLegs = filledLeg.side === 'buy' ? ladder.buys : ladder.sells;
-  const working = sideLegs.filter((o) => o.status === 'open' || o.status === 'pending');
+  const working = sideLegs.filter((o) => o.status === 'open');
   if (working.length >= cfg.slideMaxLegsPerSide) return;
   const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals);
   const maxLevel = sideLegs.reduce((m, o) => Math.max(m, o.level || 0), 0);
   const neu = { level: maxLevel + 1, side: filledLeg.side, price, size: filledLeg.size, orderId: null, status: 'pending' };
   console.log(`  SLIDE ${neu.side.toUpperCase()} ${a.symbol} ${neu.size} @ ${neu.price}`);
   const r = await ex.limitOrder(a.pair, neu.side, neu.price, neu.size, { level: neu.level });
-  if (r?.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'pending';
+  if (r && r.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'failed';
   sideLegs.push(neu);
   await sleep(cfg.rateLimitMs);
 }
@@ -144,7 +141,7 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
       : formatPrice(filledLeg.price * (1 - tighten), a.pairDecimals);
     const neu = { level: 1, side: otherSide, price, size: filledLeg.size, orderId: null, status: 'pending' };
     const r = await ex.limitOrder(a.pair, neu.side, neu.price, neu.size, { level: neu.level });
-    if (r?.order_id) { neu.orderId = r.order_id; neu.status = 'open'; }
+    if (r && r.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'failed';
     others.push(neu);
     return;
   }
@@ -158,7 +155,7 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
   await ex.cancelOrder(best.orderId);
   best.status = 'cancelled';
   const r = await ex.limitOrder(a.pair, otherSide, newPx, best.size, { level: best.level });
-  others.push({ level: best.level, side: otherSide, price: newPx, size: best.size, orderId: r?.order_id || null, status: r?.order_id ? 'open' : 'cancelled' });
+  others.push({ level: best.level, side: otherSide, price: newPx, size: best.size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
 }
 
 export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive = null) {
