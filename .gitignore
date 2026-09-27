@@ -11,4 +11,6 @@ node_modules/
 npm-debug.log*
 *.zip
 *.log
+*.jsonl
+logs/
 .DS_Store
