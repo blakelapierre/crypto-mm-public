@@ -46,7 +46,10 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   let positionsValue = 0;
   for (const [sym, pos] of Object.entries(positions)) {
     const info = productMap[sym];
-    if (!info) continue;
+    if (!info) {
+      console.warn(`  position ${sym} amt=${pos.amount} has no ${cfg.quote} product — skipped in mark`);
+      continue;
+    }
     const book = await ex.getBook(info.pair, venue);
     if (!book) continue;
     pos.mid = book.mid;
