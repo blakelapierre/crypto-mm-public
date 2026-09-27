@@ -5,6 +5,25 @@ import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } fro
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey } from './coinbase.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 
+function money(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'object') return money(v.value ?? v.amount ?? v.total_commission ?? v.commission);
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function coinbaseFee(o, fills = []) {
+  let fee = money(o && o.total_fees) || money(o && o.total_fee) || money(o && o.commission) || money(o && o.fee);
+  const det = (o && o.commission_detail_total) || {};
+  if (!fee) fee = money(det.total_commission) || money(det.client_commission);
+  if (!fee) {
+    for (const f of fills) {
+      fee += money(f.commission) || money(f.fee) || money((f.commission_detail_total || {}).total_commission);
+    }
+  }
+  return fee;
+}
+let feeDebugOnce = false;
+
 export function createExchange(cfg, orderRegistry) {
   const name = cfg.exchange;
   const pairMeta = new Map();
@@ -28,17 +47,9 @@ export function createExchange(cfg, orderRegistry) {
           const base = (p.base_currency_id || p.base_currency || '').toUpperCase();
           if (!base || STABLECOINS.has(base)) continue;
           const bi = p.base_increment || '0.00000001';
-          const qi = p.quote_increment || '0.01';
-          const rec = {
-            venue: 'coinbase',
-            pair: p.product_id || `${base}-${q}`,
-            quoteIncrement: parseFloat(qi) || 0.01,
-            pairDecimals: incrementDecimals(qi),
-            lotDecimals: incrementDecimals(bi),
-            ordermin: parseFloat(p.base_min_size || '0') || 0,
-          };
-          map[base] = rec;
-          pairMeta.set(rec.pair, rec);
+          const qi = p.price_increment || p.quote_increment || '0.01';
+          const rec = { venue: 'coinbase', pair: p.product_id || (base + '-' + q), quoteIncrement: parseFloat(qi) || 0.01, pairDecimals: incrementDecimals(qi), lotDecimals: incrementDecimals(bi), ordermin: parseFloat(p.base_min_size || '0') || 0 };
+          map[base] = rec; pairMeta.set(rec.pair, rec);
         }
         return map;
       }
@@ -53,54 +64,34 @@ export function createExchange(cfg, orderRegistry) {
         if (STABLECOINS.has(b) || KEEP_ASSETS.has(b)) continue;
         const base = b === 'XBT' ? 'BTC' : b;
         if (map[base]) continue;
-        const rec = {
-          venue: 'kraken', pair: k,
-          pairDecimals: v.pair_decimals ?? 5,
-          lotDecimals: v.lot_decimals ?? 8,
-          quoteIncrement: 10 ** -(v.pair_decimals ?? 5),
-          ordermin: parseFloat(v.ordermin || '0') || 0,
-        };
-        map[base] = rec;
-        pairMeta.set(k, rec);
-        if (v.altname) pairMeta.set(v.altname, rec);
+        const rec = { venue: 'kraken', pair: k, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0 };
+        map[base] = rec; pairMeta.set(k, rec); if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
     },
     async getBook(pair, venue = name) {
       if (venue === 'coinbase') {
         try {
-          const data = await coinbaseRequest(cfg, 'GET', `/api/v3/brokerage/best_bid_ask?product_ids=${encodeURIComponent(pair)}`);
+          const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(pair));
           const book = (data.pricebooks || [])[0];
-          if (book?.bids?.[0] && book?.asks?.[0]) {
-            const bid = parseFloat(book.bids[0].price);
-            const ask = parseFloat(book.asks[0].price);
+          if (book && book.bids && book.bids[0] && book.asks && book.asks[0]) {
+            const bid = parseFloat(book.bids[0].price); const ask = parseFloat(book.asks[0].price);
             return { mid: (bid + ask) / 2, bid, ask, pair, venue };
           }
         } catch { /* fallback */ }
-        try {
-          const t = await coinbasePublic(`/api/v3/brokerage/market/products/${encodeURIComponent(pair)}`);
-          const px = parseFloat(t.price || 0);
-          if (px) return { mid: px, bid: px, ask: px, pair, venue };
-        } catch { /* ignore */ }
         return null;
       }
       const ticker = await krakenPublic('Ticker', { pair });
-      const key = Object.keys(ticker)[0];
-      const t = ticker[key];
-      return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair: key, venue };
+      const t = ticker[Object.keys(ticker)[0]];
+      return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair, venue };
     },
     async marketBuy(pair, volume, quoteAmount = null, venue = name) {
       const sq = quoteAmount != null ? safeQuoteSize(cfg, quoteAmount) : null;
-      if (cfg.dryRun) { console.log(`[DRY] MARKET BUY ${venue} ${pair}`); return { ok: true }; }
+      if (cfg.dryRun) { console.log('[DRY] MARKET BUY', venue, pair); return { ok: true }; }
       if (venue === 'coinbase') {
-        if (sq != null && sq < cfg.minOrderUsd) return null;
-        const order_configuration = sq != null
-          ? { market_market_ioc: { quote_size: String(sq) } }
-          : { market_market_ioc: { base_size: String(volume) } };
+        const order_configuration = sq != null ? { market_market_ioc: { quote_size: String(sq) } } : { market_market_ioc: { base_size: String(volume) } };
         try {
-          const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', {
-            client_order_id: randomUUID(), product_id: pair, side: 'BUY', order_configuration,
-          });
+          const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', { client_order_id: randomUUID(), product_id: pair, side: 'BUY', order_configuration });
           if (res.success === false || res.error_response) { console.error('MARKET BUY FAIL', res.error_response || res); return null; }
           return res;
         } catch (e) { console.error(e.message); return null; }
@@ -108,13 +99,10 @@ export function createExchange(cfg, orderRegistry) {
       return krakenPrivate(cfg, 'AddOrder', { pair, type: 'buy', ordertype: 'market', volume: String(volume) });
     },
     async marketSell(pair, volume, venue = name) {
-      if (cfg.dryRun) { console.log(`[DRY] MARKET SELL ${venue} ${pair} ${volume}`); return { ok: true }; }
+      if (cfg.dryRun) { console.log('[DRY] MARKET SELL', venue, pair, volume); return { ok: true }; }
       if (venue === 'coinbase') {
         try {
-          const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', {
-            client_order_id: randomUUID(), product_id: pair, side: 'SELL',
-            order_configuration: { market_market_ioc: { base_size: String(volume) } },
-          });
+          const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', { client_order_id: randomUUID(), product_id: pair, side: 'SELL', order_configuration: { market_market_ioc: { base_size: String(volume) } } });
           if (res.success === false || res.error_response) { console.error('MARKET SELL FAIL', res.error_response || res); return null; }
           return res;
         } catch (e) { console.error(e.message); return null; }
@@ -122,33 +110,22 @@ export function createExchange(cfg, orderRegistry) {
       return krakenPrivate(cfg, 'AddOrder', { pair, type: 'sell', ordertype: 'market', volume: String(volume) });
     },
     async limitOrder(pair, side, price, volume, meta = {}, venue = name) {
-      const rawPrice = price;
       const info = pairMeta.get(pair);
-      const inc = info?.quoteIncrement || (info?.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
+      const inc = (info && info.quoteIncrement) || (info && info.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
       let px = snapToIncrement(price, inc);
-      let bookSnap = null;
       if (cfg.postOnly) {
         try {
-          bookSnap = await this.getBook(pair, venue);
+          const bookSnap = await this.getBook(pair, venue);
           if (bookSnap) {
             if (side.toLowerCase() === 'buy' && px >= bookSnap.ask) px = snapToIncrement(bookSnap.bid, inc);
             if (side.toLowerCase() === 'sell' && px <= bookSnap.bid) px = snapToIncrement(bookSnap.ask, inc);
           }
-        } catch { /* keep px */ }
+        } catch { /* keep */ }
       }
       price = px;
-      const failCtx = (err) => {
-        console.error('LIMIT FAIL', {
-          venue, pair, side, level: meta.level, size: volume,
-          rawPrice, snappedPrice: price, quoteIncrement: inc,
-          pairDecimals: info?.pairDecimals, postOnly: cfg.postOnly,
-          book: bookSnap ? { bid: bookSnap.bid, ask: bookSnap.ask, mid: bookSnap.mid } : null,
-          error: err,
-        });
-      };
+      const failCtx = (err) => console.error('LIMIT FAIL id=none', venue, pair, side, 'L' + (meta.level || ''), volume, '@', price, err);
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
-        console.log(`[DRY] LIMIT ${venue} ${side} ${volume} @ ${price} ${pair}`);
         orderRegistry.set(id, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
         return { order_id: id };
       }
@@ -159,7 +136,7 @@ export function createExchange(cfg, orderRegistry) {
             order_configuration: { limit_limit_gtc: { base_size: String(volume), limit_price: String(price), post_only: cfg.postOnly } },
           });
           if (res.success === false || res.error_response) { failCtx(res.error_response || res); return null; }
-          const oid = res.success_response?.order_id || res.order_id;
+          const oid = (res.success_response && res.success_response.order_id) || res.order_id;
           if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
           return { order_id: oid };
         } catch (e) { failCtx(e.message); return null; }
@@ -168,19 +145,30 @@ export function createExchange(cfg, orderRegistry) {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
         if (cfg.postOnly) params.oflags = 'post';
         const r = await krakenPrivate(cfg, 'AddOrder', params);
-        const oid = r.txid?.[0];
+        const oid = r.txid && r.txid[0];
         if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
         return { order_id: oid };
       } catch (e) { failCtx(e.message); return null; }
     },
     async getOrderStatus(orderId, venue = name) {
       if (!orderId) return null;
-      if (String(orderId).startsWith('dry-')) return { status: orderRegistry.get(orderId)?.status || 'open' };
+      if (String(orderId).startsWith('dry-')) return { status: (orderRegistry.get(orderId) || {}).status || 'open' };
       if (venue === 'coinbase') {
         try {
-          const res = await coinbaseRequest(cfg, 'GET', `/api/v3/brokerage/orders/historical/${orderId}`);
+          const res = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/' + orderId);
           const o = res.order || res;
-          return { status: (o.status || '').toUpperCase(), raw: o };
+          let fills = [];
+          try {
+            const fl = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/fills?order_ids=' + encodeURIComponent(orderId) + '&limit=100');
+            fills = fl.fills || [];
+          } catch { fills = []; }
+          const fee = coinbaseFee(o, fills);
+          if (!feeDebugOnce && String(o.status || '').toUpperCase() === 'FILLED') {
+            feeDebugOnce = true;
+            const f0 = fills[0] || {};
+            console.log('FEE DEBUG order.total_fees=', o.total_fees, 'fills=', fills.length, 'f0.commission=', f0.commission, 'f0.liq=', f0.liquidity_indicator, 'f0.detail=', JSON.stringify(f0.commission_detail_total || null));
+          }
+          return { status: String(o.status || '').toUpperCase(), raw: o, filledSize: money(o.filled_size), filledValue: money(o.filled_value), fee, avgPrice: money(o.average_filled_price) };
         } catch { return null; }
       }
       try {
@@ -188,11 +176,10 @@ export function createExchange(cfg, orderRegistry) {
         const o = r[orderId];
         if (!o) return null;
         const map = { closed: 'FILLED', open: 'OPEN', canceled: 'CANCELLED', expired: 'EXPIRED' };
-        return { status: map[o.status] || o.status.toUpperCase(), raw: o };
+        return { status: map[o.status] || String(o.status).toUpperCase(), raw: o, filledSize: parseFloat(o.vol_exec || 0) || 0, filledValue: parseFloat(o.cost || 0) || 0, fee: parseFloat(o.fee || 0) || 0, avgPrice: parseFloat(o.price || 0) || 0 };
       } catch { return null; }
     },
     async cancelAll(venue = name) {
-      console.log(`\nCancel all (${venue})`);
       if (cfg.dryRun) return;
       if (venue === 'coinbase') {
         try {
@@ -206,35 +193,22 @@ export function createExchange(cfg, orderRegistry) {
     },
     async cancelOrder(orderId, venue = name) {
       if (!orderId || String(orderId).startsWith('dry-') || cfg.dryRun) return;
-      if (venue === 'coinbase') {
-        try { await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: [orderId] }); } catch { /* ignore */ }
-        return;
-      }
+      if (venue === 'coinbase') { try { await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: [orderId] }); } catch { /* ignore */ } return; }
       try { await krakenPrivate(cfg, 'CancelOrder', { txid: orderId }); } catch { /* ignore */ }
     },
     async cancelPair(pair, venue = name) {
-      if (cfg.dryRun) {
-        for (const [, rec] of orderRegistry) if (rec.pair === pair && rec.status === 'open') rec.status = 'cancelled';
-        return;
-      }
       if (venue === 'coinbase') {
         try {
-          const path = `/api/v3/brokerage/orders/historical/batch?product_id=${encodeURIComponent(pair)}&order_status=OPEN&limit=50`;
-          const open = await coinbaseRequest(cfg, 'GET', path);
+          const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?product_id=' + encodeURIComponent(pair) + '&order_status=OPEN&limit=50');
           const ids = (open.orders || []).map((o) => o.order_id).filter(Boolean);
-          if (ids.length) {
-            await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: ids });
-            ids.forEach((id) => { const r = orderRegistry.get(id); if (r) r.status = 'cancelled'; });
-          }
+          if (ids.length) await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: ids });
         } catch (e) { console.warn(e.message); }
         return;
       }
       const open = await krakenPrivate(cfg, 'OpenOrders');
       for (const [txid, order] of Object.entries(open.open || {})) {
-        if (order.descr?.pair === pair || (order.descr?.order || '').includes(pair)) {
+        if ((order.descr && order.descr.pair === pair) || String((order.descr && order.descr.order) || '').includes(pair)) {
           try { await krakenPrivate(cfg, 'CancelOrder', { txid }); } catch { /* ignore */ }
-          const r = orderRegistry.get(txid);
-          if (r) r.status = 'cancelled';
           await sleep(cfg.rateLimitMs);
         }
       }
