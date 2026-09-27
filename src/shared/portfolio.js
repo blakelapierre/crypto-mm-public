@@ -152,7 +152,7 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     if (!book) continue;
     let sellAmt = formatVolume(heldAmt * (excess / heldVal), a.lotDecimals);
     if (sellAmt < (a.ordermin || 0) * cfg.volumeSafetyMargin) continue;
-    await ex.marketSell(a.pair, sellAmt);
+    try { await ex.marketSell(a.pair, sellAmt); } catch (e) { console.warn('  sell ' + a.symbol + ' skip: ' + e.message); }
     await sleep(cfg.rateLimitMs);
   }
   let budget = safeSpend(cfg, live.freeQuote);
@@ -162,11 +162,13 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     const gap = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
     if (gap <= tol || budget < cfg.minOrderUsd) continue;
-    const spendPlan = Math.min(gap, budget);
+    const spendPlan = Math.min(gap, budget * 0.98);
     const book = await ex.getBook(a.pair);
     if (!book) continue;
     const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
-    if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
+    try {
+      if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
+    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
     await sleep(cfg.rateLimitMs);
   }
 }
@@ -179,11 +181,13 @@ export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
     const gap = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
     if (gap <= tol || budget < cfg.minOrderUsd) continue;
-    const spendPlan = Math.min(gap, budget);
+    const spendPlan = Math.min(gap, budget * 0.98);
     const book = await ex.getBook(a.pair);
     if (!book) continue;
     const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
-    if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
+    try {
+      if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
+    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
     await sleep(cfg.rateLimitMs);
   }
 }
