@@ -41,13 +41,12 @@ export function createPnl() {
     const fee = Number(rec.fee || 0) || 0;
     if (!(qty > 0) || !(px > 0)) return;
     const sym = symbolOf(rec);
-    const mid = Number(rec.mid || lastMid.get(sym) || px);
-    accruePrice(sym, mid);
+    const mid = Number(rec.mid || lastMid.get(sym) || 0);
+    if (mid > 0) accruePrice(sym, mid);
     const buy = String(rec.side).toLowerCase() === 'buy';
-    const edge = buy ? (mid - px) * qty : (px - mid) * qty;
-    const maker = edge - fee;
-    makerAcc += maker;
-    add(makerBy, sym, maker);
+    const edge = mid > 0 ? (buy ? (mid - px) * qty : (px - mid) * qty) : 0;
+    makerAcc += edge;
+    add(makerBy, sym, edge);
     feesPaid += fee;
     inv.set(sym, (inv.get(sym) || 0) + (buy ? qty : -qty));
     const b = book(sym);
@@ -114,7 +113,8 @@ export function createPnl() {
     console.log('\n-- ' + tag + ' --');
     if (s.walletGain != null) console.log('  WALLET ' + fmt(s.walletGain) + '   start=' + s.startEquity.toFixed(2) + ' now=' + s.lastEquity.toFixed(2));
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
-    console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid - fees');
+    console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
+    console.log('  FEES   ' + fmt(-s.fees) + '   venue commission (not in MAKER)');
     for (const r of s.rows) {
       console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' fees=' + r.fees.toFixed(4));
     }
@@ -124,11 +124,8 @@ export function createPnl() {
   function adjustFee(rec, fee) {
     const n = Number(fee);
     if (!(n > 0)) return;
-    const sym = symbolOf(rec);
-    makerAcc -= n;
-    add(makerBy, sym, -n);
     feesPaid += n;
-    const b = books.get(sym);
+    const b = books.get(symbolOf(rec));
     if (b) b.fees += n;
   }
   return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee };
