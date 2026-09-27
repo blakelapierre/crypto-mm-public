@@ -1,3 +1,5 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
@@ -10,7 +12,7 @@ import {
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
 
-loadProjectEnv('configs/ladder.env');
+loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
 const orderRegistry = new Map();
 const pairState = new Map();
@@ -54,7 +56,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
 }
 
 async function main() {
-  console.log(`BOT=ladder exchange=${cfg.exchange} dryRun=${cfg.dryRun} quote=${cfg.quote}`);
+  console.log('BOT=' + (process.env.BOT || 'ladder') + ' exchange=' + cfg.exchange + ' dryRun=' + cfg.dryRun + ' quote=' + cfg.quote + ' symbols=' + (cfg.symbols || []).join(','));
   if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) throw new Error('Missing Kraken keys');
   if (cfg.exchange === 'coinbase') console.log('JWT', ex.loadKeyInfo());
   const productMap = await ex.getProducts();
@@ -71,4 +73,11 @@ async function main() {
   const orderSizeUsd = getMmOrderSizeUsd(cfg, lists.mmCapital);
   if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd, productMap);
 }
-main().catch((e) => { console.error('Fatal:', e.message || e); process.exit(1); });
+
+export { main, cfg };
+
+const self = fileURLToPath(import.meta.url);
+const invoked = process.argv[1] && path.resolve(process.argv[1]) === self;
+if (invoked) {
+  main().catch((e) => { console.error('Fatal:', e.message || e); process.exit(1); });
+}
