@@ -78,6 +78,7 @@ export function baseConfig() {
     mmEnabled: envBool('MM_ENABLED', true),
     mmLevels: envNum('MM_LEVELS', 1),
     mmSpreadBps: envNum('MM_SPREAD_BPS', 15),
+    joinTouch: envBool('JOIN_TOUCH', true),
     mmMaxPairs: envNum('MM_MAX_PAIRS', 5),
     mmInventoryFraction: envNum('MM_INVENTORY_FRACTION', 0.5),
     inventorySafetyMultiplier: envNum('INVENTORY_SAFETY_MULTIPLIER', 1.05),
