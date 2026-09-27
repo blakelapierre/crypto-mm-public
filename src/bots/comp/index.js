@@ -26,11 +26,11 @@ function pickMarkets(productMap) {
   const out = [];
   for (const sym of cfg.symbols) {
     const info = productMap[sym];
-    if (!info || info.venue !== 'kraken') { console.warn(`No Kraken ${sym}/${cfg.quote}`); continue; }
+    if (!info || info.venue !== 'kraken') { console.warn('No Kraken ' + sym + '/' + cfg.quote); continue; }
     out.push({ symbol: sym, ...info });
-    console.log(`Resolved ${sym} -> ${info.pair}`);
+    console.log('Resolved ' + sym + ' -> ' + info.pair);
   }
-  if (!out.length) throw new Error(`No Kraken pairs for ${cfg.symbols.join(',')}`);
+  if (!out.length) throw new Error('No Kraken pairs for ' + cfg.symbols.join(','));
   return out;
 }
 
@@ -39,11 +39,11 @@ async function seedInventory(markets, productMap) {
   for (const m of markets) {
     const live = await fetchLivePortfolio(cfg, ex, productMap, 'kraken');
     const invTarget = capOf(live.totalEquity) * cfg.invFraction;
-    const heldVal = live.positions[m.symbol]?.valueQuote || 0;
-    const heldAmt = live.positions[m.symbol]?.amount || 0;
+    const heldVal = (live.positions[m.symbol] && live.positions[m.symbol].valueQuote) || 0;
+    const heldAmt = (live.positions[m.symbol] && live.positions[m.symbol].amount) || 0;
     const book = await ex.getBook(m.pair);
     if (!book) continue;
-    console.log(`${m.symbol}: held $${heldVal.toFixed(2)} targetInv $${invTarget.toFixed(2)} cash $${live.freeQuote.toFixed(4)}`);
+    console.log(m.symbol + ': held $' + heldVal.toFixed(2) + ' targetInv $' + invTarget.toFixed(2) + ' cash $' + live.freeQuote.toFixed(4));
     if (heldVal > invTarget + cfg.minOrderUsd && heldAmt > 0) {
       const sellAmt = formatVolume(heldAmt * ((heldVal - invTarget) / heldVal), m.lotDecimals);
       if (sellAmt >= (m.ordermin || 0) * cfg.volumeSafetyMargin) {
@@ -67,15 +67,15 @@ async function seedInventory(markets, productMap) {
 }
 
 async function main() {
-  console.log(`BOT=comp ${cfg.symbols.join('+')} quote=${cfg.quote} dryRun=${cfg.dryRun}`);
-  if (String(cfg.quote).toUpperCase() !== 'USD') throw new Error(`quote must be USD`);
+  console.log('BOT=comp ' + cfg.symbols.join('+') + ' quote=' + cfg.quote + ' dryRun=' + cfg.dryRun);
+  if (String(cfg.quote).toUpperCase() !== 'USD') throw new Error('quote must be USD');
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Set KRAKEN keys');
   const productMap = await ex.getProducts('kraken');
   const markets = pickMarkets(productMap);
   if (cfg.cancelAllOrdersOnStartup) await ex.cancelAll('kraken');
   let live = await fetchLivePortfolio(cfg, ex, productMap, 'kraken');
   live = await seedInventory(markets, productMap);
-  pnl.markWallet(live.totalEquity);
+  pnl.markHoldings(live);
   const sizeUsd = Math.max(cfg.minOrderUsd, ((capOf(live.totalEquity) * (1 - cfg.invFraction)) / cfg.mmLevels) * cfg.orderSizeHaircut);
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap, 'kraken');
   (async () => {
@@ -92,7 +92,7 @@ async function main() {
       await sleep(cfg.rateLimitMs);
     }
     if (!main._lastPnl || Date.now() - main._lastPnl > 30000) {
-      try { pnl.markWallet((await getLive()).totalEquity); } catch { /* ignore */ }
+      try { pnl.markHoldings(await getLive()); } catch { /* ignore */ }
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       pnl.print(mids);
