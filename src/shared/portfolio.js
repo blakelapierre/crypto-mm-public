@@ -111,10 +111,6 @@ export async function buildLists(cfg, productMap, totalEquity) {
     }
   }
   if (!tradable.length) throw new Error(forced.length ? 'No products for ' + forced.join(',') : 'No pairs');
-  const portfolio = forced.length ? [] : tradable.slice(0, cfg.portfolioCoins);
-  const mcap = portfolio.reduce((s, c) => s + c.market_cap, 0) || 1;
-  const portfolioTarget = forced.length ? 0 : safeSpend(cfg, totalEquity * cfg.portfolioFraction);
-  const portfolioAlloc = portfolio.map((c) => ({ ...c, weight: c.market_cap / mcap, targetQuote: portfolioTarget * (c.market_cap / mcap) }));
   const saved = forced.length ? [] : loadMmSet();
   let mmList;
   if (forced.length) mmList = tradable;
@@ -133,7 +129,13 @@ export async function buildLists(cfg, productMap, totalEquity) {
       }
     }
   } else mmList = tradable.slice(0, cfg.mmMaxPairs);
-  const mmCapital = safeSpend(cfg, totalEquity * (forced.length ? 1 : 1 - cfg.portfolioFraction));
+  const skipPort = forced.length > 0 || saved.length > 0;
+  const portfolio = skipPort ? [] : tradable.slice(0, cfg.portfolioCoins);
+  const mcap = portfolio.reduce((s, c) => s + c.market_cap, 0) || 1;
+  const portfolioTarget = skipPort ? 0 : safeSpend(cfg, totalEquity * cfg.portfolioFraction);
+  const portfolioAlloc = portfolio.map((c) => ({ ...c, weight: c.market_cap / mcap, targetQuote: portfolioTarget * (c.market_cap / mcap) }));
+  if (skipPort) console.log('startup inventory only on MM set (no mcap sleeve)');
+  const mmCapital = safeSpend(cfg, totalEquity * (skipPort ? 1 : 1 - cfg.portfolioFraction));
   const mmInvTotal = cfg.mmEnabled ? mmCapital * cfg.mmInventoryFraction * cfg.inventorySafetyMultiplier : 0;
   const mmInvEach = mmList.length ? mmInvTotal / mmList.length : 0;
   const mmAlloc = mmList.map((c) => ({ ...c, weight: 1 / mmList.length, invTargetQuote: mmInvEach }));
