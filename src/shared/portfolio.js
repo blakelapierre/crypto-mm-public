@@ -121,13 +121,6 @@ export async function buildLists(cfg, productMap, totalEquity) {
       if (info) mmList.push({ symbol: sym, market_cap: 1, ...info });
     }
     console.log('MM start from saved set: ' + mmList.map((a) => a.symbol).join(','));
-    if (mmList.length < (cfg.mmMaxPairs || 1)) {
-      for (const c of tradable) {
-        if (mmList.some((a) => a.symbol === c.symbol)) continue;
-        mmList.push(c);
-        if (mmList.length >= cfg.mmMaxPairs) break;
-      }
-    }
   } else mmList = tradable.slice(0, cfg.mmMaxPairs);
   const skipPort = forced.length > 0 || saved.length > 0;
   const portfolio = skipPort ? [] : tradable.slice(0, cfg.portfolioCoins);
