@@ -11,6 +11,7 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle,
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
+import { createVolScan } from '../../shared/vol-scan.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -37,6 +38,47 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       await sleep(cfg.orderPollMs);
     }
   })();
+  const liveVol = !(cfg.symbols && cfg.symbols.length) && String(cfg.mmSelect || process.env.MM_SELECT || 'vol').toLowerCase() === 'vol';
+  if (liveVol) {
+    const volScan = createVolScan(cfg, productMap);
+    console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm');
+    (async () => {
+      while (true) {
+        try {
+          const n = await volScan.tick();
+          const top = volScan.ranking().slice(0, 8);
+          if (top.length) console.log('vol ' + top.map((r) => r.symbol + ' ' + r.rangePct.toFixed(2) + '%').join('  ') + ' (n=' + n + ')');
+        } catch (e) { console.warn('vol scan', e.message); }
+        await sleep(cfg.volScanMs || Number(process.env.VOL_SCAN_MS) || 60000);
+      }
+    })();
+    (async () => {
+      await sleep(Math.max(cfg.volScanMs || 60000, 90000));
+      while (true) {
+        try {
+          const next = volScan.ranking().slice(0, cfg.mmMaxPairs);
+          if (next.length) {
+            const nextPairs = new Set(next.map((a) => a.pair));
+            const prev = new Set(mmAlloc.map((a) => a.pair));
+            const changed = [...nextPairs].some((p) => !prev.has(p)) || [...prev].some((p) => !nextPairs.has(p));
+            if (changed) {
+              console.log('MM rotate -> ' + next.map((a) => a.symbol).join(','));
+              for (const [pair] of pairState) {
+                if (!nextPairs.has(pair)) {
+                  try { await ex.cancelPair(pair); } catch { /* ignore */ }
+                  pairState.delete(pair);
+                }
+              }
+              const invEach = mmAlloc[0] ? mmAlloc[0].invTargetQuote : 0;
+              mmAlloc.length = 0;
+              for (const a of next) mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: invEach });
+            }
+          }
+        } catch (e) { console.warn('vol rotate', e.message); }
+        await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 180000);
+      }
+    })();
+  }
   process.on('SIGINT', () => {
     const mids = {};
     for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
