@@ -15,12 +15,13 @@ const orderRegistry = new Map();
 const pairState = new Map();
 const ex = createExchange(cfg, orderRegistry);
 
-async function runMm(mmAlloc, orderSizeUsd) {
-  console.log('\n══ ladder MM: slide + skew other side ══');
+async function runMm(mmAlloc, orderSizeUsd, productMap) {
+  console.log('\nladder MM: slide + skew other side');
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
     ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st));
   }
+  const getLive = () => fetchLivePortfolio(cfg, ex, productMap);
   (async () => {
     while (true) {
       try { await pollOpenOrders(ex, orderRegistry, cfg); } catch (e) { console.warn('order poll', e.message); }
@@ -30,7 +31,7 @@ async function runMm(mmAlloc, orderSizeUsd) {
   process.on('SIGINT', () => { ws.close(); process.exit(0); });
   while (true) {
     for (const a of mmAlloc) {
-      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd); }
+      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
       catch (e) { console.error(a.symbol, e.message); }
       await sleep(150);
     }
@@ -40,9 +41,7 @@ async function runMm(mmAlloc, orderSizeUsd) {
 
 async function main() {
   console.log(`BOT=ladder exchange=${cfg.exchange} dryRun=${cfg.dryRun} quote=${cfg.quote}`);
-  if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) {
-    throw new Error('Missing Kraken keys');
-  }
+  if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) throw new Error('Missing Kraken keys');
   if (cfg.exchange === 'coinbase') console.log('JWT', ex.loadKeyInfo());
   const productMap = await ex.getProducts();
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
@@ -55,6 +54,6 @@ async function main() {
   live = await waitForSettlement(cfg, ex, productMap, 'after buy pass');
   lists = await buildLists(cfg, productMap, live.totalEquity);
   const orderSizeUsd = getMmOrderSizeUsd(cfg, lists.mmCapital);
-  if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd);
+  if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd, productMap);
 }
 main().catch((e) => { console.error('Fatal:', e.message || e); process.exit(1); });
