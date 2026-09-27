@@ -22,7 +22,6 @@ function coinbaseFee(o, fills = []) {
   }
   return fee;
 }
-let feeDebugOnce = false;
 
 export function createExchange(cfg, orderRegistry) {
   const name = cfg.exchange;
@@ -113,9 +112,10 @@ export function createExchange(cfg, orderRegistry) {
       const info = pairMeta.get(pair);
       const inc = (info && info.quoteIncrement) || (info && info.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
       let px = snapToIncrement(price, inc);
+      let bookSnap = null;
       if (cfg.postOnly) {
         try {
-          const bookSnap = await this.getBook(pair, venue);
+          bookSnap = await this.getBook(pair, venue);
           if (bookSnap) {
             if (side.toLowerCase() === 'buy' && px >= bookSnap.ask) px = snapToIncrement(bookSnap.bid, inc);
             if (side.toLowerCase() === 'sell' && px <= bookSnap.bid) px = snapToIncrement(bookSnap.ask, inc);
@@ -135,7 +135,16 @@ export function createExchange(cfg, orderRegistry) {
             client_order_id: randomUUID(), product_id: pair, side: side.toUpperCase(),
             order_configuration: { limit_limit_gtc: { base_size: String(volume), limit_price: String(price), post_only: cfg.postOnly } },
           });
-          if (res.success === false || res.error_response) { failCtx(res.error_response || res); return null; }
+          if (res.success === false || res.error_response) {
+            failCtx(res.error_response || res);
+            const msg = JSON.stringify(res.error_response || res);
+            if (cfg.postOnly && !meta._retried && /POST_ONLY|INVALID_LIMIT_PRICE/i.test(msg) && bookSnap) {
+              const retryPx = side.toLowerCase() === 'buy' ? snapToIncrement(bookSnap.bid - inc, inc) : snapToIncrement(bookSnap.ask + inc, inc);
+              console.log('  post-only retry ' + side + ' ' + pair + ' ' + price + ' -> ' + retryPx);
+              return this.limitOrder(pair, side, retryPx, volume, Object.assign({}, meta, { _retried: true }), venue);
+            }
+            return null;
+          }
           const oid = (res.success_response && res.success_response.order_id) || res.order_id;
           if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
           return { order_id: oid };
@@ -163,11 +172,6 @@ export function createExchange(cfg, orderRegistry) {
             fills = fl.fills || [];
           } catch { fills = []; }
           const fee = coinbaseFee(o, fills);
-          if (!feeDebugOnce && String(o.status || '').toUpperCase() === 'FILLED') {
-            feeDebugOnce = true;
-            const f0 = fills[0] || {};
-            console.log('FEE DEBUG order.total_fees=', o.total_fees, 'fills=', fills.length, 'f0.commission=', f0.commission, 'f0.liq=', f0.liquidity_indicator, 'f0.detail=', JSON.stringify(f0.commission_detail_total || null));
-          }
           return { status: String(o.status || '').toUpperCase(), raw: o, filledSize: money(o.filled_size), filledValue: money(o.filled_value), fee, avgPrice: money(o.average_filled_price) };
         } catch { return null; }
       }
