@@ -4,6 +4,7 @@ import { normalizeAsset, safeSpend, safeQuoteSize, calculateVolume, formatVolume
 import { coinbaseRequest } from './coinbase.js';
 import { krakenPrivate } from './kraken.js';
 import { getMarketCapRanking } from './coingecko.js';
+import { loadMmSet } from './mm-set.js';
 
 export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchange) {
   const quote = cfg.quote.toUpperCase();
@@ -114,7 +115,24 @@ export async function buildLists(cfg, productMap, totalEquity) {
   const mcap = portfolio.reduce((s, c) => s + c.market_cap, 0) || 1;
   const portfolioTarget = forced.length ? 0 : safeSpend(cfg, totalEquity * cfg.portfolioFraction);
   const portfolioAlloc = portfolio.map((c) => ({ ...c, weight: c.market_cap / mcap, targetQuote: portfolioTarget * (c.market_cap / mcap) }));
-  const mmList = forced.length ? tradable : tradable.slice(0, cfg.mmMaxPairs);
+  const saved = forced.length ? [] : loadMmSet();
+  let mmList;
+  if (forced.length) mmList = tradable;
+  else if (saved.length) {
+    mmList = [];
+    for (const sym of saved) {
+      const info = resolveInfo(sym);
+      if (info) mmList.push({ symbol: sym, market_cap: 1, ...info });
+    }
+    console.log('MM start from saved set: ' + mmList.map((a) => a.symbol).join(','));
+    if (mmList.length < (cfg.mmMaxPairs || 1)) {
+      for (const c of tradable) {
+        if (mmList.some((a) => a.symbol === c.symbol)) continue;
+        mmList.push(c);
+        if (mmList.length >= cfg.mmMaxPairs) break;
+      }
+    }
+  } else mmList = tradable.slice(0, cfg.mmMaxPairs);
   const mmCapital = safeSpend(cfg, totalEquity * (forced.length ? 1 : 1 - cfg.portfolioFraction));
   const mmInvTotal = cfg.mmEnabled ? mmCapital * cfg.mmInventoryFraction * cfg.inventorySafetyMultiplier : 0;
   const mmInvEach = mmList.length ? mmInvTotal / mmList.length : 0;
