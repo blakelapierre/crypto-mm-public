@@ -1,12 +1,13 @@
 import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
-import { safeQuoteSize } from './sizing.js';
+import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey } from './coinbase.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 
 export function createExchange(cfg, orderRegistry) {
   const name = cfg.exchange;
+  const pairMeta = new Map();
   return {
     name,
     loadKeyInfo() {
@@ -28,13 +29,16 @@ export function createExchange(cfg, orderRegistry) {
           if (!base || STABLECOINS.has(base)) continue;
           const bi = p.base_increment || '0.00000001';
           const qi = p.quote_increment || '0.01';
-          map[base] = {
+          const rec = {
             venue: 'coinbase',
             pair: p.product_id || `${base}-${q}`,
-            pairDecimals: Math.max(0, (String(qi).split('.')[1] || '').length),
-            lotDecimals: Math.max(0, (String(bi).split('.')[1] || '').length),
+            quoteIncrement: parseFloat(qi) || 0.01,
+            pairDecimals: incrementDecimals(qi),
+            lotDecimals: incrementDecimals(bi),
             ordermin: parseFloat(p.base_min_size || '0') || 0,
           };
+          map[base] = rec;
+          pairMeta.set(rec.pair, rec);
         }
         return map;
       }
@@ -43,13 +47,22 @@ export function createExchange(cfg, orderRegistry) {
       const map = {};
       const q = cfg.quote.toUpperCase();
       for (const [k, v] of Object.entries(pairs)) {
-        const b = (v.base || '').replace(/^X/, '').replace(/^Z/, '');
-        const qq = (v.quote || '').replace(/^X/, '').replace(/^Z/, '');
+        const b = normalizeAsset(v.base || '');
+        const qq = normalizeAsset(v.quote || '');
         if (qq !== q) continue;
         if (STABLECOINS.has(b) || KEEP_ASSETS.has(b)) continue;
         const base = b === 'XBT' ? 'BTC' : b;
         if (map[base]) continue;
-        map[base] = { venue: 'kraken', pair: k, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, ordermin: parseFloat(v.ordermin || '0') || 0 };
+        const rec = {
+          venue: 'kraken', pair: k,
+          pairDecimals: v.pair_decimals ?? 5,
+          lotDecimals: v.lot_decimals ?? 8,
+          quoteIncrement: 10 ** -(v.pair_decimals ?? 5),
+          ordermin: parseFloat(v.ordermin || '0') || 0,
+        };
+        map[base] = rec;
+        pairMeta.set(k, rec);
+        if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
     },
@@ -109,6 +122,30 @@ export function createExchange(cfg, orderRegistry) {
       return krakenPrivate(cfg, 'AddOrder', { pair, type: 'sell', ordertype: 'market', volume: String(volume) });
     },
     async limitOrder(pair, side, price, volume, meta = {}, venue = name) {
+      const rawPrice = price;
+      const info = pairMeta.get(pair);
+      const inc = info?.quoteIncrement || (info?.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
+      let px = snapToIncrement(price, inc);
+      let bookSnap = null;
+      if (cfg.postOnly) {
+        try {
+          bookSnap = await this.getBook(pair, venue);
+          if (bookSnap) {
+            if (side.toLowerCase() === 'buy' && px >= bookSnap.ask) px = snapToIncrement(bookSnap.bid, inc);
+            if (side.toLowerCase() === 'sell' && px <= bookSnap.bid) px = snapToIncrement(bookSnap.ask, inc);
+          }
+        } catch { /* keep px */ }
+      }
+      price = px;
+      const failCtx = (err) => {
+        console.error('LIMIT FAIL', {
+          venue, pair, side, level: meta.level, size: volume,
+          rawPrice, snappedPrice: price, quoteIncrement: inc,
+          pairDecimals: info?.pairDecimals, postOnly: cfg.postOnly,
+          book: bookSnap ? { bid: bookSnap.bid, ask: bookSnap.ask, mid: bookSnap.mid } : null,
+          error: err,
+        });
+      };
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
         console.log(`[DRY] LIMIT ${venue} ${side} ${volume} @ ${price} ${pair}`);
@@ -121,18 +158,20 @@ export function createExchange(cfg, orderRegistry) {
             client_order_id: randomUUID(), product_id: pair, side: side.toUpperCase(),
             order_configuration: { limit_limit_gtc: { base_size: String(volume), limit_price: String(price), post_only: cfg.postOnly } },
           });
-          if (res.success === false || res.error_response) { console.error('LIMIT FAIL', res.error_response || res); return null; }
+          if (res.success === false || res.error_response) { failCtx(res.error_response || res); return null; }
           const oid = res.success_response?.order_id || res.order_id;
           if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
           return { order_id: oid };
-        } catch (e) { console.error(e.message); return null; }
+        } catch (e) { failCtx(e.message); return null; }
       }
-      const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
-      if (cfg.postOnly) params.oflags = 'post';
-      const r = await krakenPrivate(cfg, 'AddOrder', params);
-      const oid = r.txid?.[0];
-      if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
-      return { order_id: oid };
+      try {
+        const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
+        if (cfg.postOnly) params.oflags = 'post';
+        const r = await krakenPrivate(cfg, 'AddOrder', params);
+        const oid = r.txid?.[0];
+        if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
+        return { order_id: oid };
+      } catch (e) { failCtx(e.message); return null; }
     },
     async getOrderStatus(orderId, venue = name) {
       if (!orderId) return null;
@@ -153,7 +192,7 @@ export function createExchange(cfg, orderRegistry) {
       } catch { return null; }
     },
     async cancelAll(venue = name) {
-      console.log(`\n── Cancel all (${venue}) ──`);
+      console.log(`\nCancel all (${venue})`);
       if (cfg.dryRun) return;
       if (venue === 'coinbase') {
         try {
