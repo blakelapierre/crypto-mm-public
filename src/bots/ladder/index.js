@@ -3,6 +3,7 @@ import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
 import { startCoinbaseUserWs } from '../../shared/coinbase.js';
 import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
+import { createPnl } from '../../shared/pnl.js';
 import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle,
@@ -13,27 +14,40 @@ loadProjectEnv('configs/ladder.env');
 const cfg = baseConfig();
 const orderRegistry = new Map();
 const pairState = new Map();
+const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
 
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
-  console.log('\nladder MM: slide + skew other side');
+  console.log('\nladder MM');
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
-    ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st));
+    ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st, pnl));
   }
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap);
   (async () => {
     while (true) {
-      try { await pollOpenOrders(ex, orderRegistry, cfg); } catch (e) { console.warn('order poll', e.message); }
+      try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
       await sleep(cfg.orderPollMs);
     }
   })();
-  process.on('SIGINT', () => { ws.close(); process.exit(0); });
+  process.on('SIGINT', () => {
+    const mids = {};
+    for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
+    pnl.print(mids, 'MM gain on stop');
+    ws.close(); process.exit(0);
+  });
   while (true) {
     for (const a of mmAlloc) {
       try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
       catch (e) { console.error(a.symbol, e.message); }
       await sleep(150);
+    }
+    if (!runMm._lastPnl || Date.now() - runMm._lastPnl > 30000) {
+      try { pnl.markWallet((await getLive()).totalEquity); } catch { /* ignore */ }
+      const mids = {};
+      for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
+      pnl.print(mids);
+      runMm._lastPnl = Date.now();
     }
     await sleep(cfg.updateIntervalMs);
   }
@@ -53,6 +67,7 @@ async function main() {
   await rebalanceBuysAfterSettle(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after buy pass');
   lists = await buildLists(cfg, productMap, live.totalEquity);
+  pnl.markWallet(live.totalEquity);
   const orderSizeUsd = getMmOrderSizeUsd(cfg, lists.mmCapital);
   if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd, productMap);
 }
