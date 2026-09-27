@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig, envStr, envNum } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
 import { pollOpenOrders } from '../../shared/orders.js';
+import { createPnl } from '../../shared/pnl.js';
 import { fetchLivePortfolio, waitForSettlement } from '../../shared/portfolio.js';
 import { formatVolume } from '../../shared/sizing.js';
 import { processPair } from '../ladder/strategy.js';
@@ -17,6 +18,7 @@ cfg.perSymbolMargin = envNum('PER_SYMBOL_MARGIN', 0.01);
 
 const orderRegistry = new Map();
 const pairState = new Map();
+const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
 const capOf = (eq) => eq * cfg.perSymbolFraction * (1 - cfg.perSymbolMargin);
 
@@ -45,7 +47,6 @@ async function seedInventory(markets, productMap) {
     if (heldVal > invTarget + cfg.minOrderUsd && heldAmt > 0) {
       const sellAmt = formatVolume(heldAmt * ((heldVal - invTarget) / heldVal), m.lotDecimals);
       if (sellAmt >= (m.ordermin || 0) * cfg.volumeSafetyMargin) {
-        console.log('  MARKET SELL', sellAmt);
         await ex.marketSell(m.pair, sellAmt);
         await sleep(cfg.settleWaitMs);
       }
@@ -59,7 +60,6 @@ async function seedInventory(markets, productMap) {
     const minV = (m.ordermin || 0) * cfg.volumeSafetyMargin;
     if (vol < minV) vol = minV;
     vol = formatVolume(vol, m.lotDecimals);
-    console.log(`  MARKET BUY ${vol}`);
     await ex.marketBuy(m.pair, vol, spend);
     await sleep(cfg.settleWaitMs);
   }
@@ -67,31 +67,36 @@ async function seedInventory(markets, productMap) {
 }
 
 async function main() {
-  console.log(`BOT=comp (shared ladder) ${cfg.symbols.join('+')} quote=${cfg.quote} dryRun=${cfg.dryRun}`);
-  if (String(cfg.quote).toUpperCase() !== 'USD') throw new Error(`quote must be USD (got ${cfg.quote})`);
+  console.log(`BOT=comp ${cfg.symbols.join('+')} quote=${cfg.quote} dryRun=${cfg.dryRun}`);
+  if (String(cfg.quote).toUpperCase() !== 'USD') throw new Error(`quote must be USD`);
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Set KRAKEN keys');
   const productMap = await ex.getProducts('kraken');
   const markets = pickMarkets(productMap);
   if (cfg.cancelAllOrdersOnStartup) await ex.cancelAll('kraken');
   let live = await fetchLivePortfolio(cfg, ex, productMap, 'kraken');
-  console.log(`startup cash=${live.freeQuote.toFixed(4)} pos=${live.positionsValue.toFixed(2)} eq=${live.totalEquity.toFixed(2)}`);
   live = await seedInventory(markets, productMap);
-  console.log(`after seed cash=${live.freeQuote.toFixed(4)} pos=${live.positionsValue.toFixed(2)} eq=${live.totalEquity.toFixed(2)}`);
+  pnl.markWallet(live.totalEquity);
   const sizeUsd = Math.max(cfg.minOrderUsd, ((capOf(live.totalEquity) * (1 - cfg.invFraction)) / cfg.mmLevels) * cfg.orderSizeHaircut);
-  console.log(`per-level size ~$${sizeUsd.toFixed(2)}`);
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap, 'kraken');
   (async () => {
     while (true) {
-      try { await pollOpenOrders(ex, orderRegistry, cfg); } catch (e) { console.warn('poll', e.message); }
+      try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('poll', e.message); }
       await sleep(cfg.orderPollMs);
     }
   })();
-  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGINT', () => { pnl.print({}, 'MM gain on stop'); process.exit(0); });
   while (true) {
     for (const m of markets) {
       try { await processPair(cfg, ex, orderRegistry, pairState, m, sizeUsd, getLive); }
       catch (e) { console.error(m.symbol, e.message); }
       await sleep(cfg.rateLimitMs);
+    }
+    if (!main._lastPnl || Date.now() - main._lastPnl > 30000) {
+      try { pnl.markWallet((await getLive()).totalEquity); } catch { /* ignore */ }
+      const mids = {};
+      for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
+      pnl.print(mids);
+      main._lastPnl = Date.now();
     }
     await sleep(cfg.updateIntervalMs);
   }
