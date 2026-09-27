@@ -12,6 +12,7 @@ import {
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
 import { createVolScan } from '../../shared/vol-scan.js';
+import { saveMmSet } from '../../shared/mm-set.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -27,6 +28,7 @@ const ex = createExchange(cfg, orderRegistry);
 
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
   console.log('\nladder MM');
+  saveMmSet(mmAlloc);
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
     ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st, pnl));
@@ -72,6 +74,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               const invEach = mmAlloc[0] ? mmAlloc[0].invTargetQuote : 0;
               mmAlloc.length = 0;
               for (const a of next) mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: invEach });
+              saveMmSet(mmAlloc);
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
@@ -80,6 +83,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     })();
   }
   process.on('SIGINT', () => {
+    saveMmSet(mmAlloc);
     const mids = {};
     for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
     pnl.print(mids, 'MM gain on stop');
