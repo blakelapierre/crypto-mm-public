@@ -15,15 +15,15 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     const accounts = [];
     do {
       let p = '/api/v3/brokerage/accounts?limit=250';
-      if (cursor) p += `&cursor=${encodeURIComponent(cursor)}`;
+      if (cursor) p += '&cursor=' + encodeURIComponent(cursor);
       const data = await coinbaseRequest(cfg, 'GET', p);
       accounts.push(...(data.accounts || []));
       cursor = data.has_next ? data.cursor : null;
     } while (cursor);
     for (const a of accounts) {
       const cur = (a.currency || '').toUpperCase();
-      const avail = parseFloat(a.available_balance?.value || 0);
-      const hold = parseFloat(a.hold?.value || 0);
+      const avail = parseFloat((a.available_balance && a.available_balance.value) || 0);
+      const hold = parseFloat((a.hold && a.hold.value) || 0);
       const amt = avail + hold;
       if (!cur || amt <= 0) continue;
       if (cur === quote) { freeQuote += avail; quoteHold += hold; continue; }
@@ -49,7 +49,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   let positionsValue = 0;
   for (const [sym, pos] of Object.entries(positions)) {
     const info = productMap[sym];
-    if (!info) { console.warn(`  position ${sym} amt=${pos.amount} has no ${cfg.quote} product`); continue; }
+    if (!info) { console.warn('  position ' + sym + ' amt=' + pos.amount + ' has no ' + cfg.quote + ' product'); continue; }
     const book = await ex.getBook(info.pair, venue);
     if (!book) continue;
     pos.mid = book.mid;
@@ -62,41 +62,60 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   if (venue === 'kraken') {
     try {
       const tb = await krakenPrivate(cfg, 'TradeBalance');
-      const eb = parseFloat(tb?.eb || tb?.e || 0);
+      const eb = parseFloat((tb && (tb.eb || tb.e)) || 0);
       if (eb > 0) totalEquity = eb;
-    } catch { /* keep marked sum */ }
+    } catch { /* keep */ }
   }
   return { freeQuote, quoteHold, positions, positionsValue, totalEquity };
 }
 
 export async function waitForSettlement(cfg, ex, productMap, label, venue) {
-  console.log(`\nSettle: ${label}`);
+  console.log('\nSettle: ' + label);
   await sleep(cfg.settleWaitMs);
   let live = null;
   for (let i = 0; i < cfg.settlePolls; i++) {
     live = await fetchLivePortfolio(cfg, ex, productMap, venue);
-    console.log(`  ${i + 1}/${cfg.settlePolls} free=${live.freeQuote.toFixed(2)} pos=${(live.positionsValue || 0).toFixed(2)} eq=${live.totalEquity.toFixed(2)}`);
+    console.log('  ' + (i + 1) + '/' + cfg.settlePolls + ' free=' + live.freeQuote.toFixed(2) + ' pos=' + (live.positionsValue || 0).toFixed(2) + ' eq=' + live.totalEquity.toFixed(2));
     if (i < cfg.settlePolls - 1) await sleep(cfg.settlePollIntervalMs);
   }
   return live;
 }
 
 export async function buildLists(cfg, productMap, totalEquity) {
-  const ranking = await getMarketCapRanking(Math.max(cfg.portfolioCoins, cfg.mmMaxPairs) * 3);
+  const forced = (cfg.symbols || []).map((s) => String(s).toUpperCase()).filter(Boolean);
   const tradable = [];
-  for (const row of ranking) {
-    if (STABLECOINS.has(row.symbol)) continue;
-    const info = productMap[row.symbol];
-    if (!info) continue;
-    tradable.push({ symbol: row.symbol, market_cap: row.market_cap, ...info });
+  function resolveInfo(sym) {
+    if (productMap[sym]) return productMap[sym];
+    const hit = Object.entries(productMap).find(([k, v]) => {
+      const pair = String(v.pair || '').toUpperCase();
+      return k.toUpperCase() === sym || pair.startsWith(sym) || pair.includes(sym + 'USD');
+    });
+    return hit ? hit[1] : null;
   }
-  if (!tradable.length) throw new Error('No pairs');
-  const portfolio = tradable.slice(0, cfg.portfolioCoins);
+  if (forced.length) {
+    console.log('SYMBOLS forced: ' + forced.join(',') + '  products=' + Object.keys(productMap).length);
+    for (const sym of forced) {
+      const info = resolveInfo(sym);
+      if (!info) { console.warn('No ' + cfg.quote + ' product for ' + sym); continue; }
+      tradable.push({ symbol: sym, market_cap: 1, ...info });
+      console.log('  ' + sym + ' -> ' + info.pair + ' venue=' + info.venue);
+    }
+  } else {
+    const ranking = await getMarketCapRanking(Math.max(cfg.portfolioCoins, cfg.mmMaxPairs) * 3);
+    for (const row of ranking) {
+      if (STABLECOINS.has(row.symbol)) continue;
+      const info = productMap[row.symbol];
+      if (!info) continue;
+      tradable.push({ symbol: row.symbol, market_cap: row.market_cap, ...info });
+    }
+  }
+  if (!tradable.length) throw new Error(forced.length ? 'No products for ' + forced.join(',') : 'No pairs');
+  const portfolio = forced.length ? [] : tradable.slice(0, cfg.portfolioCoins);
   const mcap = portfolio.reduce((s, c) => s + c.market_cap, 0) || 1;
-  const portfolioTarget = safeSpend(cfg, totalEquity * cfg.portfolioFraction);
+  const portfolioTarget = forced.length ? 0 : safeSpend(cfg, totalEquity * cfg.portfolioFraction);
   const portfolioAlloc = portfolio.map((c) => ({ ...c, weight: c.market_cap / mcap, targetQuote: portfolioTarget * (c.market_cap / mcap) }));
-  const mmList = tradable.slice(0, cfg.mmMaxPairs);
-  const mmCapital = safeSpend(cfg, totalEquity * (1 - cfg.portfolioFraction));
+  const mmList = forced.length ? tradable : tradable.slice(0, cfg.mmMaxPairs);
+  const mmCapital = safeSpend(cfg, totalEquity * (forced.length ? 1 : 1 - cfg.portfolioFraction));
   const mmInvTotal = cfg.mmEnabled ? mmCapital * cfg.mmInventoryFraction * cfg.inventorySafetyMultiplier : 0;
   const mmInvEach = mmList.length ? mmInvTotal / mmList.length : 0;
   const mmAlloc = mmList.map((c) => ({ ...c, weight: 1 / mmList.length, invTargetQuote: mmInvEach }));
@@ -113,20 +132,21 @@ export async function buildLists(cfg, productMap, totalEquity) {
 }
 
 export function getMmOrderSizeUsd(cfg, mmCapital) {
+  const n = Math.max(1, (cfg.mmLevels || 1) * (cfg.mmMaxPairs || 1));
   const side = mmCapital * Math.min(cfg.mmInventoryFraction, 1 - cfg.mmInventoryFraction);
-  const per = (side / (cfg.mmLevels * cfg.mmMaxPairs)) * cfg.orderSizeHaircut;
+  const per = (side / n) * cfg.orderSizeHaircut;
   return Math.max(per, cfg.minOrderUsd);
 }
 
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   console.log('\nCombined rebalance');
   for (const a of combinedTargets) {
-    const heldVal = live.positions[a.symbol]?.valueQuote || 0;
-    const heldAmt = live.positions[a.symbol]?.amount || 0;
+    const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
+    const heldAmt = (live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
     const target = a.combinedTarget;
     const excess = heldVal - target;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
-    console.log(`${a.symbol}: held ${heldVal.toFixed(2)} target ${target.toFixed(2)}`);
+    console.log(a.symbol + ': held ' + heldVal.toFixed(2) + ' target ' + target.toFixed(2));
     if (excess <= tol || heldAmt <= 0) continue;
     const book = await ex.getBook(a.pair);
     if (!book) continue;
@@ -137,7 +157,7 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   }
   let budget = safeSpend(cfg, live.freeQuote);
   for (const a of combinedTargets) {
-    const heldVal = live.positions[a.symbol]?.valueQuote || 0;
+    const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.combinedTarget;
     const gap = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
@@ -154,7 +174,7 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
 export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
   let budget = safeSpend(cfg, live.freeQuote);
   for (const a of combinedTargets) {
-    const heldVal = live.positions[a.symbol]?.valueQuote || 0;
+    const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.combinedTarget;
     const gap = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
