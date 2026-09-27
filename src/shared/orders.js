@@ -1,3 +1,5 @@
+import { logFill } from './fill-log.js';
+
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
   const st = String(statusRaw || '').toUpperCase();
   const rec = orderRegistry.get(orderId);
@@ -13,12 +15,12 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       rec.status = 'filled';
       console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + (rec.fee ? ' fee=' + Number(rec.fee).toFixed(4) : ' fee=?'));
       if (pnl) pnl.recordFill(rec);
+      logFill(rec, { orderId });
       rec.pnlRecorded = true;
       rec.needFee = !(rec.fee > 0);
     } else if (rec.needFee && rec.fee > 0 && pnl && pnl.adjustFee) {
       pnl.adjustFee(rec, rec.fee);
       rec.needFee = false;
-      console.log('  fee ' + String(orderId).slice(0, 8) + ' ' + Number(rec.fee).toFixed(6));
     }
   } else if (['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(st)) rec.status = 'cancelled';
 }
