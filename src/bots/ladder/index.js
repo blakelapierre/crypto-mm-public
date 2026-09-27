@@ -14,6 +14,11 @@ import { processPair } from './strategy.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
+{
+  const raw = process.env.SYMBOLS || (cfg.symbols || []).join(',');
+  cfg.symbols = String(raw).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+  if (String(process.env.BOT || '').toLowerCase() === 'comp' && !cfg.symbols.length) cfg.symbols = ['GNOT', 'SN64'];
+}
 const orderRegistry = new Map();
 const pairState = new Map();
 const pnl = createPnl();
