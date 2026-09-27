@@ -32,9 +32,18 @@ export function syncLadderFromRegistry(ladder, orderRegistry) {
 }
 
 export function printLadder(symbol, pair, ladder, book) {
+  const live = (o) => o.status === 'open' || o.status === 'pending';
+  const buys = ladder.buys.filter(live);
+  const sells = ladder.sells.filter(live);
+  if (!buys.length && !sells.length) return;
   console.log(`\n[${new Date().toLocaleTimeString()}] ${symbol} ${pair} mid=${book.mid.toFixed(6)}`);
-  for (const o of ladder.buys) console.log(`  BUY  L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
-  for (const o of ladder.sells) console.log(`  SELL L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
+  for (const o of buys) console.log(`  BUY  L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
+  for (const o of sells) console.log(`  SELL L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
+}
+
+function pruneDone(ladder) {
+  ladder.buys = ladder.buys.filter((o) => o.status === 'open' || o.status === 'pending');
+  ladder.sells = ladder.sells.filter((o) => o.status === 'open' || o.status === 'pending');
 }
 
 function resizeLeg(cfg, a, o, live) {
@@ -171,7 +180,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const lastMid = state.lastMid || book.mid;
   const move = Math.abs(book.mid - lastMid) / (lastMid || book.mid);
   const anyOpen = [...ladder.buys, ...ladder.sells].some((o) => o.status === 'open');
-  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || !anyOpen;
+  const staleEmpty = !anyOpen && Date.now() - (state.lastRequoteAt || 0) > 15000;
+  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty;
   if (!filledNow && anyOpen && !needRequote) return;
   if (needRequote && !filledNow) {
     console.log(`  REQUOTE ${a.symbol} mid ${lastMid.toFixed(6)} -> ${book.mid.toFixed(6)} (${(move * 10000).toFixed(1)}bps) open=${anyOpen}`);
@@ -180,7 +190,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await cancelSide(ex, ladder.sells);
     await sleep(cfg.rateLimitMs);
     const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book);
-    state.ladder = next; state.lastMid = book.mid;
+    state.ladder = next; state.lastMid = book.mid; state.lastRequoteAt = Date.now();
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, next, book);
     return;
@@ -199,5 +209,6 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await slideSameSide(cfg, ex, a, ladder, leg);
     await skewOtherSide(cfg, ex, a, ladder, leg);
   }
-  printLadder(a.symbol, a.pair, ladder, book);
+  pruneDone(ladder);
+  if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }
