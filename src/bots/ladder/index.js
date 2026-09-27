@@ -43,7 +43,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       await sleep(150);
     }
     if (!runMm._lastPnl || Date.now() - runMm._lastPnl > 30000) {
-      try { pnl.markWallet((await getLive()).totalEquity); } catch { /* ignore */ }
+      try { pnl.markHoldings(await getLive()); } catch { /* ignore */ }
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       pnl.print(mids);
@@ -67,7 +67,7 @@ async function main() {
   await rebalanceBuysAfterSettle(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after buy pass');
   lists = await buildLists(cfg, productMap, live.totalEquity);
-  pnl.markWallet(live.totalEquity);
+  pnl.markHoldings(live);
   const orderSizeUsd = getMmOrderSizeUsd(cfg, lists.mmCapital);
   if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd, productMap);
 }
