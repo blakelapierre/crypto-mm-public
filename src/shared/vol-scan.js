@@ -16,26 +16,42 @@ export async function fetchAllMids(cfg, productMap) {
     for (const [sym, info] of Object.entries(productMap)) {
       const t = tick[info.pair];
       if (!t) continue;
-      const bid = parseFloat(t.b && t.b[0] || 0);
-      const ask = parseFloat(t.a && t.a[0] || 0);
+      const bid = parseFloat((t.b && t.b[0]) || 0);
+      const ask = parseFloat((t.a && t.a[0]) || 0);
       if (bid && ask) mids[sym] = (bid + ask) / 2;
     }
     return mids;
   }
   if (cfg.exchange !== 'coinbase') return mids;
   const pairs = [...new Set(Object.values(productMap).map((p) => p.pair))];
-  const chunk = 25;
+  const chunk = 10;
   for (let i = 0; i < pairs.length; i += chunk) {
     const ids = pairs.slice(i, i + chunk);
     try {
-      const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + ids.map(encodeURIComponent).join(','));
+      const data = await coinbaseRequest(
+        cfg,
+        'GET',
+        '/api/v3/brokerage/best_bid_ask?' + ids.map((id) => 'product_ids=' + encodeURIComponent(id)).join('&')
+      );
       for (const book of data.pricebooks || []) {
-        const bid = parseFloat(book.bids && book.bids[0] && book.bids[0].price || 0);
-        const ask = parseFloat(book.asks && book.asks[0] && book.asks[0].price || 0);
+        const bid = parseFloat((book.bids && book.bids[0] && book.bids[0].price) || 0);
+        const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
         const sym = rev.get(book.product_id);
         if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
       }
-    } catch (e) { console.warn('vol scan chunk', e.message); }
+    } catch (e) {
+      for (const id of ids) {
+        try {
+          const one = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(id));
+          const book = (one.pricebooks || [])[0];
+          if (!book) continue;
+          const bid = parseFloat((book.bids && book.bids[0] && book.bids[0].price) || 0);
+          const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
+          const sym = rev.get(book.product_id || id);
+          if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
+        } catch { /* skip invalid product_id */ }
+      }
+    }
     if (i + chunk < pairs.length) await sleep(120);
   }
   return mids;
