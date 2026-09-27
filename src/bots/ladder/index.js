@@ -28,7 +28,6 @@ const ex = createExchange(cfg, orderRegistry);
 
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
   console.log('\nladder MM');
-  saveMmSet(mmAlloc);
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
     ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st, pnl));
@@ -100,6 +99,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       pnl.print(mids);
+      saveMmSet(mmAlloc);
       runMm._lastPnl = Date.now();
     }
     await sleep(cfg.updateIntervalMs);
