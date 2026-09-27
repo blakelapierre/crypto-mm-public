@@ -13,6 +13,14 @@ export function snapToIncrement(price, increment) {
   return Number(n.toFixed(incrementDecimals(inc)));
 }
 
+export function formatOnIncrement(price, increment) {
+  const inc = Number(increment);
+  const d = incrementDecimals(inc);
+  if (!Number.isFinite(inc) || inc <= 0) return String(price);
+  const n = Math.round(Number(price) / inc) * inc;
+  return n.toFixed(d);
+}
+
 export function formatPrice(p, d) {
   return Number(Number(p).toFixed(d));
 }
@@ -23,10 +31,7 @@ export function safeSpend(cfg, a) {
   return Math.max(0, Number(a) * cfg.capitalSafetyMargin);
 }
 export function safeQuoteSize(cfg, q) {
-  return Math.max(
-    0,
-    Number(((Number(q) * cfg.orderSizeHaircut) / (1 + cfg.feeBufferPct)).toFixed(2))
-  );
+  return Math.max(0, Number(((Number(q) * cfg.orderSizeHaircut) / (1 + cfg.feeBufferPct)).toFixed(2)));
 }
 export function calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals) {
   let v = sizeUsd / mid;
