@@ -1,7 +1,3 @@
-/**
- * Kraken GNOT + SN64. Same MM engine as src/bots/ladder/strategy.js
- * npm run comp
- */
 import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig, envStr, envNum } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
@@ -30,7 +26,7 @@ function pickMarkets(productMap) {
     const info = productMap[sym];
     if (!info || info.venue !== 'kraken') { console.warn(`No Kraken ${sym}/${cfg.quote}`); continue; }
     out.push({ symbol: sym, ...info });
-    console.log(`Resolved ${sym} → ${info.pair}`);
+    console.log(`Resolved ${sym} -> ${info.pair}`);
   }
   if (!out.length) throw new Error(`No Kraken pairs for ${cfg.symbols.join(',')}`);
   return out;
@@ -83,6 +79,7 @@ async function main() {
   console.log(`after seed cash=${live.freeQuote.toFixed(4)} pos=${live.positionsValue.toFixed(2)} eq=${live.totalEquity.toFixed(2)}`);
   const sizeUsd = Math.max(cfg.minOrderUsd, ((capOf(live.totalEquity) * (1 - cfg.invFraction)) / cfg.mmLevels) * cfg.orderSizeHaircut);
   console.log(`per-level size ~$${sizeUsd.toFixed(2)}`);
+  const getLive = () => fetchLivePortfolio(cfg, ex, productMap, 'kraken');
   (async () => {
     while (true) {
       try { await pollOpenOrders(ex, orderRegistry, cfg); } catch (e) { console.warn('poll', e.message); }
@@ -92,7 +89,7 @@ async function main() {
   process.on('SIGINT', () => process.exit(0));
   while (true) {
     for (const m of markets) {
-      try { await processPair(cfg, ex, orderRegistry, pairState, m, sizeUsd); }
+      try { await processPair(cfg, ex, orderRegistry, pairState, m, sizeUsd, getLive); }
       catch (e) { console.error(m.symbol, e.message); }
       await sleep(cfg.rateLimitMs);
     }
