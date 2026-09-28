@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { noteFeeFill } from './fee-spread.js';
+import { postFill } from './status-client.js';
 
 let resolved = null;
 
@@ -16,13 +17,6 @@ export function logFill(rec, extra = {}) {
   try {
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
     if (notional) noteFeeFill(rec.fee, notional, rec.pair);
-    const dest = filePath();
-    if (!dest) return;
-    if (!resolved) {
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      resolved = dest;
-      console.log('fill log -> ' + dest);
-    }
     const row = {
       ts: new Date().toISOString(),
       orderId: rec.orderId || rec.id || extra.orderId || null,
@@ -38,6 +32,14 @@ export function logFill(rec, extra = {}) {
       filledValue: rec.filledValue != null ? Number(rec.filledValue) : null,
       notional,
     };
+    postFill(row);
+    const dest = filePath();
+    if (!dest) return;
+    if (!resolved) {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      resolved = dest;
+      console.log('fill log -> ' + dest);
+    }
     fs.appendFileSync(dest, JSON.stringify(row) + '\n');
   } catch (e) {
     console.warn('fill log', e.message);

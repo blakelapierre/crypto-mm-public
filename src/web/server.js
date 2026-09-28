@@ -48,6 +48,13 @@ th{color:#8b98a5;font-weight:500}
 .buy{color:#3fb950}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#f85149}
 .dot.ok{background:#3fb950}
+.split{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.split .wallet{flex:0 0 280px;max-width:320px}
+.split .markets{flex:1;min-width:420px}
+.book{width:auto;min-width:320px;font-family:ui-monospace,monospace;font-size:12px}
+.book td.px{text-align:right;font-variant-numeric:tabular-nums}
+.fills{margin-top:12px;font-size:12px}
+.fills td{font-family:ui-monospace,monospace}
 </style>
 </head>
 <body>
@@ -76,23 +83,32 @@ function orderBook(m){
   const ords=m.orders||[];
   const sells=ords.filter(o=>String(o.side).toLowerCase()==='sell').sort((a,b)=>Number(b.price)-Number(a.price));
   const buys=ords.filter(o=>String(o.side).toLowerCase()==='buy').sort((a,b)=>Number(b.price)-Number(a.price));
-  const line=o=>{
-    const side=String(o.side||'').toUpperCase();
-    const cls=side==='SELL'?'sell':'buy';
-    return '<div class="'+cls+'">'+side+' L'+esc(o.level)+' '+esc(o.size)+' @ '+esc(o.price)+
-      ' ~$'+Number(o.usd||0).toFixed(2)+' '+esc(o.status||'')+' '+esc(o.id||'')+'</div>';
-  };
-  return sells.map(line).join('')+
-    '<div class="mid">MID '+esc(m.mid)+'</div>'+
-    buys.map(line).join('');
+  const row=(cls,side,px,size,usd,st,id)=>
+    '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
+  const lines=sells.map(o=>row('sell','SELL L'+o.level,o.price,o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
+  lines.push(row('mid','MID',m.mid,'','','',''));
+  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,o.price,o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
+  return '<table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
+    lines.join('')+'</tbody></table>';
 }
 function walletTable(b){
-  const rows=b.wallet||[];
-  if(!rows.length) return '';
-  const body=rows.map(w=>'<tr><td>'+esc(w.asset)+'</td><td>'+esc(w.amount)+'</td><td>'+esc(w.mid)+'</td><td>'+fmtN(w.value)+'</td></tr>').join('');
+  const rows=[...(b.wallet||[])].sort((a,c)=>Number(c.value||0)-Number(a.value||0));
+  if(!rows.length) return '<h2>Wallet</h2><p class="age">no positions</p>';
+  const body=rows.map(w=>'<tr><td>'+esc(w.asset)+'</td><td>'+esc(w.amount)+'</td><td class="px">'+esc(w.mid)+'</td><td>'+fmtN(w.value)+'</td></tr>').join('');
   const tot=rows.reduce((s,w)=>s+Number(w.value||0),0);
   return '<h2>Wallet</h2><table><thead><tr><th>Asset</th><th>Amount</th><th>Mid</th><th>Value '+esc(b.quote||'')+'</th></tr></thead><tbody>'+
     body+'<tr><td colspan="3">Total</td><td>'+fmtN(tot)+'</td></tr></tbody></table>';
+}
+function fillsTable(b){
+  const rows=(b.fills||[]).slice(0,10);
+  if(!rows.length) return '<div class="fills"><h2>Fills</h2><p class="age">none yet</p></div>';
+  const body=rows.map(f=>{
+    const side=String(f.side||'').toUpperCase();
+    const cls=side==='SELL'?'sell':'buy';
+    const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
+    return '<tr class="'+cls+'"><td>'+esc(when)+'</td><td>'+side+'</td><td>'+esc(f.symbol||f.pair||'')+'</td><td class="px">'+esc(f.price)+'</td><td>'+esc(f.size)+'</td><td>'+fmtN(f.notional||f.filledValue)+'</td><td>'+esc(f.fee)+'</td></tr>';
+  }).join('');
+  return '<div class="fills"><h2>Fills</h2><table><thead><tr><th>Time</th><th></th><th>Mkt</th><th>Price</th><th>Size</th><th>$</th><th>Fee</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function card(b){
   const p=b.pnl||{};
@@ -120,9 +136,9 @@ function card(b){
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div></div>'+
-    apiBlock(b)+walletTable(b)+
-    '<table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
-    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></section>';
+    apiBlock(b)+fillsTable(b)+
+    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
+    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
 }
 function render(data){
   const rows=data.bots||[];
@@ -167,7 +183,25 @@ const server = http.createServer(async (req, res) => {
     for await (const c of req) body += c;
     try {
       const msg = JSON.parse(body || '{}');
-      bots.set(String(msg.bot || 'unknown'), { ...msg, ts: Date.now() });
+      const id = String(msg.bot || 'unknown');
+      const prev = bots.get(id) || {};
+      bots.set(id, { ...prev, ...msg, fills: msg.fills || prev.fills || [], bot: id, ts: Date.now() });
+      broadcast();
+      res.writeHead(204); res.end();
+    } catch { res.writeHead(400); res.end('bad json'); }
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/fill') {
+    if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const id = String(msg.bot || 'unknown');
+      const prev = bots.get(id) || { bot: id };
+      const fill = msg.fill || msg;
+      const fills = [fill, ...(prev.fills || [])].slice(0, 10);
+      bots.set(id, { ...prev, fills, bot: id });
       broadcast();
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
