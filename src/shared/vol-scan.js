@@ -108,6 +108,7 @@ function loadVolInto(history) {
 
 const lastScore = new Map();
 const lastMeta = new Map();
+let lastHistory = new Map();
 let universe = [];
 
 export function setSizeUniverse(symbols) {
@@ -129,11 +130,15 @@ export function sizeWeightForSymbol(sym) {
 export function volStatsForSymbol(sym) {
   return lastMeta.get(String(sym || '').toUpperCase()) || null;
 }
+export function midHistory(sym) {
+  return lastHistory.get(String(sym || '').toUpperCase()) || [];
+}
 
 export function createVolScan(cfg, productMap) {
   const windowMs = (cfg.volWindowMin || 15) * 60 * 1000;
   const history = new Map();
   loadVolInto(history);
+  lastHistory = history;
   function push(sym, mid, now) {
     if (!(mid > 0)) return;
     if (!history.has(sym)) history.set(sym, []);

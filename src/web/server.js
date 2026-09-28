@@ -1,6 +1,7 @@
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { loadProjectEnv } from '../shared/env.js';
+import { backtestRungs } from '../shared/rungs.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
 

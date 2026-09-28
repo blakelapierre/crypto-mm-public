@@ -1,22 +1,32 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
-import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
+import { sizeWeightForSymbol, volStatsForSymbol, midHistory } from '../../shared/vol-scan.js';
 import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
+import { backtestRungs } from '../../shared/rungs.js';
+import { realizedFeeBps } from '../../shared/fee-spread.js';
 
 function rangeFrac(symbol) {
   const vs = volStatsForSymbol(symbol);
   return vs && vs.rangePct > 0 ? vs.rangePct / 100 : 0;
 }
-function ladderLevelCount(cfg, range) {
+function rungHint(pair, symbol) {
+  if (String(process.env.RUNG_BACKTEST || '1') === '0') return null;
+  const pts = midHistory(symbol).map((x) => ({ t: x.t, p: x.mid }));
+  return backtestRungs(pts, realizedFeeBps(pair));
+}
+function ladderLevelCount(cfg, range, hint = null) {
+  if (hint && hint.levels) return hint.levels;
   let n = cfg.mmLevels || 1;
   if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) n = Math.max(n, Number(process.env.MM_VOL_LEVELS || 3));
   return n;
 }
 function gridStep(cfg, pair, symbol) {
+  const hint = rungHint(pair, symbol);
   const feeStep = applySpreadFromFees(cfg, pair) / 10000;
+  if (hint && hint.stepBps) return Math.max(feeStep, hint.stepBps / 10000);
   const range = rangeFrac(symbol);
-  const levels = ladderLevelCount(cfg, range);
+  const levels = ladderLevelCount(cfg, range, hint);
   const widen = Number(process.env.MM_RANGE_WIDEN || 0.5);
   let step = feeStep * (1 + range * widen / Math.max(feeStep, 1e-6) * 0.01);
   step = Math.max(feeStep, step);
@@ -51,8 +61,9 @@ function exitStep(cfg, pair, symbol) {
 }
 
 export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null, symbol = null, live = null) {
+  const hint = rungHint(pair, symbol);
   const step = gridStep(cfg, pair, symbol);
-  const levels = ladderLevelCount(cfg, rangeFrac(symbol));
+  const levels = ladderLevelCount(cfg, rangeFrac(symbol), hint);
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
   const sk = inventorySkew(live, symbol);
   const bidOff = step * (1 + sk);
@@ -322,7 +333,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const wChg = wOld > 0 ? Math.abs(wNow - wOld) / wOld : 0;
   const wTrig = Number(process.env.SIZE_RESCALE_PCT || 0.08);
   const needResize = wChg >= wTrig;
-  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize;
+  const hint = rungHint(a.pair, a.symbol);
+  const hintKey = hint ? (hint.levels + '@' + hint.stepBps) : '';
+  const needRungs = hintKey && hintKey !== (state.rungKey || '');
+  if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
+  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs;
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if ((needRequote && !filledNow) || pulled) {
     console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
@@ -335,6 +350,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     state.lastMid = book.mid;
     state.lastRequoteAt = Date.now();
     state.lastWeight = wNow;
+    state.rungKey = hintKey;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, state.ladder, book);
     return;
