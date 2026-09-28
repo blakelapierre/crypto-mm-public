@@ -14,7 +14,7 @@ import {
 import { processPair } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { saveMmSet } from '../../shared/mm-set.js';
-import { realizedFeeBps } from '../../shared/fee-spread.js';
+import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
