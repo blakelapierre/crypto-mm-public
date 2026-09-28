@@ -51,6 +51,8 @@ export function startKrakenUserWs(cfg, onStatus) {
             avgPrice: parseFloat(o.price || 0) || 0,
             filledValue: parseFloat(o.cost || 0) || 0,
             fee: parseFloat(o.fee || 0) || 0,
+            ordertype: o.ordertype || o.orderType,
+            taker: /market/i.test(String(o.ordertype || o.orderType || '')),
           });
         } else if (channel === 'openOrders' || o.status) {
           const map = { closed: 'FILLED', open: 'OPEN', canceled: 'CANCELLED', cancelled: 'CANCELLED', expired: 'EXPIRED' };
