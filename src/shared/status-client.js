@@ -2,6 +2,9 @@ import { bankedTotalUsd, bankedRunUsd } from './bank.js';
 
 const url = () => process.env.STATUS_URL || '';
 const token = () => process.env.STATUS_TOKEN || '';
+function base() {
+  return String(url() || '').replace(/\/$/, '').replace(/\/(status|fill|mids|orders)$/,'');
+}
 
 function headers() {
   return {
@@ -14,7 +17,7 @@ export function postStatus(payload) {
   const dest = url();
   if (!dest) return;
   const body = JSON.stringify({ ...payload, banked: bankedTotalUsd(), bankedRun: bankedRunUsd(), ts: Date.now() });
-  fetch(dest.replace(/\/$/, '') + '/status', { method: 'POST', headers: headers(), body })
+  fetch(base() + '/status', { method: 'POST', headers: headers(), body })
     .catch((e) => console.warn('status post', e.message));
 }
 
@@ -25,7 +28,7 @@ export function postFill(fill) {
     bot: process.env.BOT || 'ladder',
     fill: { ...fill, ts: fill.ts || new Date().toISOString() },
   });
-  fetch(dest.replace(/\/$/, '') + '/fill', { method: 'POST', headers: headers(), body })
+  fetch(base() + '/fill', { method: 'POST', headers: headers(), body })
     .catch((e) => console.warn('fill post', e.message));
 }
 
@@ -44,7 +47,7 @@ export function postMids(rows) {
     const mids = [...midBuf.values()];
     midBuf.clear();
     if (!mids.length) return;
-    fetch(dest.replace(/\/$/, '') + '/mids', {
+    fetch(base() + '/mids', {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify({ bot: process.env.BOT || 'ladder', mids }),
@@ -61,6 +64,6 @@ export function postOrders(symbol, orders, extra = {}) {
     orders,
     ...extra,
   });
-  fetch(dest.replace(/\/$/, '') + '/orders', { method: 'POST', headers: headers(), body })
+  fetch(base() + '/orders', { method: 'POST', headers: headers(), body })
     .catch((e) => console.warn('orders post', e.message));
 }

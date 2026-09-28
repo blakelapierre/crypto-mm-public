@@ -427,7 +427,22 @@ function connect(){
   const ws=new WebSocket(proto+'://'+location.host+'/ws'+q);
   const dot=document.getElementById('conn');
   ws.onopen=()=>{dot.innerHTML='<span class="dot ok"></span>live';};
-  ws.onmessage=(ev)=>{try{render(JSON.parse(ev.data));}catch(e){}};
+  let last=null;
+  ws.onmessage=(ev)=>{try{
+    const msg=JSON.parse(ev.data);
+    if(msg&&msg.type==='orders'&&last){
+      const bot=(last.bots||[]).find(b=>b.bot===msg.bot);
+      if(bot){
+        let m=(bot.markets||[]).find(x=>String(x.symbol).toUpperCase()===String(msg.symbol||'').toUpperCase());
+        if(!m){m={symbol:msg.symbol,orders:[]};bot.markets=bot.markets||[];bot.markets.push(m);}
+        m.orders=msg.orders||[];
+        if(msg.mid)m.mid=msg.mid;
+      }
+      render(last);return;
+    }
+    if(msg&&msg.bots) last=msg;
+    render(msg);
+  }catch(e){}};
   ws.onclose=()=>{dot.innerHTML='<span class="dot"></span>reconnect';setTimeout(connect,1500);};
   ws.onerror=()=>ws.close();
 }
@@ -524,6 +539,10 @@ const server = http.createServer(async (req, res) => {
       if (msg.pair) m.pair = msg.pair;
       bots.set(id, { ...prev, markets, bot: id });
       broadcast();
+      try {
+        const frame = JSON.stringify({ type: 'orders', bot: id, symbol: msg.symbol, orders: m.orders, mid: m.mid });
+        for (const c of wss.clients) if (c.readyState === 1) c.send(frame);
+      } catch { /* ignore */ }
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
     return;

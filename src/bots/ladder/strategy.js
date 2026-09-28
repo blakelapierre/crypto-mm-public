@@ -11,7 +11,7 @@ import { realizedFeeBps } from '../../shared/fee-spread.js';
 function publishOrders(a, ladder, mid) {
   if (!a || !ladder) return;
   const legs = [...(ladder.buys || []), ...(ladder.sells || [])];
-  const orders = legs.filter((o) => o.status === 'open' || o.status === 'pending').map((o) => ({
+  const orders = legs.filter((o) => o.status === 'open' || o.status === 'pending' || o.status === 'failed').map((o) => ({
     side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
     usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
   }));
@@ -365,8 +365,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if ((needRequote && !filledNow) || pulled) {
     console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
     await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open'));
-    await sleep(cfg.rateLimitMs);
     await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open'));
+    publishOrders(a, ladder, book.mid);
     await sleep(cfg.rateLimitMs);
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     state.ladder = next;
