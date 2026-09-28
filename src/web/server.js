@@ -124,6 +124,9 @@ tr.sell,tr.sell td{color:#f85149}
 tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:8px;opacity:.75;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
+.book-wrap{display:flex;gap:12px;align-items:flex-start}
+.book-wrap .mfills{font-size:11px;min-width:160px}
+.book-wrap .mfills .buy{color:#3fb950}.book-wrap .mfills .sell{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 #board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
@@ -294,8 +297,14 @@ function orderBook(m){
   const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
   lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','',''));
   buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
-  return '<table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
-    lines.join('')+'</tbody></table>';
+  const fills=(m.sparkFills||[]).slice().sort(function(a,c){return Date.parse(c.ts||0)-Date.parse(a.ts||0);}).slice(0,5);
+  const fl=fills.map(function(f){
+    const side=String(f.side||'').toLowerCase();
+    const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
+    return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
+  }).join('')||'<div class="age">no fills</div>';
+  return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
+    lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div></div>';
 }
 function walletTable(b){
   const rows=[...(b.wallet||[])].sort((a,c)=>Number(c.value||0)-Number(a.value||0));
