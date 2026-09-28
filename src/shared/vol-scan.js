@@ -57,6 +57,25 @@ export async function fetchAllMids(cfg, productMap) {
   return mids;
 }
 
+const lastScore = new Map();
+let universe = [];
+
+export function setSizeUniverse(symbols) {
+  universe = (symbols || []).map((s) => String(s).toUpperCase()).filter(Boolean);
+}
+
+export function sizeWeightForSymbol(sym) {
+  if (!lastScore.size) return 1;
+  const key = String(sym || '').toUpperCase();
+  const names = universe.length ? universe : [...lastScore.keys()];
+  const scores = names.map((s) => Math.max(1e-9, lastScore.get(s) || 0));
+  const sum = scores.reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) return 1;
+  const mine = Math.max(1e-9, lastScore.get(key) || sum / names.length);
+  const n = Math.max(1, names.length);
+  return Math.min(3, Math.max(0.35, (mine / sum) * n));
+}
+
 export function createVolScan(cfg, productMap) {
   const windowMs = (cfg.volWindowMin || 15) * 60 * 1000;
   const history = new Map();
@@ -92,6 +111,8 @@ export function createVolScan(cfg, productMap) {
       rows.push({ symbol: sym, ...productMap[sym], volScore: sigma * Math.sqrt(rets.length) + range, rangePct: range * 100, samples: arr.length, last });
     }
     rows.sort((a, b) => b.volScore - a.volScore);
+    lastScore.clear();
+    for (const r of rows) lastScore.set(r.symbol, r.volScore);
     return rows;
   }
   return { tick, ranking, history };
