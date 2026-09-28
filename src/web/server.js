@@ -53,7 +53,8 @@ function htmlPage() {
       '<div><label>PRICE</label><b>' + fmt(p.pricePnl) + '</b></div>' +
       '<div><label>MAKER</label><b>' + fmt(p.makerPnl) + '</b></div>' +
       '<div><label>FEES</label><b>' + fmt(p.fees != null ? -p.fees : null) + '</b></div>' +
-      '<div><label>TAKER</label><b>' + fmt(p.otherPnl) + '</b></div>' +
+      '<div><label>TAKER</label><b>' + fmt(p.takerFees != null ? -p.takerFees : null) + '</b></div>' +
+      '<div><label>GAP</label><b>' + fmt(p.otherPnl) + '</b></div>' +
       '<div><label>BANK</label><b>' + fmt(b.banked) + '</b></div>' +
       '<div><label>Bids</label><b>' + fmtN(w.bids) + '</b></div>' +
       '<div><label>Asks</label><b>' + fmtN(w.asks) + '</b></div>' +
