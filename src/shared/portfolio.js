@@ -48,10 +48,17 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     return { freeQuote: cfg.totalCapitalOverride || 100, quoteHold: 0, positions: {}, positionsValue: 0, totalEquity: cfg.totalCapitalOverride || 100 };
   }
   let positionsValue = 0;
+  const pairList = [];
+  const want = [];
   for (const [sym, pos] of Object.entries(positions)) {
     const info = productMap[sym];
     if (!info) { console.warn('  position ' + sym + ' amt=' + pos.amount + ' has no ' + cfg.quote + ' product'); continue; }
-    const book = await ex.getBook(info.pair, venue);
+    pairList.push(info.pair);
+    want.push([sym, pos, info]);
+  }
+  const books = ex.getBooks ? await ex.getBooks(pairList, venue) : new Map();
+  for (const [sym, pos, info] of want) {
+    const book = books.get(info.pair) || null;
     if (!book) continue;
     pos.mid = book.mid;
     pos.valueQuote = pos.amount * book.mid;
@@ -60,7 +67,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     positionsValue += pos.valueQuote;
   }
   let totalEquity = freeQuote + quoteHold + positionsValue;
-  if (venue === 'kraken') {
+  if (venue === 'kraken' && process.env.KRAKEN_TRADE_BALANCE === '1') {
     try {
       const tb = await krakenPrivate(cfg, 'TradeBalance');
       const eb = parseFloat((tb && (tb.eb || tb.e)) || 0);
@@ -73,11 +80,12 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
 export async function waitForSettlement(cfg, ex, productMap, label, venue) {
   console.log('\nSettle: ' + label);
   await sleep(cfg.settleWaitMs);
+  const polls = (venue === 'kraken' || cfg.exchange === 'kraken') ? Math.min(cfg.settlePolls || 3, 2) : (cfg.settlePolls || 3);
   let live = null;
-  for (let i = 0; i < cfg.settlePolls; i++) {
+  for (let i = 0; i < polls; i++) {
     live = await fetchLivePortfolio(cfg, ex, productMap, venue);
-    console.log('  ' + (i + 1) + '/' + cfg.settlePolls + ' free=' + live.freeQuote.toFixed(2) + ' pos=' + (live.positionsValue || 0).toFixed(2) + ' eq=' + live.totalEquity.toFixed(2));
-    if (i < cfg.settlePolls - 1) await sleep(cfg.settlePollIntervalMs);
+    console.log('  ' + (i + 1) + '/' + polls + ' free=' + live.freeQuote.toFixed(2) + ' pos=' + (live.positionsValue || 0).toFixed(2) + ' eq=' + live.totalEquity.toFixed(2));
+    if (i < polls - 1) await sleep(cfg.settlePollIntervalMs);
   }
   return live;
 }
