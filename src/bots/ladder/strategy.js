@@ -242,12 +242,13 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     book = { mid: st0.lastMid, bid: st0.lastBid || st0.lastMid, ask: st0.lastAsk || st0.lastMid, pair: a.pair };
   }
   if (!book) return;
-  const sized = orderSizeUsd * sizeWeightForSymbol(a.symbol);
+  const wNow = sizeWeightForSymbol(a.symbol);
+  const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
   const tick = Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals));
   if (!pairState.has(a.pair)) {
     const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
-    pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid });
+    pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid, lastWeight: wNow });
     console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
     printLadder(a.symbol, a.pair, ladder, book);
@@ -292,10 +293,14 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const openSell = ladder.sells.some((o) => o.status === 'open');
   const anyOpen = openBuy || openSell;
   const staleEmpty = !anyOpen && Date.now() - (state.lastRequoteAt || 0) > 15000;
-  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty;
-  if (!filledNow && openBuy && openSell && !needRequote) return;
+  const wOld = state.lastWeight != null ? Number(state.lastWeight) : wNow;
+  const wChg = wOld > 0 ? Math.abs(wNow - wOld) / wOld : 0;
+  const wTrig = Number(process.env.SIZE_RESCALE_PCT || 0.08);
+  const needResize = wChg >= wTrig;
+  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize;
+  if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if ((needRequote && !filledNow) || pulled) {
-    console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : ''));
+    console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
     await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open'));
     await sleep(cfg.rateLimitMs);
     await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open'));
@@ -304,6 +309,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     state.ladder = next;
     state.lastMid = book.mid;
     state.lastRequoteAt = Date.now();
+    state.lastWeight = wNow;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, state.ladder, book);
     return;
@@ -314,7 +320,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await cancelSide(ex, ladder.buys);
     await cancelSide(ex, ladder.sells);
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
-    state.ladder = next; state.lastMid = book.mid;
+    state.ladder = next; state.lastMid = book.mid; state.lastWeight = wNow;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     return;
   }
