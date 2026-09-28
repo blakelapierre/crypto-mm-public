@@ -86,7 +86,13 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
   }
   if (bid1 >= ask1) { bid1 = mid - tick; ask1 = mid + tick; }
-  if (sk) console.log('  SKEW inv ' + symbol + ' ' + sk.toFixed(2) + ' bidOff=' + (bidOff * 10000).toFixed(1) + 'bps askOff=' + (askOff * 10000).toFixed(1) + 'bps');
+  const skewKey = String(symbol || '');
+  const nowSk = Date.now();
+  if (sk && nowSk - (generateLadder._skewAt && generateLadder._skewAt[skewKey] || 0) > 30000) {
+    generateLadder._skewAt = generateLadder._skewAt || {};
+    generateLadder._skewAt[skewKey] = nowSk;
+    console.log('  SKEW inv ' + symbol + ' ' + sk.toFixed(2) + ' bidOff=' + (bidOff * 10000).toFixed(1) + 'bps askOff=' + (askOff * 10000).toFixed(1) + 'bps');
+  }
   const buys = []; const sells = [];
   for (let i = 1; i <= levels; i++) {
     const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
@@ -342,11 +348,12 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const staleEmpty = !anyOpen && Date.now() - (state.lastRequoteAt || 0) > 15000;
   const wOld = state.lastWeight != null ? Number(state.lastWeight) : wNow;
   const wChg = wOld > 0 ? Math.abs(wNow - wOld) / wOld : 0;
-  const wTrig = Number(process.env.SIZE_RESCALE_PCT || 0.08);
-  const needResize = wChg >= wTrig;
+  const wTrig = Number(process.env.SIZE_RESCALE_PCT || 0.25);
+  const needResize = wChg >= wTrig && move > 0;
   const hint = rungHint(a.pair, a.symbol);
   const hintKey = hint ? (hint.levels + '@' + hint.stepBps) : '';
-  const needRungs = hintKey && hintKey !== (state.rungKey || '');
+  const rungAge = Date.now() - (state.lastRungAt || 0);
+  const needRungs = hintKey && hintKey !== (state.rungKey || '') && rungAge > Number(process.env.RUNG_REQUOTE_MS || 60000);
   if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
   const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs;
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
@@ -362,6 +369,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     state.lastRequoteAt = Date.now();
     state.lastWeight = wNow;
     state.rungKey = hintKey;
+    if (needRungs) state.lastRungAt = Date.now();
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, state.ladder, book);
     return;

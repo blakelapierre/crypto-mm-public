@@ -29,8 +29,15 @@ export function midReturn(symbol, windowMs = WINDOW) {
   return (b - a) / a;
 }
 
+const trendEma = new Map();
 export function trendMult(symbol) {
   const ret = midReturn(symbol);
   const k = Number(process.env.TREND_GAIN || 25);
-  return Math.max(0.25, Math.min(2.2, 1 + ret * k));
+  const raw = Math.max(0.25, Math.min(2.2, 1 + ret * k));
+  const key = String(symbol || '').toUpperCase();
+  const prev = trendEma.get(key);
+  const a = Number(process.env.TREND_EMA || 0.15);
+  const sm = prev == null ? raw : prev + a * (raw - prev);
+  trendEma.set(key, sm);
+  return sm;
 }
