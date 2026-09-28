@@ -153,6 +153,12 @@ export function getMmOrderSizeUsd(cfg, mmCapital) {
 
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   console.log('\nCombined rebalance');
+  const wanted = new Set(combinedTargets.map((a) => a.symbol));
+  console.log('wallet:');
+  for (const [sym, pos] of Object.entries(live.positions || {})) {
+    console.log('  ' + sym + ' amt=' + pos.amount + ' val=' + (pos.valueQuote || 0).toFixed(2) + ' ' + (wanted.has(sym) ? 'MM' : 'ORPHAN'));
+  }
+  console.log('  cash ' + cfg.quote + '=' + (live.freeQuote || 0).toFixed(2) + ' eq=' + (live.totalEquity || 0).toFixed(2));
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const heldAmt = (live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
@@ -166,6 +172,19 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     let sellAmt = formatVolume(heldAmt * (excess / heldVal), a.lotDecimals);
     if (sellAmt < (a.ordermin || 0) * cfg.volumeSafetyMargin) continue;
     try { await ex.marketSell(a.pair, sellAmt); } catch (e) { console.warn('  sell ' + a.symbol + ' skip: ' + e.message); }
+    await sleep(cfg.rateLimitMs);
+  }
+  for (const [sym, pos] of Object.entries(live.positions || {})) {
+    if (wanted.has(sym)) continue;
+    const heldVal = pos.valueQuote || 0;
+    const heldAmt = pos.amount || 0;
+    console.log(sym + ': held ' + heldVal.toFixed(2) + ' target 0 (not in MM set)');
+    if (heldVal < cfg.minOrderUsd || heldAmt <= 0) continue;
+    if (!pos.pair) { console.warn('  ' + sym + ' no ' + cfg.quote + ' pair'); continue; }
+    const sellAmt = formatVolume(heldAmt, pos.lotDecimals);
+    if (sellAmt < (pos.ordermin || 0) * cfg.volumeSafetyMargin) continue;
+    console.log('  MARKET SELL ' + sellAmt + ' ' + sym + ' (orphan)');
+    try { await ex.marketSell(pos.pair, sellAmt); } catch (e) { console.warn('  sell ' + sym + ' skip: ' + e.message); }
     await sleep(cfg.rateLimitMs);
   }
   let budget = safeSpend(cfg, live.freeQuote);
