@@ -11,8 +11,9 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle,
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
-import { createVolScan, setSizeUniverse } from '../../shared/vol-scan.js';
+import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { saveMmSet } from '../../shared/mm-set.js';
+import { realizedFeeBps } from '../../shared/fee-spread.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -101,6 +102,25 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       pnl.print(mids);
+      console.log('  -- markets --');
+      for (const a of mmAlloc) {
+        const st = pairState.get(a.pair);
+        const legs = st && st.ladder ? [...st.ladder.buys, ...st.ladder.sells] : [];
+        const bids = legs.filter((o) => o.side === 'buy' && o.status === 'open').length;
+        const asks = legs.filter((o) => o.side === 'sell' && o.status === 'open').length;
+        const mid = st && st.lastMid;
+        const vs = volStatsForSymbol(a.symbol);
+        const fee = realizedFeeBps(a.pair);
+        const w = sizeWeightForSymbol(a.symbol);
+        console.log(
+          '  ' + String(a.symbol).padEnd(8) +
+            ' mid=' + (mid ? Number(mid).toFixed(6) : 'n/a') +
+            '  bid/ask ' + bids + '/' + asks +
+            '  w=' + w.toFixed(2) + 'x' +
+            '  vol=' + (vs ? vs.rangePct.toFixed(2) + '%' : 'n/a') +
+            '  fee=' + (fee != null ? fee.toFixed(1) + 'bps' : 'n/a')
+        );
+      }
       saveMmSet(mmAlloc);
       runMm._lastPnl = Date.now();
     }
