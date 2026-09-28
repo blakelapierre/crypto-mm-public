@@ -155,7 +155,8 @@ function resizeLeg(cfg, a, o, live) {
     return formatVolume(size, a.lotDecimals);
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
-  let size = Math.min(o.size, held * hair);
+  const nSell = Math.max(1, ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
+  let size = Math.min(o.size, (held * hair) / nSell);
   if (size + 1e-12 < minV) return held >= minV ? formatVolume(Math.min(held * hair, o.size), a.lotDecimals) : 0;
   return formatVolume(size, a.lotDecimals);
 }
@@ -318,9 +319,10 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const state = pairState.get(a.pair);
   const ladder = state.ladder;
-  const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol));
+  const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol));
   const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
-  if (wantLv > haveLv) {
+  const tooNew = Date.now() - (state.bornAt || 0) < 120000;
+  if (wantLv > haveLv && !tooNew) {
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     const extraB = next.buys.filter((o) => o.level > haveLv);
     const extraS = next.sells.filter((o) => o.level > haveLv);
