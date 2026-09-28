@@ -84,11 +84,48 @@ export function createExchange(cfg, orderRegistry) {
       const t = ticker[Object.keys(ticker)[0]];
       return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair, venue };
     },
+    async _touchThenMarket(pair, side, volume, quoteAmount, venue) {
+      const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 15000);
+      if (!(waitMs > 0) || cfg.dryRun) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
+      let book;
+      try { book = await this.getBook(pair, venue); } catch { book = null; }
+      if (!book) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
+      const px = side === 'buy' ? book.bid : book.ask;
+      if (!(px > 0)) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
+      let vol = Number(volume);
+      if (!(vol > 0) && quoteAmount > 0) vol = Number(quoteAmount) / px;
+      if (!(vol > 0)) return { remainVol: 0, remainQuote: 0, filled: 0 };
+      console.log('  TOUCH ' + side + ' ' + pair + ' ' + vol + ' @ ' + px + ' wait ' + waitMs + 'ms');
+      const r = await this.limitOrder(pair, side, px, vol, { level: 0 }, venue);
+      const id = r && r.order_id;
+      if (!id) return { remainVol: vol, remainQuote: quoteAmount, filled: 0 };
+      const t0 = Date.now();
+      let st = null;
+      while (Date.now() - t0 < waitMs) {
+        await sleep(1000);
+        st = await this.getOrderStatus(id, venue);
+        const s = String((st && st.status) || '').toUpperCase();
+        if (s === 'FILLED' || s === 'CANCELLED' || s === 'EXPIRED' || s === 'FAILED') break;
+      }
+      try { await this.cancelOrder(id, venue); } catch { /* done */ }
+      st = (await this.getOrderStatus(id, venue)) || st;
+      const filled = Number((st && st.filledSize) || 0);
+      const filledVal = Number((st && st.filledValue) || filled * px);
+      const remainVol = Math.max(0, vol - filled);
+      let remainQuote = quoteAmount;
+      if (quoteAmount != null) remainQuote = Math.max(0, Number(quoteAmount) - filledVal);
+      console.log('  TOUCH filled ' + filled + ' remain ' + remainVol);
+      return { remainVol, remainQuote, filled };
+    },
     async marketBuy(pair, volume, quoteAmount = null, venue = name) {
       const sq = quoteAmount != null ? safeQuoteSize(cfg, quoteAmount) : null;
       if (cfg.dryRun) { console.log('[DRY] MARKET BUY', venue, pair); return { ok: true }; }
+      const touch = await this._touchThenMarket(pair, 'buy', volume, sq, venue);
+      if (!(touch.remainVol > 0) && !(touch.remainQuote > 0)) return { ok: true, touched: true };
+      volume = touch.remainVol;
+      const useQ = touch.remainQuote != null ? touch.remainQuote : sq;
       if (venue === 'coinbase') {
-        const order_configuration = sq != null ? { market_market_ioc: { quote_size: String(sq) } } : { market_market_ioc: { base_size: String(volume) } };
+        const order_configuration = useQ != null ? { market_market_ioc: { quote_size: String(useQ) } } : { market_market_ioc: { base_size: String(volume) } };
         try {
           const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', { client_order_id: randomUUID(), product_id: pair, side: 'BUY', order_configuration });
           if (res.success === false || res.error_response) { console.error('MARKET BUY FAIL', res.error_response || res); return null; }
@@ -99,6 +136,9 @@ export function createExchange(cfg, orderRegistry) {
     },
     async marketSell(pair, volume, venue = name) {
       if (cfg.dryRun) { console.log('[DRY] MARKET SELL', venue, pair, volume); return { ok: true }; }
+      const touch = await this._touchThenMarket(pair, 'sell', volume, null, venue);
+      if (!(touch.remainVol > 0)) return { ok: true, touched: true };
+      volume = touch.remainVol;
       if (venue === 'coinbase') {
         try {
           const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', { client_order_id: randomUUID(), product_id: pair, side: 'SELL', order_configuration: { market_market_ioc: { base_size: String(volume) } } });
