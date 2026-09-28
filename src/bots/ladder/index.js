@@ -154,6 +154,14 @@ async function main() {
     } catch (e) { console.warn('startup bank skim', e.message); }
   }
   let lists = await buildLists(cfg, productMap, live.totalEquity);
+  const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
+  const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
+  if (dump.length && cfg.exchange !== 'print') {
+    console.log('startup sell non-MM: ' + dump.join(','));
+    await liquidateSymbols(cfg, ex, live, dump);
+    live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
+    lists = await buildLists(cfg, productMap, live.totalEquity);
+  }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');
   lists = await buildLists(cfg, productMap, live.totalEquity);
