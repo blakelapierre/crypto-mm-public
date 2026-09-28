@@ -363,9 +363,9 @@ function card(b){
     '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+
       '<span>/h '+fmt(q.bank)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,false))+
       '<span>/d '+fmt(q.bank*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,true))+'</div></div>'+
-    apiBlock(b)+fillsTable(b)+
+    
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
-    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
+    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+fillsTable(b)+apiBlock(b)+'</section>';
 }
 function boardHtml(rows){
   return (rows||[]).map(function(b){
