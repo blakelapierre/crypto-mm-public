@@ -29,7 +29,7 @@ function bpsFrom(rows) {
 }
 
 export function assumedMakerFeeBps(cfg = {}) {
-  return Number(process.env.MAKER_FEE_BPS || cfg.makerFeeBps || 50);
+  return Number(process.env.MAKER_FEE_BPS || cfg.makerFeeBps || 35);
 }
 
 export function realizedFeeBps(pair = null) {
@@ -50,7 +50,7 @@ export function spreadBpsForPair(cfg, pair = null) {
   const fee = realizedFeeBps(pair);
   const base = Number(cfg.mmSpreadBps || 15);
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
-  const lo = Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 70);
+  const lo = Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 55);
   const hi = Number(cfg.maxHalfSpreadBps || 250);
   const raw = Math.max(base, (fee || assumedMakerFeeBps(cfg)) + edge);
   return Math.min(hi, Math.max(lo, raw));
