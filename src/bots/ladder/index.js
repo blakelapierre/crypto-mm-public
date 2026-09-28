@@ -17,7 +17,7 @@ import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus } from '../../shared/status-client.js';
-import { snapshotApi } from '../../shared/api-timing.js';
+import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -202,6 +202,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
 }
 
 async function main() {
+  startApiTally(Number(process.env.API_TALLY_MS || 10000));
   console.log('BOT=' + (process.env.BOT || 'ladder') + ' exchange=' + cfg.exchange + ' dryRun=' + cfg.dryRun + ' quote=' + cfg.quote + ' symbols=' + (cfg.symbols || []).join(','));
   if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) throw new Error('Missing Kraken keys');
   if (cfg.exchange === 'coinbase') console.log('JWT', ex.loadKeyInfo());
