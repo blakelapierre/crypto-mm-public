@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import qs from 'querystring';
 import WebSocket from 'ws';
+import { noteApi } from './api-timing.js';
 
 const KRAKEN_BASE = 'https://api.kraken.com';
 
@@ -14,17 +15,24 @@ function krakenSign(reqPath, postData, secret) {
 }
 
 export async function krakenPrivate(cfg, endpoint, params = {}) {
-  const reqPath = `/0/private/${endpoint}`;
-  const nonce = Date.now() * 1000;
-  const body = { nonce, ...params };
-  const res = await fetch(KRAKEN_BASE + reqPath, {
-    method: 'POST',
-    headers: { 'API-Key': cfg.krakenApiKey, 'API-Sign': krakenSign(reqPath, body, cfg.krakenApiSecret), 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: qs.stringify(body),
-  });
-  const data = await res.json();
-  if (data.error && data.error.length) throw new Error(data.error.join(' | '));
-  return data.result;
+  const t0 = Date.now();
+  try {
+    const reqPath = '/0/private/' + endpoint;
+    const nonce = Date.now() * 1000;
+    const body = { nonce, ...params };
+    const res = await fetch(KRAKEN_BASE + reqPath, {
+      method: 'POST',
+      headers: { 'API-Key': cfg.krakenApiKey, 'API-Sign': krakenSign(reqPath, body, cfg.krakenApiSecret), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: qs.stringify(body),
+    });
+    const data = await res.json();
+    noteApi('kraken', endpoint, Date.now() - t0, !(data.error && data.error.length));
+    if (data.error && data.error.length) throw new Error(data.error.join(' | '));
+    return data.result;
+  } catch (e) {
+    noteApi('kraken', endpoint, Date.now() - t0, false);
+    throw e;
+  }
 }
 
 export function startKrakenUserWs(cfg, onStatus) {
@@ -66,10 +74,7 @@ export function startKrakenUserWs(cfg, onStatus) {
           const map = { closed: 'FILLED', open: 'OPEN', pending: 'OPEN', canceled: 'CANCELLED', cancelled: 'CANCELLED', expired: 'EXPIRED' };
           const st = map[raw];
           if (!st) continue;
-          onStatus(id, st, {
-            filledSize: parseFloat(o.vol_exec || 0) || 0,
-            avgPrice: parseFloat(o.avg_price || o.avgPrice || 0) || 0,
-          });
+          onStatus(id, st, { filledSize: parseFloat(o.vol_exec || 0) || 0, avgPrice: parseFloat(o.avg_price || o.avgPrice || 0) || 0 });
         }
       }
     }
@@ -110,8 +115,14 @@ export function startKrakenUserWs(cfg, onStatus) {
   return { close() { closed = true; try { if (ws) ws.close(); } catch { /* ignore */ } } };
 }
 
+export function toWsPair(pair) {
+  const s = String(pair || '');
+  if (!s || s.includes('/')) return s;
+  return s.replace(/(USD[CT]?|EUR|GBP)$/i, '/$1');
+}
+
 export function startKrakenTickerWs(pairs, onTick) {
-  const list = [...new Set((pairs || []).filter(Boolean))];
+  const list = [...new Set((pairs || []).map(toWsPair).filter(Boolean))];
   if (!list.length) return { close() {}, setPairs() {} };
   let ws = null;
   let timer = null;
@@ -128,6 +139,11 @@ export function startKrakenTickerWs(pairs, onTick) {
     ws.on('message', (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
+      if (msg && msg.event === 'subscriptionStatus') {
+        if (msg.status === 'error') console.warn('Kraken ticker sub', msg.errorMessage || JSON.stringify(msg));
+        else console.log('Kraken ticker sub', msg.status, msg.pair || msg.channelName || '');
+        return;
+      }
       if (!Array.isArray(msg)) return;
       const ch = msg[2] || msg[1];
       if (ch !== 'ticker') return;
@@ -149,14 +165,21 @@ export function startKrakenTickerWs(pairs, onTick) {
   connect();
   return {
     close() { closed = true; try { if (ws) ws.close(); } catch { /* ignore */ } },
-    setPairs(next) { want = [...new Set((next || []).filter(Boolean))]; subscribe(ws, want); },
+    setPairs(next) { want = [...new Set((next || []).map(toWsPair).filter(Boolean))]; subscribe(ws, want); },
   };
 }
 
 export async function krakenPublic(endpoint, params = {}) {
-  const q = qs.stringify(params);
-  const res = await fetch(KRAKEN_BASE + '/0/public/' + endpoint + (q ? '?' + q : ''));
-  const data = await res.json();
-  if (data.error && data.error.length) throw new Error(data.error.join(' | '));
-  return data.result;
+  const t0 = Date.now();
+  try {
+    const q = qs.stringify(params);
+    const res = await fetch(KRAKEN_BASE + '/0/public/' + endpoint + (q ? '?' + q : ''));
+    const data = await res.json();
+    noteApi('kraken', 'PUB ' + endpoint, Date.now() - t0, !(data.error && data.error.length));
+    if (data.error && data.error.length) throw new Error(data.error.join(' | '));
+    return data.result;
+  } catch (e) {
+    noteApi('kraken', 'PUB ' + endpoint, Date.now() - t0, false);
+    throw e;
+  }
 }
