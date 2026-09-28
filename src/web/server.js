@@ -31,13 +31,16 @@ function fmtN(n) {
 function sumMarkets(b, key) {
   return (b.markets || []).reduce((s, m) => s + Number(m[key] || 0), 0);
 }
+function weightOf(m) {
+  return Number(m.wNum || parseFloat(m.w) || 0);
+}
 
 function htmlPage() {
   const rows = collect();
   const cards = rows.map((b) => {
     const p = b.pnl || {};
     const w = b.working || {};
-    const mk = (b.markets || []).map((m) =>
+    const mk = [...(b.markets || [])].sort((x, y) => weightOf(y) - weightOf(x)).map((m) =>
       '<tr><td>' + esc(m.symbol) + '</td><td>' + esc(m.mid) + '</td><td>' + m.bids + '/' + m.asks +
       '</td><td>' + fmtN(m.bidUsd) + '</td><td>' + fmtN(m.askUsd) +
       '</td><td>' + fmtN(m.buyUsd) + '</td><td>' + fmtN(m.sellUsd) +
