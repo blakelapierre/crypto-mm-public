@@ -7,7 +7,7 @@ import { noteApi, noteApiCacheHit } from './api-timing.js';
 const COINBASE_BASE = 'https://api.coinbase.com';
 export const COINBASE_USER_WS = 'wss://advanced-trade-ws-user.coinbase.com';
 const bookHttpCache = new Map();
-function bookCacheTtl() { return Number(process.env.BOOK_CACHE_MS || 1000); }
+function bookCacheTtl() { return Number(process.env.BOOK_CACHE_MS || 300); }
 
 function base64url(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
@@ -25,19 +25,14 @@ export function readCoinbaseSecretRaw(cfg) {
     if (!fs.existsSync(full)) throw new Error('Missing ' + full);
     secret = fs.readFileSync(full, 'utf8');
   }
-  if (!secret) {
-    throw new Error('Set COINBASE_API_SECRET or COINBASE_API_SECRET_FILE=./coinbase.pem');
-  }
+  if (!secret) throw new Error('Set COINBASE_API_SECRET or COINBASE_API_SECRET_FILE=./coinbase.pem');
   return String(secret).trim().replace(/\\n/g, '\n');
 }
 
 export function loadCoinbaseSigningKey(cfg) {
   const raw = readCoinbaseSecretRaw(cfg);
   if (raw.includes('BEGIN')) {
-    for (const pem of [
-      raw,
-      raw.replace('BEGIN EC PRIVATE KEY', 'BEGIN PRIVATE KEY').replace('END EC PRIVATE KEY', 'END PRIVATE KEY'),
-    ]) {
+    for (const pem of [raw, raw.replace('BEGIN EC PRIVATE KEY', 'BEGIN PRIVATE KEY').replace('END EC PRIVATE KEY', 'END PRIVATE KEY')]) {
       try {
         const privateKey = crypto.createPrivateKey(pem);
         return { privateKey, alg: privateKey.asymmetricKeyType === 'ed25519' ? 'EdDSA' : 'ES256' };
@@ -60,8 +55,7 @@ export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {})
   if (!forWebsocket && method && reqPath) {
     const pathOnly = reqPath.split('?')[0];
     const uriClaim = method + ' api.coinbase.com' + pathOnly;
-    payload.uri = uriClaim;
-    payload.uris = [uriClaim];
+    payload.uri = uriClaim; payload.uris = [uriClaim];
   }
   const data = base64url(JSON.stringify(header)) + '.' + base64url(JSON.stringify(payload));
   const sig = alg === 'EdDSA'
@@ -76,10 +70,7 @@ export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
     if (method === 'GET' && String(reqPath).includes('best_bid_ask')) {
       const ttl = bookCacheTtl();
       const hit = bookHttpCache.get(reqPath);
-      if (ttl > 0 && hit && Date.now() - hit.at < ttl) {
-        noteApiCacheHit();
-        return hit.data;
-      }
+      if (ttl > 0 && hit && Date.now() - hit.at < ttl) { noteApiCacheHit(); return hit.data; }
     }
     const headers = {
       Authorization: 'Bearer ' + coinbaseJwt(cfg, method, reqPath),
@@ -94,9 +85,7 @@ export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, res.ok);
     if (!res.ok) throw new Error('Coinbase ' + res.status + ' ' + method + ' ' + reqPath + ': ' + JSON.stringify(data));
-    if (method === 'GET' && String(reqPath).includes('best_bid_ask')) {
-      bookHttpCache.set(reqPath, { at: Date.now(), data });
-    }
+    if (method === 'GET' && String(reqPath).includes('best_bid_ask')) bookHttpCache.set(reqPath, { at: Date.now(), data });
     return data;
   } catch (e) {
     noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, false);
@@ -126,12 +115,10 @@ export function startCoinbaseUserWs(cfg, onStatus) {
     try { ws = new WebSocket(COINBASE_USER_WS); } catch (e) { console.warn('WS create failed', e.message); schedule(); return; }
     ws.on('open', () => {
       console.log('Coinbase user WS connected');
-      const jwt = coinbaseJwt(cfg, null, null, { forWebsocket: true });
-      ws.send(JSON.stringify({ type: 'subscribe', channel: 'user', jwt }));
+      ws.send(JSON.stringify({ type: 'subscribe', channel: 'user', jwt: coinbaseJwt(cfg, null, null, { forWebsocket: true }) }));
     });
     ws.on('message', (buf) => {
-      let msg;
-      try { msg = JSON.parse(buf.toString()); } catch { return; }
+      let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
       if (msg.channel === 'subscriptions' || msg.type === 'heartbeat') return;
       const events = msg.events || (msg.type ? [msg] : []);
       for (const ev of events) {
@@ -147,10 +134,7 @@ export function startCoinbaseUserWs(cfg, onStatus) {
     ws.on('close', () => { console.warn('Coinbase user WS closed'); schedule(); });
     ws.on('error', (e) => console.warn('WS error', e.message));
   };
-  const schedule = () => {
-    if (timer) return;
-    timer = setTimeout(() => { timer = null; connect(); }, 5000);
-  };
+  const schedule = () => { if (timer) return; timer = setTimeout(() => { timer = null; connect(); }, 5000); };
   connect();
   return { close() { try { if (ws) ws.close(); } catch { /* ignore */ } } };
 }
