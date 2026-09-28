@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
+import { noteApi } from './api-timing.js';
 
 const COINBASE_BASE = 'https://api.coinbase.com';
 export const COINBASE_USER_WS = 'wss://advanced-trade-ws-user.coinbase.com';
@@ -10,20 +11,20 @@ function base64url(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
   return buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
+function shortPath(p) {
+  return String(p || '').split('?')[0].replace('/api/v3/brokerage', '');
+}
 
 export function readCoinbaseSecretRaw(cfg) {
   let secret = cfg.coinbaseApiSecret;
   const file = process.env.COINBASE_API_SECRET_FILE;
   if (file) {
     const full = path.resolve(process.cwd(), file);
-    if (!fs.existsSync(full)) throw new Error(`Missing ${full}`);
+    if (!fs.existsSync(full)) throw new Error('Missing ' + full);
     secret = fs.readFileSync(full, 'utf8');
   }
   if (!secret) {
-    throw new Error(
-      'Set COINBASE_API_SECRET or COINBASE_API_SECRET_FILE=./coinbase.pem (full CDP PEM). ' +
-        'If you only have Kraken keys, set EXCHANGE=kraken and QUOTE=USD in configs/ladder.env.'
-    );
+    throw new Error('Set COINBASE_API_SECRET or COINBASE_API_SECRET_FILE=./coinbase.pem');
   }
   return String(secret).trim().replace(/\\n/g, '\n');
 }
@@ -38,24 +39,14 @@ export function loadCoinbaseSigningKey(cfg) {
       try {
         const privateKey = crypto.createPrivateKey(pem);
         return { privateKey, alg: privateKey.asymmetricKeyType === 'ed25519' ? 'EdDSA' : 'ES256' };
-      } catch {
-        /* next */
-      }
+      } catch { /* next */ }
     }
     throw new Error('Bad Coinbase PEM');
   }
   const decoded = Buffer.from(raw.replace(/\s+/g, ''), 'base64');
-  if (decoded.length !== 64 && decoded.length !== 32) {
-    throw new Error(`Ed25519 length ${decoded.length}`);
-  }
-  const der = Buffer.concat([
-    Buffer.from('302e020100300506032b657004220420', 'hex'),
-    decoded.subarray(0, 32),
-  ]);
-  return {
-    privateKey: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }),
-    alg: 'EdDSA',
-  };
+  if (decoded.length !== 64 && decoded.length !== 32) throw new Error('Ed25519 length ' + decoded.length);
+  const der = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), decoded.subarray(0, 32)]);
+  return { privateKey: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }), alg: 'EdDSA' };
 }
 
 export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {}) {
@@ -66,39 +57,52 @@ export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {})
   const payload = { sub: keyName, iss: 'cdp', aud: ['cdp_service'], nbf: now, exp: now + 120 };
   if (!forWebsocket && method && reqPath) {
     const pathOnly = reqPath.split('?')[0];
-    const uriClaim = `${method} api.coinbase.com${pathOnly}`;
+    const uriClaim = method + ' api.coinbase.com' + pathOnly;
     payload.uri = uriClaim;
     payload.uris = [uriClaim];
   }
-  const data = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
-  const sig =
-    alg === 'EdDSA'
-      ? crypto.sign(null, Buffer.from(data), privateKey)
-      : crypto.sign('sha256', Buffer.from(data), { key: privateKey, dsaEncoding: 'ieee-p1363' });
-  return `${data}.${base64url(sig)}`;
+  const data = base64url(JSON.stringify(header)) + '.' + base64url(JSON.stringify(payload));
+  const sig = alg === 'EdDSA'
+    ? crypto.sign(null, Buffer.from(data), privateKey)
+    : crypto.sign('sha256', Buffer.from(data), { key: privateKey, dsaEncoding: 'ieee-p1363' });
+  return data + '.' + base64url(sig);
 }
 
 export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
-  const headers = {
-    Authorization: `Bearer ${coinbaseJwt(cfg, method, reqPath)}`,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  const opts = { method, headers };
-  if (bodyObj && method !== 'GET') opts.body = JSON.stringify(bodyObj);
-  const res = await fetch(COINBASE_BASE + reqPath, opts);
-  const text = await res.text();
-  let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(`Coinbase ${res.status} ${method} ${reqPath}: ${JSON.stringify(data)}`);
-  return data;
+  const t0 = Date.now();
+  try {
+    const headers = {
+      Authorization: 'Bearer ' + coinbaseJwt(cfg, method, reqPath),
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    const opts = { method, headers };
+    if (bodyObj && method !== 'GET') opts.body = JSON.stringify(bodyObj);
+    const res = await fetch(COINBASE_BASE + reqPath, opts);
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, res.ok);
+    if (!res.ok) throw new Error('Coinbase ' + res.status + ' ' + method + ' ' + reqPath + ': ' + JSON.stringify(data));
+    return data;
+  } catch (e) {
+    noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, false);
+    throw e;
+  }
 }
 
 export async function coinbasePublic(reqPath) {
-  const res = await fetch(COINBASE_BASE + reqPath, { headers: { Accept: 'application/json' } });
-  const data = await res.json();
-  if (!res.ok) throw new Error(JSON.stringify(data));
-  return data;
+  const t0 = Date.now();
+  try {
+    const res = await fetch(COINBASE_BASE + reqPath, { headers: { Accept: 'application/json' } });
+    const data = await res.json();
+    noteApi('coinbase', 'PUB ' + shortPath(reqPath), Date.now() - t0, res.ok);
+    if (!res.ok) throw new Error(JSON.stringify(data));
+    return data;
+  } catch (e) {
+    noteApi('coinbase', 'PUB ' + shortPath(reqPath), Date.now() - t0, false);
+    throw e;
+  }
 }
 
 export function startCoinbaseUserWs(cfg, onStatus) {
@@ -135,5 +139,5 @@ export function startCoinbaseUserWs(cfg, onStatus) {
     timer = setTimeout(() => { timer = null; connect(); }, 5000);
   };
   connect();
-  return { close() { try { ws?.close(); } catch { /* ignore */ } } };
+  return { close() { try { if (ws) ws.close(); } catch { /* ignore */ } } };
 }
