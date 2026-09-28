@@ -15,6 +15,7 @@ import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol 
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
+import { postStatus } from '../../shared/status-client.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -112,8 +113,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       try { pnl.markHoldings(await getLive()); } catch { /* ignore */ }
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
-      pnl.print(mids);
+      const snap = pnl.print(mids);
       console.log('  -- markets --');
+      const marketRows = [];
       for (const a of mmAlloc) {
         const st = pairState.get(a.pair);
         const legs = st && st.ladder ? [...st.ladder.buys, ...st.ladder.sells] : [];
@@ -123,6 +125,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const vs = volStatsForSymbol(a.symbol);
         const fee = realizedFeeBps(a.pair);
         const w = sizeWeightForSymbol(a.symbol);
+        marketRows.push({
+          symbol: a.symbol,
+          mid: mid ? Number(mid).toFixed(6) : 'n/a',
+          bids, asks,
+          vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
+          fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
+          w: w.toFixed(2) + 'x',
+        });
         console.log(
           '  ' + String(a.symbol).padEnd(8) +
             ' mid=' + (mid ? Number(mid).toFixed(6) : 'n/a') +
@@ -133,6 +143,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         );
       }
       saveMmSet(mmAlloc);
+      postStatus({ bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote, pnl: snap, markets: marketRows });
       runMm._lastPnl = Date.now();
     }
     await sleep(cfg.updateIntervalMs);
