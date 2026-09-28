@@ -274,7 +274,7 @@ export function createExchange(cfg, orderRegistry) {
       if (String(orderId).startsWith('dry-')) return { status: (orderRegistry.get(orderId) || {}).status || 'open' };
       if (cfg.useUserWebsocket && process.env.COINBASE_REST_STATUS !== '1' && process.env.KRAKEN_REST_STATUS !== '1') {
         const rec = orderRegistry.get(orderId);
-        if (rec) {
+        if (rec && !rec.needFee) {
           return {
             status: String(rec.status || 'open').toUpperCase(),
             filledSize: rec.filledSize || 0,
