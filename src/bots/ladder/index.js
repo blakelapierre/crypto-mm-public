@@ -83,7 +83,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             await sleep(Math.min(15000, rotateMin));
             continue;
           }
-          const next = volScan.ranking().slice(0, cfg.mmMaxPairs);
+          const ranked = volScan.ranking();
+          const bandN = cfg.mmMaxPairs + Number(process.env.ROTATE_HYSTERESIS || 2);
+          const band = new Set(ranked.slice(0, bandN).map((r) => r.pair));
+          const next = mmAlloc.filter((a) => band.has(a.pair));
+          for (const r of ranked) {
+            if (next.length >= cfg.mmMaxPairs) break;
+            if (!next.some((x) => x.pair === r.pair)) next.push(r);
+          }
           if (next.length) {
             const nextPairs = new Set(next.map((a) => a.pair));
             const prev = new Set(mmAlloc.map((a) => a.pair));
