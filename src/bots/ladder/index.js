@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
 import { startCoinbaseUserWs } from '../../shared/coinbase.js';
+import { startKrakenUserWs } from '../../shared/kraken.js';
 import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
 import { createPnl } from '../../shared/pnl.js';
 import {
@@ -34,7 +35,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   setSizeUniverse(mmAlloc.map((a) => a.symbol));
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
-    ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st, pnl));
+    ws = startCoinbaseUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
+  } else if (cfg.exchange === 'kraken') {
+    ws = startKrakenUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
   }
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap);
   (async () => {
@@ -140,17 +143,21 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x',
+          wNum: w,
         });
+      }
+      marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
+      for (const m of marketRows) {
         console.log(
-          '  ' + String(a.symbol).padEnd(8) +
-            ' mid=' + (mid ? Number(mid).toFixed(6) : 'n/a') +
-            '  bid/ask ' + bids + '/' + asks +
-            '  bid$=' + bidUsd.toFixed(2) + ' ask$=' + askUsd.toFixed(2) +
-            '  vol buy=$' + Number(book.buyUsd || 0).toFixed(2) +
-            ' sell=$' + Number(book.sellUsd || 0).toFixed(2) +
-            '  w=' + w.toFixed(2) + 'x' +
-            '  range=' + (vs ? vs.rangePct.toFixed(2) + '%' : 'n/a') +
-            '  fee=' + (fee != null ? fee.toFixed(1) + 'bps' : 'n/a')
+          '  ' + String(m.symbol).padEnd(8) +
+            ' mid=' + m.mid +
+            '  bid/ask ' + m.bids + '/' + m.asks +
+            '  bid$=' + Number(m.bidUsd).toFixed(2) + ' ask$=' + Number(m.askUsd).toFixed(2) +
+            '  vol buy=$' + Number(m.buyUsd || 0).toFixed(2) +
+            ' sell=$' + Number(m.sellUsd || 0).toFixed(2) +
+            '  w=' + m.w +
+            '  range=' + m.vol +
+            '  fee=' + m.fee
         );
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
