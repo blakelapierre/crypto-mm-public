@@ -62,7 +62,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   const liveVol = !(cfg.symbols && cfg.symbols.length) && String(cfg.mmSelect || process.env.MM_SELECT || 'vol').toLowerCase() === 'vol';
   if (liveVol) {
     const volScan = createVolScan(cfg, productMap);
-    const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 300000);
+    const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 900000);
     console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm rotateMin=' + (rotateMin / 1000) + 's');
     (async () => {
       while (true) {
