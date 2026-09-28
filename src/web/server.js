@@ -40,12 +40,18 @@ function htmlPage() {
   const cards = rows.map((b) => {
     const p = b.pnl || {};
     const w = b.working || {};
-    const mk = [...(b.markets || [])].sort((x, y) => weightOf(y) - weightOf(x)).map((m) =>
-      '<tr><td>' + esc(m.symbol) + '</td><td>' + esc(m.mid) + '</td><td>' + m.bids + '/' + m.asks +
-      '</td><td>' + fmtN(m.bidUsd) + '</td><td>' + fmtN(m.askUsd) +
-      '</td><td>' + fmtN(m.buyUsd) + '</td><td>' + fmtN(m.sellUsd) +
-      '</td><td>' + esc(m.vol) + '</td><td>' + esc(m.fee) + '</td><td>' + esc(m.w) + '</td></tr>'
-    ).join('');
+    const mk = [...(b.markets || [])].sort((x, y) => weightOf(y) - weightOf(x)).map((m) => {
+      const ords = (m.orders || []).map((o) =>
+        String(o.side || '').toUpperCase() + ' L' + o.level + ' ' + o.size + ' @ ' + o.price +
+        ' ~$' + Number(o.usd || 0).toFixed(2) + ' ' + (o.status || '') + ' ' + (o.id || '')
+      ).join('<br/>');
+      return '<tr><td>' + esc(m.symbol) + '</td><td>' + esc(m.mid) + '</td><td>' + m.bids + '/' + m.asks +
+        '<div class="ord">bid $' + fmtN(m.bidUsd) + ' / ask $' + fmtN(m.askUsd) + '</div></td>' +
+        '<td>' + fmtN(m.bidUsd) + '</td><td>' + fmtN(m.askUsd) +
+        '</td><td>' + fmtN(m.buyUsd) + '</td><td>' + fmtN(m.sellUsd) +
+        '</td><td>' + esc(m.vol) + '</td><td>' + esc(m.fee) + '</td><td>' + esc(m.w) + '</td></tr>' +
+        '<tr class="orders"><td></td><td colspan="9">' + (ords || 'no open orders') + '</td></tr>';
+    }).join('');
     const age = b.ts ? Math.round((Date.now() - b.ts) / 1000) + 's ago' : '';
     return '<section class="card"><h2>' + esc(b.bot) + ' <small>' + esc(b.exchange || '') + ' ' +
       esc(b.quote || '') + '</small> <span class="age">' + age + '</span></h2><div class="kpi">' +
@@ -66,7 +72,7 @@ function htmlPage() {
       (mk || '<tr><td colspan="10">no markets</td></tr>') + '</tbody></table></section>';
   }).join('');
   return '<!doctype html><html><head><meta charset="utf-8"/><meta http-equiv="refresh" content="5"/>' +
-    '<title>crypto-mm status</title><style>:root{color-scheme:dark}body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}h1{font-size:20px;font-weight:600}h2{font-size:16px;margin:0 0 12px}h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}.kpi div{min-width:90px}.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}.kpi b{font-size:16px}.kpi span{display:block;font-size:12px;color:#8b98a5}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}th{color:#8b98a5;font-weight:500}</style></head><body><h1>crypto-mm status</h1><p class="age">' +
+    '<title>crypto-mm status</title><style>:root{color-scheme:dark}body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}h1{font-size:20px;font-weight:600}h2{font-size:16px;margin:0 0 12px}h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}.kpi div{min-width:90px}.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}.kpi b{font-size:16px}.kpi span{display:block;font-size:12px;color:#8b98a5}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}th{color:#8b98a5;font-weight:500}.ord,tr.orders td{color:#8b98a5;font-size:12px;font-family:ui-monospace,monospace}</style></head><body><h1>crypto-mm status</h1><p class="age">' +
     (rows.length ? rows.length + ' bot(s)' : 'waiting for bot POSTs to /status') +
     ' · auto-refresh 5s</p>' +
     (cards || '<p>No reports yet. Start ladder/comp with STATUS_URL=http://127.0.0.1:' + PORT + '</p>') +
