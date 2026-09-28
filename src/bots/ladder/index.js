@@ -17,6 +17,7 @@ import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
+import { noteMid } from '../../shared/mid-ring.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -44,7 +45,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const n = String(tk.pair || '').toUpperCase();
         if (p === n || p.replace('-USDC', '-USD') === n.replace('-USDC', '-USD')) {
           st.lastMid = tk.mid; st.lastBid = tk.bid; st.lastAsk = tk.ask;
-          if (st.symbol) postMids([{ symbol: st.symbol, pair, mid: tk.mid, bid: tk.bid, ask: tk.ask }]);
+          if (st.symbol) { noteMid(st.symbol, tk.mid); postMids([{ symbol: st.symbol, pair, mid: tk.mid, bid: tk.bid, ask: tk.ask }]); }
         }
       }
     });

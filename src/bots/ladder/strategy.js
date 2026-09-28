@@ -1,9 +1,10 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
-import { sizeWeightForSymbol, volStatsForSymbol, midHistory } from '../../shared/vol-scan.js';
+import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
+import { midRing, noteMid } from '../../shared/mid-ring.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 
 function rangeFrac(symbol) {
@@ -12,8 +13,7 @@ function rangeFrac(symbol) {
 }
 function rungHint(pair, symbol) {
   if (String(process.env.RUNG_BACKTEST || '1') === '0') return null;
-  const pts = midHistory(symbol).map((x) => ({ t: x.t, p: x.mid }));
-  return backtestRungs(pts, realizedFeeBps(pair));
+  return backtestRungs(midRing(symbol), realizedFeeBps(pair));
 }
 function ladderLevelCount(cfg, range, hint = null) {
   if (hint && hint.levels) return hint.levels;
@@ -278,6 +278,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     book = { mid: st0.lastMid, bid: st0.lastBid || st0.lastMid, ask: st0.lastAsk || st0.lastMid, pair: a.pair };
   }
   if (!book) return;
+  if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
