@@ -26,7 +26,7 @@ function noteSparks(bot, markets) {
   }
 }
 function sparkSeries(bot, symbol) {
-  return (sparks.get(bot + ':' + symbol) || []).map((x) => x.p);
+  return sparks.get(bot + ':' + symbol) || [];
 }
 
 function auth(req) {
@@ -38,7 +38,7 @@ function auth(req) {
 function collect() {
   return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot))).map((b) => ({
     ...b,
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol) })),
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: (b.fills || []).filter((f) => String(f.symbol || '').toUpperCase() === String(m.symbol || '').toUpperCase() || String(f.pair || '').toUpperCase().startsWith(String(m.symbol || '').toUpperCase())) })),
   }));
 }
 
@@ -105,19 +105,35 @@ function sparkDigits(vals){
   if(span>=0.01) return 5;
   return 6;
 }
-function sparkSvg(vals){
-  if(!vals||vals.length<2) return '';
-  const w=72,h=18;
+function sparkSvg(points, fills){
+  const ptsIn=(!points||!points.length)?[]:points[0].p!=null?points:points.map(function(p){return {t:0,p:p};});
+  if(ptsIn.length<2) return '';
+  const w=84,h=22;
+  const t0=ptsIn[0].t, t1=ptsIn[ptsIn.length-1].t || t0+1;
+  const spanT=Math.max(1,t1-t0);
+  const marks=(fills||[]).map(function(f){
+    const ts=f.ts?Date.parse(f.ts):NaN;
+    const px=Number(f.price);
+    if(!Number.isFinite(px)) return null;
+    if(Number.isFinite(ts) && (ts<t0-5000 || ts>t1+5000)) return null;
+    return {t:Number.isFinite(ts)?ts:t1,p:px,side:String(f.side||'').toLowerCase()};
+  }).filter(Boolean);
+  const vals=ptsIn.map(function(x){return x.p;}).concat(marks.map(function(m){return m.p;}));
   const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals);
   const span=(hi-lo)||1e-12;
-  const pts=vals.map((v,i)=>{
-    const x=(i/(vals.length-1))*w;
-    const y=h-2-((v-lo)/span)*(h-4);
-    return x.toFixed(1)+','+y.toFixed(1);
-  }).join(' ');
-  const up=vals[vals.length-1]>=vals[0];
+  function X(t,i){
+    if(t0 && t) return ((t-t0)/spanT)*w;
+    return (i/(ptsIn.length-1))*w;
+  }
+  function Y(p){ return h-3-((p-lo)/span)*(h-6); }
+  const line=ptsIn.map(function(pt,i){ return X(pt.t,i).toFixed(1)+','+Y(pt.p).toFixed(1); }).join(' ');
+  const up=ptsIn[ptsIn.length-1].p>=ptsIn[0].p;
+  const dots=marks.map(function(m){
+    const fill=m.side==='sell'?'#f85149':'#3fb950';
+    return '<circle cx="'+X(m.t,ptsIn.length-1).toFixed(1)+'" cy="'+Y(m.p).toFixed(1)+'" r="2.2" fill="'+fill+'" stroke="#0e1116" stroke-width="0.6"/>';
+  }).join('');
   const d=sparkDigits(vals);
-  return '<div class="spark-wrap"><svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+pts+'"/></svg>'+
+  return '<div class="spark-wrap"><svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+'</svg>'+
     '<div class="spark-hl"><span class="hi">H '+hi.toFixed(d)+'</span> <span class="lo">L '+lo.toFixed(d)+'</span></div></div>';
 }
 function apiBlock(b){
@@ -184,7 +200,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
