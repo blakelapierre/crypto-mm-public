@@ -30,7 +30,14 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
 }
 
 export async function pollOpenOrders(ex, orderRegistry, cfg, pnl = null) {
-  const todo = [...orderRegistry.entries()].filter(([, r]) => r.status === 'open' || r.needFee);
+  const wsOn = !!cfg.useUserWebsocket;
+  const forceRest = process.env.COINBASE_REST_STATUS === '1' || process.env.KRAKEN_REST_STATUS === '1';
+  const todo = [...orderRegistry.entries()].filter(([, r]) => {
+    if (r.needFee) return true;
+    if (r.status !== 'open') return false;
+    if (wsOn && !forceRest) return false;
+    return true;
+  });
   for (const [id, rec] of todo) {
     const st = await ex.getOrderStatus(id, rec.venue || cfg.exchange);
     if (st && st.status) markOrderFromExchange(orderRegistry, id, st.status, pnl, st);
