@@ -79,7 +79,6 @@ function collect() {
       fees: kpiSeries(b.bot, 'fees'),
       vol: kpiSeries(b.bot, 'vol'),
       bank: kpiSeries(b.bot, 'bank'),
-      captured: kpiSeries(b.bot, 'captured'),
     },
     markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol) })),
   }));
@@ -166,7 +165,6 @@ function projectOf(b){
     wallet: Number(pnl.walletGain||0)/hours,
     price: Number(pnl.pricePnl||0)/hours,
     bank: bankRun/hours,
-    captured: (Number(pnl.pricePnl||0)-Number(pnl.makerPnl||0))/hours,
   };
 }
 function rateSeries(points, startedAt, daily){
@@ -322,9 +320,6 @@ function card(b){
     '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+
       '<span>/h '+fmt(q.maker)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,false))+
       '<span>/d '+fmt(q.maker*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,true))+'</div>'+
-    '<div><label>Captured</label><b>'+fmt(Number(p.pricePnl||0)-Number(p.makerPnl||0))+'</b>'+sparkSvg((b.kpiSpark||{}).captured)+
-      '<span>/h '+fmt(q.captured)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).captured,t0,false))+
-      '<span>/d '+fmt(q.captured*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).captured,t0,true))+'</div>'+
     '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+
       '<span>/h '+fmt(q.fees!=null?-q.fees:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,false))+
       '<span>/d '+fmt(q.fees!=null?-q.fees*24:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,true))+'</div>'+
@@ -427,7 +422,6 @@ const server = http.createServer(async (req, res) => {
         wallet: pnl.walletGain,
         price: pnl.pricePnl,
         maker: pnl.makerPnl,
-        captured: Number(pnl.pricePnl || 0) - Number(pnl.makerPnl || 0),
         fees: pnl.fees != null ? -pnl.fees : 0,
         vol,
         bank: Number(msg.bankedRun != null ? msg.bankedRun : prev.bankedRun || 0),
