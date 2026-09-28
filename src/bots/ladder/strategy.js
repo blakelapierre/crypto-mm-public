@@ -368,18 +368,24 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if ((needRequote && !filledNow) || pulled) {
     console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
-    await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open'));
-    await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open'));
-    publishOrders(a, ladder, book.mid);
-    await sleep(cfg.rateLimitMs);
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
+    const tickN = Number(tick) || 0;
+    const keepBuy = new Set(ladder.buys.filter((o) => o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN).map((o) => o.orderId));
+    const keepSell = new Set(ladder.sells.filter((o) => o.status === 'open' && o.orderId && Number(o.price) > book.mid + tickN).map((o) => o.orderId));
+    await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open' && !keepBuy.has(o.orderId)));
+    await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open' && !keepSell.has(o.orderId)));
+    const keptB = ladder.buys.filter((o) => keepBuy.has(o.orderId));
+    const keptS = ladder.sells.filter((o) => keepSell.has(o.orderId));
+    if (keptB.length) next.buys = [...keptB, ...next.buys.filter((n) => !keptB.some((k) => k.level === n.level))];
+    if (keptS.length) next.sells = [...keptS, ...next.sells.filter((n) => !keptS.some((k) => k.level === n.level))];
     state.ladder = next;
     state.lastMid = book.mid;
     state.lastRequoteAt = Date.now();
     state.lastWeight = wNow;
     state.rungKey = hintKey;
     if (needRungs) state.lastRungAt = Date.now();
-    await placeLadder(cfg, ex, a.pair, next, a, getLive);
+    publishOrders(a, next, book.mid);
+    await placeLadder(cfg, ex, a.pair, next, a, getLive, book.mid >= lastMid ? 'buy' : 'sell');
     printLadder(a.symbol, a.pair, state.ladder, book);
     return;
   }
