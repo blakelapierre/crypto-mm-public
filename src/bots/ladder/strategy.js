@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
+import { sizeWeightForSymbol } from '../../shared/vol-scan.js';
 
 export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null) {
   const bps = applySpreadFromFees(cfg, pair);
@@ -54,7 +55,8 @@ function resizeLeg(cfg, a, o, live) {
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
   if (o.side === 'buy') {
     const pairs = Math.max(1, cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 1);
-    const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair) / pairs;
+    const w = sizeWeightForSymbol(a.symbol);
+    const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
     const useUsd = Math.min(o.price * o.size, cashShare);
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
@@ -167,8 +169,9 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
 export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive = null) {
   const book = await ex.getBook(a.pair);
   if (!book) return;
+  const sized = orderSizeUsd * sizeWeightForSymbol(a.symbol);
   if (!pairState.has(a.pair)) {
-    const ladder = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
+    const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid });
     console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
@@ -192,7 +195,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await sleep(cfg.rateLimitMs);
     await cancelSide(ex, ladder.sells);
     await sleep(cfg.rateLimitMs);
-    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
+    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     state.ladder = next; state.lastMid = book.mid; state.lastRequoteAt = Date.now();
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, next, book);
@@ -203,7 +206,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (cfg.rebalanceOnFill) {
     await cancelSide(ex, ladder.buys);
     await cancelSide(ex, ladder.sells);
-    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
+    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     state.ladder = next; state.lastMid = book.mid;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     return;
