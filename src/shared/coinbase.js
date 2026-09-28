@@ -10,10 +10,20 @@ export const COINBASE_MARKET_WS = 'wss://advanced-trade-ws.coinbase.com';
 const bookHttpCache = new Map();
 const tickerBooks = new Map();
 function bookCacheTtl() { return Number(process.env.BOOK_CACHE_MS || 300); }
+function tickerStaleMs() { return Number(process.env.TICKER_STALE_MS || 120000); }
 
+export function coinbaseWsMids() {
+  const out = {};
+  const stale = tickerStaleMs();
+  const now = Date.now();
+  for (const [pair, rec] of tickerBooks) {
+    if (rec && rec.mid > 0 && now - rec.at <= stale) out[pair] = rec;
+  }
+  return out;
+}
 export function coinbaseWsBook(pair) {
   const rec = tickerBooks.get(String(pair || '').toUpperCase());
-  if (!rec || Date.now() - rec.at > 15000) return null;
+  if (!rec || Date.now() - rec.at > tickerStaleMs()) return null;
   return rec;
 }
 function noteTicker(pair, bid, ask, last) {
