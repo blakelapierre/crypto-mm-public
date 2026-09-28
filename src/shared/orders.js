@@ -1,4 +1,5 @@
 import { logFill } from './fill-log.js';
+import { postFill } from './status-client.js';
 
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
   const st = String(statusRaw || '').toUpperCase();
@@ -25,6 +26,10 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
     } else if (rec.needFee && rec.fee > 0 && pnl && pnl.adjustFee) {
       pnl.adjustFee(rec, rec.fee);
       rec.needFee = false;
+      postFill({
+        orderId, pair: rec.pair, symbol: rec.symbol, side: rec.side, level: rec.level,
+        price: rec.price, size: rec.size, fee: rec.fee, filledValue: rec.filledValue,
+      });
     }
   } else if (['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(st)) rec.status = 'cancelled';
 }

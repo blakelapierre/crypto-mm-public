@@ -214,7 +214,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
         pnl: snap, markets: marketRows, wallet,
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
-        api: snapshotApi(),
+        api: snapshotApi(), feesHist: feeSnapshot(),
       });
     } finally { emitStatus.busy = false; }
   }

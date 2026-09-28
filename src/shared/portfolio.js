@@ -10,7 +10,12 @@ async function staggerMap(items, fn, gapMs) {
   await Promise.all(items.map((item, i) => sleep(i * Math.max(0, gapMs)).then(() => fn(item))));
 }
 
+const liveCache = new Map();
 export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchange) {
+  const ttl = Number(process.env.ACCOUNT_CACHE_MS || 8000);
+  const key = String(venue || cfg.exchange);
+  const hit = liveCache.get(key);
+  if (ttl > 0 && hit && Date.now() - hit.at < ttl) return hit.live;
   const quote = cfg.quote.toUpperCase();
   const positions = {};
   let freeQuote = 0;
@@ -78,7 +83,9 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
       if (eb > 0) totalEquity = eb;
     } catch { /* keep */ }
   }
-  return { freeQuote, quoteHold, positions, positionsValue, totalEquity };
+  const liveOut = { freeQuote, quoteHold, positions, positionsValue, totalEquity };
+  liveCache.set(key, { at: Date.now(), live: liveOut });
+  return liveOut;
 }
 
 export async function waitForSettlement(cfg, ex, productMap, label, venue) {

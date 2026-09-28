@@ -58,3 +58,13 @@ export function joinTouchForPair(cfg, pair = null) {
 export function applySpreadFromFees(cfg, pair = null) {
   return spreadBpsForPair(cfg, pair);
 }
+
+export function feeSnapshot() {
+  const n = all.length;
+  const notional = all.reduce((s, x) => s + x.notional, 0);
+  const fee = all.reduce((s, x) => s + x.fee, 0);
+  const pairs = [...byPair.entries()].map(([pair, rows]) => ({
+    pair, n: rows.length, bps: bpsFrom(rows), fee: rows.reduce((s, x) => s + x.fee, 0),
+  })).sort((a, b) => (b.fee || 0) - (a.fee || 0));
+  return { n, fee, notional, bps: bpsFrom(all), pairs };
+}

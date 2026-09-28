@@ -203,9 +203,14 @@ function fillsTable(b){
     const side=String(f.side||'').toUpperCase();
     const cls=side==='SELL'?'sell':'buy';
     const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
-    return '<tr class="'+cls+'"><td>'+esc(when)+'</td><td>'+side+'</td><td>'+esc(f.symbol||f.pair||'')+'</td><td class="px">'+esc(f.price)+'</td><td>'+esc(f.size)+'</td><td>'+fmtN(f.notional||f.filledValue)+'</td><td>'+esc(f.fee)+'</td></tr>';
+    const notion=Number(f.notional||f.filledValue||0);
+    const feeN=Number(f.fee||0);
+    const bps=notion>0&&feeN?((feeN/notion)*10000).toFixed(1)+'bps':'';
+    return '<tr class="'+cls+'"><td>'+esc(when)+'</td><td>'+side+'</td><td>'+esc(f.symbol||f.pair||'')+'</td><td class="px">'+esc(f.price)+'</td><td>'+esc(f.size)+'</td><td>'+fmtN(notion)+'</td><td>'+(feeN?feeN.toFixed(6):'')+'</td><td>'+bps+'</td></tr>';
   }).join('');
-  return '<div class="fills"><h2>Fills</h2><table><thead><tr><th>Time</th><th></th><th>Mkt</th><th>Price</th><th>Size</th><th>$</th><th>Fee</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+  const h=b.feesHist||{};
+  const hist=h.n?('realized '+(h.bps!=null?Number(h.bps).toFixed(1):'n/a')+'bps on '+h.n+' fills · fee '+fmtN(h.fee)+' / '+fmtN(h.notional)):'';
+  return '<div class="fills"><h2>Fills</h2><p class="age">'+hist+'</p><table><thead><tr><th>Time</th><th></th><th>Mkt</th><th>Price</th><th>Size</th><th>$</th><th>Fee</th><th>bps</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function card(b){
   const p=b.pnl||{};
@@ -325,8 +330,26 @@ const server = http.createServer(async (req, res) => {
       const id = String(msg.bot || 'unknown');
       const prev = bots.get(id) || { bot: id };
       const fill = msg.fill || msg;
-      const fills = [fill, ...(prev.fills || [])].slice(0, 10);
-      bots.set(id, { ...prev, fills, bot: id });
+      const fid = String(fill.orderId || fill.id || '');
+      let fills = prev.fills || [];
+      const existing = fills.findIndex((f) => String(f.orderId || f.id || '') === fid && fid);
+      if (existing >= 0) fills[existing] = { ...fills[existing], ...fill };
+      else fills = [fill, ...fills];
+      fills = fills.slice(0, 10);
+      const markets = (prev.markets || []).map((m) => {
+        const orders = (m.orders || []).filter((o) => {
+          const oid = String(o.id || o.orderId || '');
+          if (!fid || !oid) return true;
+          return !(oid === fid || fid.startsWith(oid) || oid.startsWith(fid.slice(0, 8)));
+        });
+        return {
+          ...m,
+          orders,
+          bids: orders.filter((o) => String(o.side).toLowerCase() === 'buy').length,
+          asks: orders.filter((o) => String(o.side).toLowerCase() === 'sell').length,
+        };
+      });
+      bots.set(id, { ...prev, fills, markets, bot: id });
       broadcast();
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
