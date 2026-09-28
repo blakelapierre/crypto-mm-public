@@ -28,24 +28,32 @@ function bpsFrom(rows) {
   return (f / n) * 10000;
 }
 
+export function assumedMakerFeeBps(cfg = {}) {
+  return Number(process.env.MAKER_FEE_BPS || cfg.makerFeeBps || 50);
+}
+
 export function realizedFeeBps(pair = null) {
+  let got = null;
   if (pair) {
     const key = String(pair).toUpperCase();
     const rows = byPair.get(key) || [];
     const local = bpsFrom(rows);
-    if (local != null && rows.length >= 3) return local;
+    if (local != null && rows.length >= 3) got = local;
   }
-  return bpsFrom(all);
+  if (got == null) got = bpsFrom(all);
+  const floor = assumedMakerFeeBps();
+  if (got == null || got < floor * 0.5) return floor;
+  return got;
 }
 
 export function spreadBpsForPair(cfg, pair = null) {
   const fee = realizedFeeBps(pair);
-  const base = cfg.mmSpreadBps || 15;
-  if (fee == null) return base;
-  const edge = cfg.minEdgeBps || 20;
-  const lo = cfg.minHalfSpreadBps || 10;
-  const hi = cfg.maxHalfSpreadBps || 200;
-  return Math.min(hi, Math.max(lo, fee + edge));
+  const base = Number(cfg.mmSpreadBps || 15);
+  const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
+  const lo = Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 70);
+  const hi = Number(cfg.maxHalfSpreadBps || 250);
+  const raw = Math.max(base, (fee || assumedMakerFeeBps(cfg)) + edge);
+  return Math.min(hi, Math.max(lo, raw));
 }
 
 export function joinTouchForPair(cfg, pair = null) {

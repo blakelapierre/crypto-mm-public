@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
 import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
+import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
 
 function rangeFrac(symbol) {
   const vs = volStatsForSymbol(symbol);
@@ -21,6 +22,15 @@ function gridStep(cfg, pair, symbol) {
   step = Math.max(feeStep, step);
   if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) step = Math.max(step, range / (levels * 2 + 2));
   return step;
+}
+function inventoryUsd(live, symbol) {
+  const pos = live && live.positions && live.positions[symbol];
+  return Number((pos && pos.valueQuote) || 0);
+}
+function inventoryCapUsd(live) {
+  const eq = Number((live && live.totalEquity) || 0);
+  const frac = Number(process.env.INV_CAP_FRAC || 0.12);
+  return Math.max(0, eq * frac);
 }
 function inventorySkew(live, symbol) {
   if (!live) return 0;
@@ -99,10 +109,14 @@ function resizeLeg(cfg, a, o, live) {
   const hair = cfg.orderSizeHaircut || 0.9;
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
   if (o.side === 'buy') {
+    const cap = inventoryCapUsd(live);
+    const held = inventoryUsd(live, a.symbol);
+    if (cap > 0 && held >= cap) return 0;
     const pairs = Math.max(1, cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 1);
-    const w = sizeWeightForSymbol(a.symbol);
+    const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
-    const useUsd = Math.min(o.price * o.size, cashShare);
+    const room = cap > 0 ? Math.max(0, cap - held) : cashShare;
+    const useUsd = Math.min(o.price * o.size, cashShare, room);
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
     if (size + 1e-12 < minV) return minV * o.price <= live.freeQuote * hair ? formatVolume(minV, a.lotDecimals) : 0;
@@ -166,7 +180,9 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
     await sleep(cfg.rateLimitMs);
   }
   if (!openS) await place('sell', formatPrice(book.ask || book.mid, a.pairDecimals));
-  if (!openB) await place('buy', formatPrice(book.bid || book.mid, a.pairDecimals));
+  const cap = live ? inventoryCapUsd(live) : 0;
+  const held = live ? inventoryUsd(live, a.symbol) : 0;
+  if (!openB && !(cap > 0 && held >= cap)) await place('buy', formatPrice(book.bid || book.mid, a.pairDecimals));
 }
 
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null) {
@@ -191,7 +207,15 @@ function nextSlidePrice(cfg, filledLeg, pairDecimals, pair, symbol) {
   return formatPrice(filledLeg.price * (1 + step), pairDecimals);
 }
 
-async function slideSameSide(cfg, ex, a, ladder, filledLeg) {
+async function slideSameSide(cfg, ex, a, ladder, filledLeg, book = null) {
+  if (filledLeg.side === 'buy') {
+    const falling = book && book.mid && filledLeg.price && Number(book.mid) < Number(filledLeg.price);
+    const toxic = (tapeEdgeBps(a.pair) || 0) < 0;
+    if (falling || toxic) {
+      console.log('  SKIP bid replace ' + a.symbol + (falling ? ' down-tape' : '') + (toxic ? ' toxic' : ''));
+      return;
+    }
+  }
   const sideLegs = filledLeg.side === 'buy' ? ladder.buys : ladder.sells;
   const working = sideLegs.filter((o) => o.status === 'open');
   if (working.length >= cfg.slideMaxLegsPerSide) return;
@@ -242,7 +266,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     book = { mid: st0.lastMid, bid: st0.lastBid || st0.lastMid, ask: st0.lastAsk || st0.lastMid, pair: a.pair };
   }
   if (!book) return;
-  const wNow = sizeWeightForSymbol(a.symbol);
+  const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
   const tick = Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals));
@@ -325,7 +349,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   for (const leg of newlyFilled) {
-    await slideSameSide(cfg, ex, a, ladder, leg);
+    await slideSameSide(cfg, ex, a, ladder, leg, book);
     await skewOtherSide(cfg, ex, a, ladder, leg);
   }
   pruneDone(ladder);

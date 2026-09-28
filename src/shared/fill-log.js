@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { noteFeeFill } from './fee-spread.js';
+import { noteTapeFill } from './pair-tape.js';
 import { postFill } from './status-client.js';
 
 let resolved = null;
@@ -17,6 +18,7 @@ export function logFill(rec, extra = {}) {
   try {
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
     if (notional) noteFeeFill(rec.fee, notional, rec.pair);
+    noteTapeFill(rec.pair, rec.side, rec.price, rec.size);
     const row = {
       ts: new Date().toISOString(),
       orderId: rec.orderId || rec.id || extra.orderId || null,
