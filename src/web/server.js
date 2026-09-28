@@ -11,6 +11,26 @@ const sparks = new Map();
 const sparkFills = new Map();
 const SPARK_MS = Number(process.env.SPARK_WINDOW_MS || 15 * 60 * 1000);
 const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 5000);
+const KPI_SPARK_MS = Number(process.env.KPI_SPARK_MS || 6 * 60 * 60 * 1000);
+const KPI_SPARK_GAP = Number(process.env.KPI_SPARK_GAP_MS || 60 * 1000);
+const kpiSparks = new Map();
+function noteKpiSpark(bot, snap) {
+  if (!bot || !snap) return;
+  const now = Date.now();
+  const arr = kpiSparks.get(bot) || [];
+  const last = arr[arr.length - 1];
+  if (last && now - last.t < KPI_SPARK_GAP) {
+    last.v = snap;
+    kpiSparks.set(bot, arr);
+    return;
+  }
+  arr.push({ t: now, v: snap });
+  while (arr.length && now - arr[0].t > KPI_SPARK_MS) arr.shift();
+  kpiSparks.set(bot, arr);
+}
+function kpiSeries(bot, key) {
+  return (kpiSparks.get(bot) || []).map((x) => ({ t: x.t, p: Number((x.v || {})[key]) }));
+}
 
 function noteSparks(bot, markets) {
   const now = Date.now();
@@ -52,6 +72,14 @@ function auth(req) {
 function collect() {
   return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot))).map((b) => ({
     ...b,
+    kpiSpark: {
+      wallet: kpiSeries(b.bot, 'wallet'),
+      price: kpiSeries(b.bot, 'price'),
+      maker: kpiSeries(b.bot, 'maker'),
+      fees: kpiSeries(b.bot, 'fees'),
+      vol: kpiSeries(b.bot, 'vol'),
+      bank: kpiSeries(b.bot, 'bank'),
+    },
     markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol) })),
   }));
 }
@@ -282,10 +310,10 @@ function card(b){
   const age=b.ts?Math.round((Date.now()-b.ts)/1000)+'s ago':'';
   return '<section class="card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+
     '</small> <span class="age">'+age+'</span></h2><div class="kpi">'+
-    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span></div>'+
-    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b></div>'+
-    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b></div>'+
-    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b></div>'+
+    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+'</div>'+
+    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+'</div>'+
+    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+'</div>'+
+    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+'</div>'+
     '<div><label>TAKER</label><b>'+fmt(p.takerFees!=null?-p.takerFees:null)+'</b></div>'+
     '<div><label>GAP</label><b>'+fmt(p.otherPnl)+'</b></div>'+
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
@@ -294,7 +322,9 @@ function card(b){
     '<div><label>Inventory</label><b>'+fmtN(w.inventory)+'</b></div>'+
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
-    '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div></div>'+
+    '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+
+    '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+'</div>'+
+    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+'</div></div>'+
     projBlock(b)+apiBlock(b)+fillsTable(b)+
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
@@ -369,6 +399,16 @@ const server = http.createServer(async (req, res) => {
       const prev = bots.get(id) || {};
       bots.set(id, { ...prev, ...msg, fills: msg.fills || prev.fills || [], bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
+      const pnl = msg.pnl || prev.pnl || {};
+      const vol = (msg.markets || prev.markets || []).reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
+      noteKpiSpark(id, {
+        wallet: pnl.walletGain,
+        price: pnl.pricePnl,
+        maker: pnl.makerPnl,
+        fees: pnl.fees != null ? -pnl.fees : 0,
+        vol,
+        bank: Number(msg.bankedRun != null ? msg.bankedRun : prev.bankedRun || 0),
+      });
       broadcast();
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
