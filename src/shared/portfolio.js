@@ -150,7 +150,13 @@ export async function buildLists(cfg, productMap, totalEquity) {
   if (skipPort) console.log('startup inventory only on MM set (no mcap sleeve)');
   const mmCapital = safeSpend(cfg, totalEquity * (skipPort ? 1 : 1 - cfg.portfolioFraction));
   const mmInvTotal = cfg.mmEnabled ? mmCapital * cfg.mmInventoryFraction * cfg.inventorySafetyMultiplier : 0;
-  const mmInvEach = mmList.length ? mmInvTotal / mmList.length : 0;
+  const capFrac = Number(process.env.INV_CAP_FRAC || 0.12);
+  const capEach = totalEquity * capFrac * Number(process.env.INV_TARGET_CAP || 0.85);
+  let mmInvEach = mmList.length ? mmInvTotal / mmList.length : 0;
+  if (capEach > 0 && mmInvEach > capEach) {
+    console.log('inv target clipped ' + mmInvEach.toFixed(2) + ' -> ' + capEach.toFixed(2) + ' (cap ' + (capFrac * 100).toFixed(0) + '% eq)');
+    mmInvEach = capEach;
+  }
   const mmAlloc = mmList.map((c) => ({ ...c, weight: 1 / mmList.length, invTargetQuote: mmInvEach }));
   const combined = new Map();
   for (const a of portfolioAlloc) {
