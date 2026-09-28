@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
 import { startCoinbaseUserWs } from '../../shared/coinbase.js';
-import { startKrakenUserWs } from '../../shared/kraken.js';
+import { startKrakenUserWs, startKrakenTickerWs } from '../../shared/kraken.js';
 import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
 import { createPnl } from '../../shared/pnl.js';
 import {
@@ -38,6 +38,18 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     ws = startCoinbaseUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
   } else if (cfg.exchange === 'kraken') {
     ws = startKrakenUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
+    const tickPairs = mmAlloc.map((a) => a.pair).filter(Boolean);
+    const ticker = startKrakenTickerWs(tickPairs, (tk) => {
+      for (const [pair, st] of pairState) {
+        const p = String(pair || '').toUpperCase();
+        const n = String(tk.pair || '').replace('/', '').toUpperCase();
+        if (p === n || p.includes(n) || n.includes(p.replace('USD', ''))) {
+          st.lastMid = tk.mid; st.lastBid = tk.bid; st.lastAsk = tk.ask;
+        }
+      }
+    });
+    const prevClose = ws.close.bind(ws);
+    ws.close = () => { try { ticker.close(); } catch { /* ignore */ } prevClose(); };
   }
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap);
   (async () => {
@@ -49,7 +61,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   const liveVol = !(cfg.symbols && cfg.symbols.length) && String(cfg.mmSelect || process.env.MM_SELECT || 'vol').toLowerCase() === 'vol';
   if (liveVol) {
     const volScan = createVolScan(cfg, productMap);
-    console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm');
+    const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 300000);
+    console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm rotateMin=' + (rotateMin / 1000) + 's');
     (async () => {
       while (true) {
         try {
@@ -61,15 +74,21 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
     })();
     (async () => {
+      let lastRotateAt = Date.now();
       await sleep(Math.max(cfg.volScanMs || 60000, 90000));
       while (true) {
         try {
+          if (Date.now() - lastRotateAt < rotateMin) {
+            await sleep(Math.min(15000, rotateMin));
+            continue;
+          }
           const next = volScan.ranking().slice(0, cfg.mmMaxPairs);
           if (next.length) {
             const nextPairs = new Set(next.map((a) => a.pair));
             const prev = new Set(mmAlloc.map((a) => a.pair));
             const changed = [...nextPairs].some((p) => !prev.has(p)) || [...prev].some((p) => !nextPairs.has(p));
             if (changed) {
+              lastRotateAt = Date.now();
               console.log('MM rotate -> ' + next.map((a) => a.symbol).join(','));
               const leaving = mmAlloc.filter((a) => !nextPairs.has(a.pair)).map((a) => a.symbol);
               for (const [pair] of pairState) {
@@ -85,9 +104,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               setSizeUniverse(mmAlloc.map((x) => x.symbol));
               if (cfg.exchange === 'coinbase' && leaving.length) {
                 try {
-                  const liveRot = await getLive();
                   console.log('bank skim 1% leaving ' + leaving.join(','));
-                  await skimToBank(cfg, liveRot, Number(process.env.BANK_ROTATE_PCT || 0.01), leaving);
+                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaving);
                   await liquidateSymbols(cfg, ex, await getLive(), leaving);
                   await seedNewInventory(cfg, ex, mmAlloc, await getLive());
                 } catch (e) { console.warn('rotate bank/liq', e.message); }
@@ -134,6 +152,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const fee = realizedFeeBps(a.pair);
         const w = sizeWeightForSymbol(a.symbol);
         const book = (snap.rows || []).find((r) => r.symbol === a.symbol) || {};
+        const orders = [...openB, ...openA].map((o) => ({
+          side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
+          usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
+        }));
         marketRows.push({
           symbol: a.symbol,
           mid: mid ? Number(mid).toFixed(6) : 'n/a',
@@ -144,6 +166,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x',
           wNum: w,
+          orders,
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
