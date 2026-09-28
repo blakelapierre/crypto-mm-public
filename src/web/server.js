@@ -167,24 +167,17 @@ function projectOf(b){
     bank: bankRun/hours,
   };
 }
+function rateSeries(points, startedAt, daily){
+  const t0=startedAt||((points&&points[0]&&points[0].t)||Date.now());
+  return (points||[]).filter(function(x){return Number.isFinite(Number(x.p));}).map(function(x){
+    const hours=Math.max((x.t-t0)/3600000, 1/60);
+    return {t:x.t,p:Number(x.p)/hours*(daily?24:1)};
+  });
+}
 function projBlock(b){
   const q=projectOf(b);
   const h=q.hours>=1?q.hours.toFixed(2)+'h':(q.hours*60).toFixed(0)+'m';
-  const k=b.kpiSpark||{};
-  return '<div class="kpi proj"><div><label>/hour</label><b>'+h+'</b></div>'+
-    '<div><label>Vol/h</label><b>'+fmtN(q.vol)+'</b>'+sparkSvg(k.vol)+'</div>'+
-    '<div><label>Maker/h</label><b>'+fmt(q.maker)+'</b>'+sparkSvg(k.maker)+'</div>'+
-    '<div><label>Fees/h</label><b>'+fmt(q.fees!=null?-q.fees:null)+'</b>'+sparkSvg(k.fees)+'</div>'+
-    '<div><label>Wallet/h</label><b>'+fmt(q.wallet)+'</b>'+sparkSvg(k.wallet)+'</div>'+
-    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b>'+sparkSvg(k.price)+'</div>'+
-    '<div><label>Bank/h</label><b>'+fmt(q.bank)+'</b>'+sparkSvg(k.bank)+'</div></div>'+
-    '<div class="kpi proj"><div><label>/day</label><b></b></div>'+
-    '<div><label>Vol/d</label><b>'+fmtN(q.vol*24)+'</b>'+sparkSvg(k.vol)+'</div>'+
-    '<div><label>Maker/d</label><b>'+fmt(q.maker*24)+'</b>'+sparkSvg(k.maker)+'</div>'+
-    '<div><label>Fees/d</label><b>'+fmt(q.fees!=null?-q.fees*24:null)+'</b>'+sparkSvg(k.fees)+'</div>'+
-    '<div><label>Wallet/d</label><b>'+fmt(q.wallet*24)+'</b>'+sparkSvg(k.wallet)+'</div>'+
-    '<div><label>Price/d</label><b>'+fmt(q.price*24)+'</b>'+sparkSvg(k.price)+'</div>'+
-    '<div><label>Bank/d</label><b>'+fmt(q.bank*24)+'</b>'+sparkSvg(k.bank)+'</div></div>';
+  return '';
 }
 
 function sparkDigits(vals){
@@ -314,12 +307,22 @@ function card(b){
     '<tr class="orders"><td></td><td colspan="9">'+orderBook(m)+'</td></tr>'
   ).join('');
   const age=b.ts?Math.round((Date.now()-b.ts)/1000)+'s ago':'';
+  const q=projectOf(b);
+  const t0=(b.pnl&&b.pnl.startedAt)||b.ts||Date.now();
   return '<section class="card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+
     '</small> <span class="age">'+age+'</span></h2><div class="kpi">'+
-    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+'</div>'+
-    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+'</div>'+
-    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+'</div>'+
-    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+'</div>'+
+    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+
+      '<span>/h '+fmt(q.wallet)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).wallet,t0,false))+
+      '<span>/d '+fmt(q.wallet*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).wallet,t0,true))+'</div>'+
+    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+
+      '<span>/h '+fmt(q.price)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).price,t0,false))+
+      '<span>/d '+fmt(q.price*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).price,t0,true))+'</div>'+
+    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+
+      '<span>/h '+fmt(q.maker)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,false))+
+      '<span>/d '+fmt(q.maker*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,true))+'</div>'+
+    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+
+      '<span>/h '+fmt(q.fees!=null?-q.fees:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,false))+
+      '<span>/d '+fmt(q.fees!=null?-q.fees*24:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,true))+'</div>'+
     '<div><label>TAKER</label><b>'+fmt(p.takerFees!=null?-p.takerFees:null)+'</b></div>'+
     '<div><label>GAP</label><b>'+fmt(p.otherPnl)+'</b></div>'+
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
@@ -329,9 +332,13 @@ function card(b){
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+
-    '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+'</div>'+
-    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+'</div></div>'+
-    projBlock(b)+apiBlock(b)+fillsTable(b)+
+    '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+
+      '<span>/h $'+fmtN(q.vol)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).vol,t0,false))+
+      '<span>/d $'+fmtN(q.vol*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).vol,t0,true))+'</div>'+
+    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+
+      '<span>/h '+fmt(q.bank)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,false))+
+      '<span>/d '+fmt(q.bank*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,true))+'</div></div>'+
+    apiBlock(b)+fillsTable(b)+
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
 }
