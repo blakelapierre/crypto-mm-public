@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { setTimeout as sleep } from 'timers/promises';
 import { krakenPublic } from './kraken.js';
-import { coinbaseRequest } from './coinbase.js';
+import { coinbaseRequest, coinbaseWsBook } from './coinbase.js';
 
 function pairToSym(productMap) {
   const m = new Map();
@@ -26,9 +26,19 @@ export async function fetchAllMids(cfg, productMap) {
   }
   if (cfg.exchange !== 'coinbase') return mids;
   const pairs = [...new Set(Object.values(productMap).map((p) => p.pair))];
+  for (const pair of pairs) {
+    const ws = coinbaseWsBook(pair);
+    const sym = rev.get(pair);
+    if (sym && ws && ws.mid > 0) mids[sym] = ws.mid;
+  }
+  const missing = pairs.filter((pair) => {
+    const sym = rev.get(pair);
+    return sym && !(mids[sym] > 0);
+  });
+  if (!missing.length) return mids;
   const chunk = 10;
-  for (let i = 0; i < pairs.length; i += chunk) {
-    const ids = pairs.slice(i, i + chunk);
+  for (let i = 0; i < missing.length; i += chunk) {
+    const ids = missing.slice(i, i + chunk);
     try {
       const data = await coinbaseRequest(
         cfg, 'GET',
@@ -53,7 +63,7 @@ export async function fetchAllMids(cfg, productMap) {
         } catch { /* skip */ }
       }
     }
-    if (i + chunk < pairs.length) await sleep(120);
+    if (i + chunk < missing.length) await sleep(120);
   }
   return mids;
 }
