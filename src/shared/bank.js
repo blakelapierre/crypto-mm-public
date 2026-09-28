@@ -117,3 +117,47 @@ export async function seedNewInventory(cfg, ex, mmAlloc, live) {
     await sleep(cfg.rateLimitMs || 200);
   }
 }
+
+export async function dumpBankToTrade(cfg, fraction) {
+  const pct = Number(fraction);
+  if (!(pct > 0 && pct <= 1)) throw new Error('fraction must be 0-1, got ' + fraction);
+  const perms = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/key_permissions');
+  if (perms.can_transfer === false) {
+    throw new Error('Bank API key can_transfer=false — enable Transfer on the bank key');
+  }
+  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios');
+  const list = data.portfolios || [];
+  const bankWant = bankName().toLowerCase();
+  const tradeWant = String(process.env.TRADE_PORTFOLIO || process.env.TRADE_BOT_PORTFOLIO || '').trim().toLowerCase();
+  const bank = list.find((p) => String(p.name || '').trim().toLowerCase() === bankWant)
+    || list.find((p) => String(p.uuid) === String(perms.portfolio_uuid || ''));
+  const trade = (tradeWant && list.find((p) => String(p.name || '').trim().toLowerCase() === tradeWant))
+    || list.find((p) => String(p.uuid) === String(process.env.COINBASE_PORTFOLIO_UUID || ''))
+    || list.find((p) => String(p.type || '').toUpperCase() === 'DEFAULT')
+    || list.find((p) => bank && p.uuid !== bank.uuid);
+  if (!bank || !trade) {
+    throw new Error('Need bank + trade portfolios. have=' + list.map((p) => p.name + '/' + p.uuid).join(', '));
+  }
+  if (bank.uuid === trade.uuid) throw new Error('Bank and trade resolved to the same portfolio ' + bank.name);
+  console.log('dump ' + (pct * 100) + '%  ' + bank.name + ' (' + bank.uuid + ') -> ' + trade.name + ' (' + trade.uuid + ')');
+  const accts = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/accounts?limit=250');
+  const rows = accts.accounts || [];
+  let moved = 0;
+  for (const a of rows) {
+    const cur = String(a.currency || (a.available_balance && a.available_balance.currency) || '').toUpperCase();
+    const avail = parseFloat((a.available_balance && (a.available_balance.value || a.available_balance.amount)) || a.available || 0) || 0;
+    const qty = avail * pct;
+    if (!cur || !(qty > 0)) continue;
+    const send = qty >= 1 ? qty.toFixed(8) : String(qty);
+    if (!(Number(send) > 0)) continue;
+    try {
+      await moveFunds(cfg, bank.uuid, trade.uuid, cur, send);
+      moved += 1;
+    } catch (e) {
+      console.warn('dump skip ' + cur, e.message);
+    }
+    await sleep(200);
+  }
+  console.log('dump done moves=' + moved);
+  return moved;
+}
