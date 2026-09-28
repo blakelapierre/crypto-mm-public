@@ -1,3 +1,4 @@
+import { trendMult } from './mid-ring.js';
 import fs from 'fs';
 import path from 'path';
 import { setTimeout as sleep } from 'timers/promises';
@@ -124,7 +125,8 @@ export function sizeWeightForSymbol(sym) {
   if (!(sum > 0)) return 1;
   const mine = Math.max(1e-9, lastScore.get(key) || sum / names.length);
   const n = Math.max(1, names.length);
-  return Math.min(3, Math.max(0.35, (mine / sum) * n));
+  const raw = Math.min(3, Math.max(0.35, (mine / sum) * n));
+  return raw * trendMult(key);
 }
 
 export function volStatsForSymbol(sym) {

@@ -17,7 +17,7 @@ import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
-import { noteMid } from '../../shared/mid-ring.js';
+import { noteMid, midReturn, trendMult } from '../../shared/mid-ring.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -124,7 +124,12 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const additions = [];
           let budget = free;
           for (const a of keep) budget -= costOf(a);
-          for (const r of ranked) {
+          const scored = ranked.map((r) => {
+            const ret = midReturn(r.symbol);
+            const tr = trendMult(r.symbol);
+            return { ...r, ret15: ret, trend: tr, pick: Number(r.rangePct || 0) * tr };
+          }).sort((a, b) => b.pick - a.pick);
+          for (const r of scored) {
             if (have.has(r.pair)) continue;
             if (keep.length + additions.length >= hardMax) break;
             if (Number(r.rangePct || 0) < enterPct) continue;
@@ -136,7 +141,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           }
           if (leaving.length || additions.length) {
             if (leaving.length) console.log('MM exit ' + leaving.map((a) => a.symbol).join(',') + ' (>=' + (rotateMin / 60000) + 'm)');
-            if (additions.length) console.log('MM enter ' + additions.map((a) => a.symbol + ' ' + Number(a.rangePct).toFixed(2) + '%').join(', '));
+            if (additions.length) console.log('MM enter ' + additions.map((a) => a.symbol + ' ' + Number(a.rangePct).toFixed(2) + '% ret=' + ((a.ret15 || 0) * 100).toFixed(2) + '%').join(', '));
             const leavePairs = new Set(leaving.map((a) => a.pair));
             const leaveSyms = leaving.map((a) => a.symbol);
             for (const a of leaving) {

@@ -17,3 +17,20 @@ export function noteMid(symbol, mid, t = Date.now()) {
 export function midRing(symbol) {
   return rings.get(String(symbol || '').toUpperCase()) || [];
 }
+
+export function midReturn(symbol, windowMs = WINDOW) {
+  const arr = midRing(symbol);
+  if (arr.length < 4) return 0;
+  const cut = Date.now() - windowMs;
+  const pts = arr.filter((x) => x.t >= cut);
+  if (pts.length < 4) return 0;
+  const a = Number(pts[0].p), b = Number(pts[pts.length - 1].p);
+  if (!(a > 0 && b > 0)) return 0;
+  return (b - a) / a;
+}
+
+export function trendMult(symbol) {
+  const ret = midReturn(symbol);
+  const k = Number(process.env.TREND_GAIN || 25);
+  return Math.max(0.25, Math.min(2.2, 1 + ret * k));
+}
