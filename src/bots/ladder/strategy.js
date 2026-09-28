@@ -127,18 +127,19 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
 }
 
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null) {
-  for (const o of [...ladder.sells, ...ladder.buys]) {
+  const gap = Number(process.env.ORDER_STAGGER_MS || cfg.rateLimitMs || 150);
+  const legs = [...ladder.sells, ...ladder.buys];
+  await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
-      if (!resized) { o.status = 'failed'; console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' skip'); continue; }
+      if (!resized) { o.status = 'failed'; console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' skip'); return; }
       if (resized !== o.size) { console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' size ' + o.size + ' -> ' + resized); o.size = resized; }
     }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r && r.order_id) { o.orderId = r.order_id; o.status = 'open'; }
     else o.status = 'failed';
-    await sleep(cfg.rateLimitMs);
-  }
+  })));
 }
 
 function nextSlidePrice(cfg, filledLeg, pairDecimals, pair, symbol) {
