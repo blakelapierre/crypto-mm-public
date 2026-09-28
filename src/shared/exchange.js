@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
 import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } from './sizing.js';
-import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey } from './coinbase.js';
+import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook } from './coinbase.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 
 function money(v) {
@@ -80,6 +80,10 @@ export function createExchange(cfg, orderRegistry) {
       return map;
     },
     async getBook(pair, venue = name) {
+      if (venue === 'coinbase') {
+        const ws = coinbaseWsBook(pair);
+        if (ws && ws.mid > 0) return { mid: ws.mid, bid: ws.bid, ask: ws.ask, pair, venue, src: 'ws' };
+      }
       return cachedBook(pair, venue, async () => {
         if (venue === 'coinbase') {
           try {
@@ -111,6 +115,33 @@ export function createExchange(cfg, orderRegistry) {
             for (const p of list) if (p === k || k.includes(p) || p.includes(k)) out.set(p, rec);
           }
         } catch (e) { console.warn('batch ticker', e.message); }
+        return out;
+      }
+      if (venue === 'coinbase') {
+        const missing = [];
+        for (const p of list) {
+          const ws = coinbaseWsBook(p);
+          if (ws && ws.mid > 0) out.set(p, { mid: ws.mid, bid: ws.bid, ask: ws.ask, pair: p, venue, src: 'ws' });
+          else missing.push(p);
+        }
+        const chunk = Number(process.env.BOOK_BATCH || 25);
+        for (let i = 0; i < missing.length; i += chunk) {
+          const part = missing.slice(i, i + chunk);
+          const qs = part.map((id) => 'product_ids=' + encodeURIComponent(id)).join('&');
+          try {
+            const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?' + qs);
+            for (const book of data.pricebooks || []) {
+              if (!(book.bids && book.bids[0] && book.asks && book.asks[0])) continue;
+              const bid = parseFloat(book.bids[0].price);
+              const ask = parseFloat(book.asks[0].price);
+              const rec = { mid: (bid + ask) / 2, bid, ask, pair: book.product_id, venue, src: 'rest-batch' };
+              out.set(book.product_id, rec);
+              for (const p0 of part) {
+                if (p0 === book.product_id || p0.replace('-USDC','-USD') === String(book.product_id).replace('-USDC','-USD')) out.set(p0, rec);
+              }
+            }
+          } catch (e) { console.warn('book batch', e.message); }
+        }
         return out;
       }
       for (const p of list) {
