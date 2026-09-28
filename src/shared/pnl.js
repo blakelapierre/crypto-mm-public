@@ -1,3 +1,5 @@
+import { bankedTotalUsd } from './bank.js';
+
 export function createPnl() {
   const books = new Map();
   let startEquity = null;
@@ -117,6 +119,8 @@ export function createPnl() {
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
     console.log('  FEES   ' + fmt(-s.fees) + '   venue commission (not in MAKER)');
     if (s.otherPnl != null) console.log('  TAKER  ' + fmt(s.otherPnl) + '   residual so WALLET=PRICE+MAKER-FEES+TAKER');
+    const b = bankedTotalUsd();
+    if (b > 0) console.log('  BANK   ' + fmt(b) + '   moved to trade-bot-bank  wallet+bank=' + ((s.walletGain || 0) + b).toFixed(4));
     for (const r of s.rows) {
       console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' fees=' + r.fees.toFixed(4));
     }
