@@ -70,6 +70,30 @@ function auth(req) {
   const q = new URL(req.url, 'http://local').searchParams.get('token');
   return h === TOKEN || q === TOKEN;
 }
+function mergeFills(prev, incoming) {
+  const map = new Map();
+  for (const f of [...(incoming || []), ...(prev || [])]) {
+    const id = String(f.orderId || f.id || '') + '|' + String(f.ts || '') + '|' + String(f.price || '') + '|' + String(f.size || '');
+    if (!map.has(id)) map.set(id, f);
+  }
+  return [...map.values()].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0)).slice(0, 25);
+}
+function mergeMarkets(prev, incoming) {
+  const by = new Map((prev || []).map((m) => [String(m.symbol || '').toUpperCase(), { ...m }]));
+  for (const m of incoming || []) {
+    const k = String(m.symbol || '').toUpperCase();
+    if (!k) continue;
+    const old = by.get(k) || {};
+    const live = old.orderTs && Date.now() - old.orderTs < 20000;
+    by.set(k, {
+      ...old,
+      ...m,
+      orders: live && old.orders && old.orders.length ? old.orders : (m.orders || old.orders || []),
+      orderTs: live ? old.orderTs : old.orderTs,
+    });
+  }
+  return [...by.values()];
+}
 function collect() {
   return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot))).map((b) => ({
     ...b,
@@ -476,7 +500,7 @@ const server = http.createServer(async (req, res) => {
       const msg = JSON.parse(body || '{}');
       const id = String(msg.bot || 'unknown');
       const prev = bots.get(id) || {};
-      bots.set(id, { ...prev, ...msg, fills: msg.fills || prev.fills || [], bot: id, ts: Date.now() });
+      bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
       const pnl = msg.pnl || prev.pnl || {};
       const vol = (msg.markets || prev.markets || []).reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
@@ -535,6 +559,7 @@ const server = http.createServer(async (req, res) => {
         markets.push(m);
       }
       m.orders = msg.orders || [];
+      m.orderTs = Date.now();
       if (msg.mid) m.mid = msg.mid;
       if (msg.pair) m.pair = msg.pair;
       bots.set(id, { ...prev, markets, bot: id });
@@ -561,7 +586,7 @@ const server = http.createServer(async (req, res) => {
       const existing = fills.findIndex((f) => String(f.orderId || f.id || '') === fid && fid);
       if (existing >= 0) fills[existing] = { ...fills[existing], ...fill };
       else fills = [fill, ...fills];
-      fills = fills.slice(0, 10);
+      fills = mergeFills(fills, []);
       const markets = (prev.markets || []).map((m) => {
         const orders = (m.orders || []).filter((o) => {
           const oid = String(o.id || o.orderId || '');
