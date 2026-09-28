@@ -39,7 +39,7 @@ export function printLadder(symbol, pair, ladder, book) {
   const buys = ladder.buys.filter(live);
   const sells = ladder.sells.filter(live);
   if (!buys.length && !sells.length) return;
-  console.log(`\n[${new Date().toLocaleTimeString()}] ${symbol} ${pair} mid=${book.mid.toFixed(6)}`);
+  console.log('[' + new Date().toLocaleTimeString() + '] ' + symbol + ' ' + pair + ' mid=' + book.mid.toFixed(6));
   for (const o of buys) console.log('  BUY  L' + o.level + ' ' + o.size + ' @ ' + o.price + '  ~$' + (Number(o.size) * Number(o.price)).toFixed(2) + '  [' + o.status + ']');
   for (const o of sells) console.log('  SELL L' + o.level + ' ' + o.size + ' @ ' + o.price + '  ~$' + (Number(o.size) * Number(o.price)).toFixed(2) + '  [' + o.status + ']');
 }
@@ -167,7 +167,12 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
 }
 
 export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive = null) {
-  const book = await ex.getBook(a.pair);
+  let book = null;
+  try { book = await ex.getBook(a.pair); } catch { book = null; }
+  const st0 = pairState.get(a.pair);
+  if (!book && st0 && st0.lastMid) {
+    book = { mid: st0.lastMid, bid: st0.lastBid || st0.lastMid, ask: st0.lastAsk || st0.lastMid, pair: a.pair };
+  }
   if (!book) return;
   const sized = orderSizeUsd * sizeWeightForSymbol(a.symbol);
   if (!pairState.has(a.pair)) {
