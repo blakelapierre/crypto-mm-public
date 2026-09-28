@@ -84,8 +84,8 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:10px;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
-.board{display:block;margin:8px 0 14px}
-.board-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0 0 12px}
+.board{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:stretch;gap:12px;margin:8px 0 14px}
+.board-card{flex:1 1 0;min-width:0;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0}
 .board-card h2{margin:0 0 8px}
 .board-card .sparks{white-space:nowrap;overflow-x:auto;overflow-y:hidden;line-height:0}
 .board-card .cell{display:inline-block;vertical-align:bottom;white-space:normal;line-height:1.2;width:118px;margin-right:8px;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
