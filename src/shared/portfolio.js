@@ -6,6 +6,10 @@ import { krakenPrivate } from './kraken.js';
 import { getMarketCapRanking } from './coingecko.js';
 import { loadMmSet } from './mm-set.js';
 
+async function staggerMap(items, fn, gapMs) {
+  await Promise.all(items.map((item, i) => sleep(i * Math.max(0, gapMs)).then(() => fn(item))));
+}
+
 export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchange) {
   const quote = cfg.quote.toUpperCase();
   const positions = {};
@@ -162,11 +166,13 @@ export function getMmOrderSizeUsd(cfg, mmCapital) {
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   console.log('\nCombined rebalance');
   const wanted = new Set(combinedTargets.map((a) => a.symbol));
+  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 200);
   console.log('wallet:');
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     console.log('  ' + sym + ' amt=' + pos.amount + ' val=' + (pos.valueQuote || 0).toFixed(2) + ' ' + (wanted.has(sym) ? 'MM' : 'ORPHAN'));
   }
   console.log('  cash ' + cfg.quote + '=' + (live.freeQuote || 0).toFixed(2) + ' eq=' + (live.totalEquity || 0).toFixed(2));
+  const excessSells = [];
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const heldAmt = (live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
@@ -175,13 +181,15 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
     console.log(a.symbol + ': held ' + heldVal.toFixed(2) + ' target ' + target.toFixed(2));
     if (excess <= tol || heldAmt <= 0) continue;
-    const book = await ex.getBook(a.pair);
-    if (!book) continue;
-    let sellAmt = formatVolume(heldAmt * (excess / heldVal), a.lotDecimals);
+    const sellAmt = formatVolume(heldAmt * (excess / heldVal), a.lotDecimals);
     if (sellAmt < (a.ordermin || 0) * cfg.volumeSafetyMargin) continue;
-    try { await ex.marketSell(a.pair, sellAmt); } catch (e) { console.warn('  sell ' + a.symbol + ' skip: ' + e.message); }
-    await sleep(cfg.rateLimitMs);
+    excessSells.push({ a, sellAmt });
   }
+  await staggerMap(excessSells, async ({ a, sellAmt }) => {
+    console.log('  MARKET SELL ' + sellAmt + ' ' + a.symbol + ' (excess)');
+    try { await ex.marketSell(a.pair, sellAmt); } catch (e) { console.warn('  sell ' + a.symbol + ' skip: ' + e.message); }
+  }, gap);
+  const orphans = [];
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (wanted.has(sym)) continue;
     const heldVal = pos.valueQuote || 0;
@@ -191,18 +199,20 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     if (!pos.pair) { console.warn('  ' + sym + ' no ' + cfg.quote + ' pair'); continue; }
     const sellAmt = formatVolume(heldAmt, pos.lotDecimals);
     if (sellAmt < (pos.ordermin || 0) * cfg.volumeSafetyMargin) continue;
+    orphans.push({ sym, pos, sellAmt });
+  }
+  await staggerMap(orphans, async ({ sym, pos, sellAmt }) => {
     console.log('  MARKET SELL ' + sellAmt + ' ' + sym + ' (orphan)');
     try { await ex.marketSell(pos.pair, sellAmt); } catch (e) { console.warn('  sell ' + sym + ' skip: ' + e.message); }
-    await sleep(cfg.rateLimitMs);
-  }
+  }, gap);
   let budget = safeSpend(cfg, live.freeQuote);
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.combinedTarget;
-    const gap = target - heldVal;
+    const gapBuy = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
-    if (gap <= tol || budget < cfg.minOrderUsd) continue;
-    const spendPlan = Math.min(gap, budget * 0.98);
+    if (gapBuy <= tol || budget < cfg.minOrderUsd) continue;
+    const spendPlan = Math.min(gapBuy, budget * 0.98);
     const book = await ex.getBook(a.pair);
     if (!book) continue;
     const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
