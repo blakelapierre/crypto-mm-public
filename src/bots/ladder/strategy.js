@@ -5,8 +5,18 @@ import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js
 import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid } from '../../shared/mid-ring.js';
+import { postOrders } from '../../shared/status-client.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 
+function publishOrders(a, ladder, mid) {
+  if (!a || !ladder) return;
+  const legs = [...(ladder.buys || []), ...(ladder.sells || [])];
+  const orders = legs.filter((o) => o.status === 'open' || o.status === 'pending').map((o) => ({
+    side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
+    usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
+  }));
+  postOrders(a.symbol, orders, { mid, pair: a.pair });
+}
 function rangeFrac(symbol) {
   const vs = volStatsForSymbol(symbol);
   return vs && vs.rangePct > 0 ? vs.rangePct / 100 : 0;
@@ -368,10 +378,13 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   for (const leg of newlyFilled) {
     if (leg.side === 'buy') await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
+    publishOrders(a, ladder, book && book.mid);
     await slideSameSide(cfg, ex, a, ladder, leg, book);
     await skewOtherSide(cfg, ex, a, ladder, leg);
+    publishOrders(a, ladder, book && book.mid);
   }
   pruneDone(ladder);
+  publishOrders(a, ladder, book && book.mid);
   state.lastEnsureAt = 0;
   await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);

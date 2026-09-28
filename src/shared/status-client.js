@@ -51,3 +51,16 @@ export function postMids(rows) {
     }).catch((e) => console.warn('mids post', e.message));
   }, Number(process.env.MID_POST_MS || 400));
 }
+
+export function postOrders(symbol, orders, extra = {}) {
+  const dest = url();
+  if (!dest || !symbol) return;
+  const body = JSON.stringify({
+    bot: process.env.BOT || 'ladder',
+    symbol,
+    orders,
+    ...extra,
+  });
+  fetch(dest.replace(/\/$/, '') + '/orders', { method: 'POST', headers: headers(), body })
+    .catch((e) => console.warn('orders post', e.message));
+}

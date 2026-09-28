@@ -505,6 +505,24 @@ const server = http.createServer(async (req, res) => {
     } catch { res.writeHead(400); res.end('bad json'); }
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/orders') {
+    const msg = JSON.parse(await readBody(req));
+    const id = msg.bot || 'bot';
+    const prev = bots.get(id) || { bot: id, markets: [] };
+    const markets = [...(prev.markets || [])];
+    let m = markets.find((x) => String(x.symbol).toUpperCase() === String(msg.symbol || '').toUpperCase());
+    if (!m) {
+      m = { symbol: msg.symbol, orders: [] };
+      markets.push(m);
+    }
+    m.orders = msg.orders || [];
+    if (msg.mid) m.mid = msg.mid;
+    if (msg.pair) m.pair = msg.pair;
+    bots.set(id, { ...prev, markets, bot: id });
+    broadcast();
+    res.writeHead(204); res.end();
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/fill') {
     if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
     let body = '';
