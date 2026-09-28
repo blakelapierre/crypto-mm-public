@@ -15,7 +15,7 @@ function filePath() {
 export function logFill(rec, extra = {}) {
   try {
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
-    if (notional) noteFeeFill(rec.fee, notional);
+    if (notional) noteFeeFill(rec.fee, notional, rec.pair);
     const dest = filePath();
     if (!dest) return;
     if (!resolved) {
