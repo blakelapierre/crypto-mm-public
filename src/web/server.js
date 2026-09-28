@@ -84,9 +84,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:10px;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
-.board{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 14px}
-.board .cell{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 8px;min-width:96px}
-.board .cell .who{font-size:10px;color:#8b98a5}
+.board{display:flex;flex-direction:column;gap:10px;margin:8px 0 14px}
+.board .bot-row{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:flex-end;gap:8px;overflow-x:auto}
+.board .bot-lab{flex:0 0 64px;font-size:11px;color:#8b98a5;padding-bottom:14px}
+.board .cell{flex:0 0 auto;width:108px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 8px}
 .board .cell .sym{font-size:12px;font-weight:600}
 .board .cell .sz{font-size:10px;color:#8b98a5}
 </style>
@@ -274,19 +275,20 @@ function card(b){
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
 }
 function boardHtml(rows){
-  const cells=[];
-  for(const b of rows){
-    for(const m of (b.markets||[])){
+  return (rows||[]).map(function(b){
+    const cells=(b.markets||[]).map(function(m){
       const work=Number(m.bidUsd||0)+Number(m.askUsd||0);
       const vol=Number(m.buyUsd||0)+Number(m.sellUsd||0);
-      cells.push({bot:b.bot,m,work,vol,score:work*2+vol});
-    }
-  }
-  cells.sort((a,c)=>c.score-a.score || c.work-a.work || c.vol-a.vol);
-  if(!cells.length) return '';
-  return cells.map(c=>'<div class="cell"><div class="who">'+esc(c.bot)+'</div><div class="sym">'+esc(c.m.symbol)+'</div>'+
-    sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
-    '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>').join('');
+      return {m,work,vol,score:work*2+vol};
+    }).sort(function(a,c){return c.score-a.score||c.work-a.work||c.vol-a.vol;});
+    if(!cells.length) return '';
+    const inner=cells.map(function(c){
+      return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
+        sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
+        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>';
+    }).join('');
+    return '<div class="bot-row"><div class="bot-lab">'+esc(b.bot)+'</div>'+inner+'</div>';
+  }).join('');
 }
 function render(data){
   const rows=data.bots||[];
