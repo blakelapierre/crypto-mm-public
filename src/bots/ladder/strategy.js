@@ -76,24 +76,28 @@ async function cancelSide(ex, legs) {
   }
 }
 
-async function ensureBothSides(cfg, ex, a, ladder, book) {
-  const live = (o) => o.status === 'open';
-  const size = [...ladder.sells, ...ladder.buys].find((o) => o.size > 0)?.size || 0;
-  if (!size) return;
-  if (!ladder.sells.some(live)) {
-    const price = formatPrice(book.ask || book.mid, a.pairDecimals);
-    console.log('  ENSURE SELL ' + a.symbol + ' ' + size + ' @ ' + price);
-    const r = await ex.limitOrder(a.pair, 'sell', price, size, { level: 1 });
-    ladder.sells.push({ level: 1, side: 'sell', price, size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
+async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state = null) {
+  const now = Date.now();
+  if (state && now - (state.lastEnsureAt || 0) < 20000) return;
+  const isOpen = (o) => o.status === 'open' && o.orderId;
+  const openS = ladder.sells.some(isOpen);
+  const openB = ladder.buys.some(isOpen);
+  if (openS && openB) return;
+  const live = getLive ? await getLive() : null;
+  const template = [...ladder.sells, ...ladder.buys].find((o) => o.size > 0);
+  if (!template) return;
+  async function place(side, px) {
+    const size = live ? resizeLeg(cfg, a, { side, price: px, size: template.size }, live) : template.size;
+    if (!size) { if (state) state.lastEnsureAt = now; return; }
+    console.log('  ENSURE ' + side.toUpperCase() + ' ' + a.symbol + ' ' + size + ' @ ' + px);
+    const r = await ex.limitOrder(a.pair, side, px, size, { level: 1 });
+    const row = { level: 1, side, price: px, size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' };
+    if (side === 'sell') ladder.sells.push(row); else ladder.buys.push(row);
+    if (!(r && r.order_id) && state) state.lastEnsureAt = Date.now();
     await sleep(cfg.rateLimitMs);
   }
-  if (!ladder.buys.some(live)) {
-    const price = formatPrice(book.bid || book.mid, a.pairDecimals);
-    console.log('  ENSURE BUY ' + a.symbol + ' ' + size + ' @ ' + price);
-    const r = await ex.limitOrder(a.pair, 'buy', price, size, { level: 1 });
-    ladder.buys.push({ level: 1, side: 'buy', price, size, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
-    await sleep(cfg.rateLimitMs);
-  }
+  if (!openS) await place('sell', formatPrice(book.ask || book.mid, a.pairDecimals));
+  if (!openB) await place('buy', formatPrice(book.bid || book.mid, a.pairDecimals));
 }
 
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null) {
@@ -175,7 +179,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const ladder = state.ladder;
   const before = new Map([...ladder.buys, ...ladder.sells].filter((o) => o.orderId).map((o) => [o.orderId, o.status]));
   const filledNow = syncLadderFromRegistry(ladder, orderRegistry);
-  await ensureBothSides(cfg, ex, a, ladder, book);
+  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state);
   const lastMid = state.lastMid || book.mid;
   const move = Math.abs(book.mid - lastMid) / (lastMid || book.mid);
   const anyOpen = [...ladder.buys, ...ladder.sells].some((o) => o.status === 'open');
