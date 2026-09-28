@@ -16,7 +16,7 @@ export function createPnl() {
   const add = (map, sym, n) => map.set(sym, (map.get(sym) || 0) + n);
   function book(symbol) {
     const k = key(symbol);
-    if (!books.has(k)) books.set(k, { boughtQty: 0, boughtCost: 0, soldQty: 0, soldProceeds: 0, realized: 0, fees: 0, fills: 0 });
+    if (!books.has(k)) books.set(k, { boughtQty: 0, boughtCost: 0, soldQty: 0, soldProceeds: 0, realized: 0, fees: 0, fills: 0, buyVolUsd: 0, sellVolUsd: 0 });
     return books.get(k);
   }
   function symbolOf(rec) {
@@ -52,9 +52,10 @@ export function createPnl() {
     feesPaid += fee;
     inv.set(sym, (inv.get(sym) || 0) + (buy ? qty : -qty));
     const b = book(sym);
+    const notional = rec.filledValue > 0 ? Number(rec.filledValue) : qty * px;
     b.fills += 1;
     b.fees += fee;
-    const notional = rec.filledValue > 0 ? Number(rec.filledValue) : qty * px;
+    if (buy) b.buyVolUsd = (b.buyVolUsd || 0) + notional; else b.sellVolUsd = (b.sellVolUsd || 0) + notional;
     if (buy) { b.boughtQty += qty; b.boughtCost += notional + fee; }
     else {
       const proceeds = Math.max(0, notional - fee);
@@ -105,7 +106,7 @@ export function createPnl() {
     const rows = [];
     for (const sym of symbols) {
       const b = books.get(sym) || { fills: 0, fees: 0 };
-      rows.push({ symbol: sym, price: priceBy.get(sym) || 0, maker: makerBy.get(sym) || 0, fills: b.fills || 0, fees: b.fees || 0 });
+      rows.push({ symbol: sym, price: priceBy.get(sym) || 0, maker: makerBy.get(sym) || 0, fills: b.fills || 0, fees: b.fees || 0, buyUsd: b.buyVolUsd || 0, sellUsd: b.sellVolUsd || 0 });
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedTotalUsd() - priceAcc - makerAcc + feesPaid : null;
@@ -122,7 +123,7 @@ export function createPnl() {
     const b = bankedTotalUsd();
     if (b > 0) console.log('  BANK   ' + fmt(b) + '   moved to trade-bot-bank  wallet+bank=' + ((s.walletGain || 0) + b).toFixed(4));
     for (const r of s.rows) {
-      console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' fees=' + r.fees.toFixed(4));
+      console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' buy=$' + (r.buyUsd || 0).toFixed(2) + ' sell=$' + (r.sellUsd || 0).toFixed(2) + ' fees=' + r.fees.toFixed(4));
     }
     if (!s.rows.length) console.log('  no inventory/fills yet');
     return s;
@@ -131,8 +132,8 @@ export function createPnl() {
     const n = Number(fee);
     if (!(n > 0)) return;
     feesPaid += n;
-    const b = books.get(symbolOf(rec));
-    if (b) b.fees += n;
+    const bk = books.get(symbolOf(rec));
+    if (bk) bk.fees += n;
   }
   return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee };
 }
