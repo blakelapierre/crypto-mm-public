@@ -289,8 +289,10 @@ function boardHtml(rows){
         '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>';
     }).join('');
     const q=projectOf(b);
+    const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
+    const wal=b.pnl&&b.pnl.walletGain;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
-      '<div class="sz">vol/h $'+fmtN(q.vol)+' · wallet/h '+fmt(q.wallet)+'</div>'+
+      '<div class="sz">vol $'+fmtN(volNow)+'  wallet '+fmt(wal)+' · vol/h $'+fmtN(q.vol)+'  wallet/h '+fmt(q.wallet)+'</div>'+
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
