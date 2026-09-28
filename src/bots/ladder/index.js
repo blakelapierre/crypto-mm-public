@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
-import { startCoinbaseUserWs } from '../../shared/coinbase.js';
+import { startCoinbaseUserWs, startCoinbaseTickerWs } from '../../shared/coinbase.js';
 import { startKrakenUserWs, startKrakenTickerWs, toWsPair } from '../../shared/kraken.js';
 import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
 import { createPnl } from '../../shared/pnl.js';
@@ -37,6 +37,18 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
     ws = startCoinbaseUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
+    const tickPairs = mmAlloc.map((a) => a.pair).filter(Boolean);
+    const ticker = startCoinbaseTickerWs(tickPairs, (tk) => {
+      for (const [pair, st] of pairState) {
+        const p = String(pair || '').toUpperCase();
+        const n = String(tk.pair || '').toUpperCase();
+        if (p === n || p.replace('-USDC', '-USD') === n.replace('-USDC', '-USD')) {
+          st.lastMid = tk.mid; st.lastBid = tk.bid; st.lastAsk = tk.ask;
+        }
+      }
+    });
+    const prevClose = ws.close.bind(ws);
+    ws.close = () => { try { ticker.close(); } catch { /* ignore */ } prevClose(); };
   } else if (cfg.exchange === 'kraken') {
     ws = startKrakenUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
     const tickPairs = mmAlloc.map((a) => a.wsname || toWsPair(a.pair)).filter(Boolean);
