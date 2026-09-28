@@ -108,7 +108,7 @@ export function createPnl() {
       rows.push({ symbol: sym, price: priceBy.get(sym) || 0, maker: makerBy.get(sym) || 0, fills: b.fills || 0, fees: b.fees || 0 });
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
-    const other = wallet != null ? wallet - priceAcc - makerAcc + feesPaid : null;
+    const other = wallet != null ? wallet + bankedTotalUsd() - priceAcc - makerAcc + feesPaid : null;
     return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, otherPnl: other, rows };
   }
   function print(mids = {}, tag = 'MM gain') {
@@ -118,7 +118,7 @@ export function createPnl() {
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
     console.log('  FEES   ' + fmt(-s.fees) + '   venue commission (not in MAKER)');
-    if (s.otherPnl != null) console.log('  TAKER  ' + fmt(s.otherPnl) + '   residual so WALLET=PRICE+MAKER-FEES+TAKER');
+    if (s.otherPnl != null) console.log('  TAKER  ' + fmt(s.otherPnl) + '   residual so WALLET+BANK=PRICE+MAKER-FEES+TAKER');
     const b = bankedTotalUsd();
     if (b > 0) console.log('  BANK   ' + fmt(b) + '   moved to trade-bot-bank  wallet+bank=' + ((s.walletGain || 0) + b).toFixed(4));
     for (const r of s.rows) {
