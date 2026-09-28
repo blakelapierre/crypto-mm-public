@@ -7,8 +7,16 @@ function bankName() {
 }
 
 let bankedUsd = 0;
+let bankedStartUsd = 0;
 export function bankedTotalUsd() { return bankedUsd; }
-export function noteBankedUsd(n) { const v = Number(n); if (v > 0) bankedUsd += v; }
+export function bankedStartTotalUsd() { return bankedStartUsd; }
+export function bankedRunUsd() { return Math.max(0, bankedUsd - bankedStartUsd); }
+export function noteBankedUsd(n, kind = 'run') {
+  const v = Number(n);
+  if (!(v > 0)) return;
+  bankedUsd += v;
+  if (kind === 'startup') bankedStartUsd += v;
+}
 
 export async function resolvePortfolios(cfg) {
   let perms = {};
@@ -54,7 +62,7 @@ async function moveFunds(cfg, sourceUuid, bankUuid, currency, value) {
   return true;
 }
 
-export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
+export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind = 'run') {
   if (cfg.exchange !== 'coinbase' || cfg.dryRun) return;
   const pct = Number(fraction);
   if (!(pct > 0)) return;
@@ -66,7 +74,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
     const cash = (live.freeQuote || 0) * pct;
     if (cash >= 0.01) {
       try {
-        if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, cfg.quote, cash.toFixed(8))) noteBankedUsd(cash);
+        if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, cfg.quote, cash.toFixed(8))) noteBankedUsd(cash, kind);
       } catch (e) { console.warn('bank move ' + cfg.quote, e.message); }
     }
   }
@@ -78,7 +86,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
     if (!(Number(send) > 0)) continue;
     try {
       if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, pos.currency || sym, send)) {
-        noteBankedUsd(Number(send) * (pos.mid || 0));
+        noteBankedUsd(Number(send) * (pos.mid || 0), kind);
       }
     } catch (e) { console.warn('bank move ' + sym, e.message); }
     await sleep(cfg.rateLimitMs || 200);

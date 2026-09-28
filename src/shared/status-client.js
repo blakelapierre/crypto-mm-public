@@ -1,4 +1,4 @@
-import { bankedTotalUsd } from './bank.js';
+import { bankedTotalUsd, bankedRunUsd } from './bank.js';
 
 const url = () => process.env.STATUS_URL || '';
 const token = () => process.env.STATUS_TOKEN || '';
@@ -13,7 +13,7 @@ function headers() {
 export function postStatus(payload) {
   const dest = url();
   if (!dest) return;
-  const body = JSON.stringify({ ...payload, banked: bankedTotalUsd(), ts: Date.now() });
+  const body = JSON.stringify({ ...payload, banked: bankedTotalUsd(), bankedRun: bankedRunUsd(), ts: Date.now() });
   fetch(dest.replace(/\/$/, '') + '/status', { method: 'POST', headers: headers(), body })
     .catch((e) => console.warn('status post', e.message));
 }

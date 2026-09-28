@@ -295,7 +295,7 @@ async function main() {
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
     console.log('bank skim 0.5% -> trade bot bank');
     try {
-      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005));
+      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005), null, 'startup');
       live = await fetchLivePortfolio(cfg, ex, productMap);
     } catch (e) { console.warn('startup bank skim', e.message); }
   }

@@ -123,6 +123,7 @@ function projectOf(b){
   const hours=Math.max((Date.now()-(started||Date.now()))/3600000, 1/60);
   const vol=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
   const pnl=b.pnl||{};
+  const bankRun=Number(b.bankedRun||0);
   return {
     hours,
     vol: vol/hours,
@@ -130,6 +131,7 @@ function projectOf(b){
     fees: Number(pnl.fees||0)/hours,
     wallet: Number(pnl.walletGain||0)/hours,
     price: Number(pnl.pricePnl||0)/hours,
+    bank: bankRun/hours,
   };
 }
 function projBlock(b){
@@ -140,13 +142,15 @@ function projBlock(b){
     '<div><label>Maker/h</label><b>'+fmt(q.maker)+'</b></div>'+
     '<div><label>Fees/h</label><b>'+fmt(q.fees!=null?-q.fees:null)+'</b></div>'+
     '<div><label>Wallet/h</label><b>'+fmt(q.wallet)+'</b></div>'+
-    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b></div></div>'+
+    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b></div>'+
+    '<div><label>Bank/h</label><b>'+fmt(q.bank)+'</b></div></div>'+
     '<div class="kpi proj"><div><label>/day</label><b></b></div>'+
     '<div><label>Vol/d</label><b>'+fmtN(q.vol*24)+'</b></div>'+
     '<div><label>Maker/d</label><b>'+fmt(q.maker*24)+'</b></div>'+
     '<div><label>Fees/d</label><b>'+fmt(q.fees!=null?-q.fees*24:null)+'</b></div>'+
     '<div><label>Wallet/d</label><b>'+fmt(q.wallet*24)+'</b></div>'+
-    '<div><label>Price/d</label><b>'+fmt(q.price*24)+'</b></div></div>';
+    '<div><label>Price/d</label><b>'+fmt(q.price*24)+'</b></div>'+
+    '<div><label>Bank/d</label><b>'+fmt(q.bank*24)+'</b></div></div>';
 }
 
 function sparkDigits(vals){
@@ -312,7 +316,7 @@ function boardHtml(rows){
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
     const wal=b.pnl&&b.pnl.walletGain;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
-      '<div class="sz">vol $'+fmtN(volNow)+'  wallet '+fmt(wal)+' · vol/h $'+fmtN(q.vol)+'  wallet/h '+fmt(q.wallet)+' · vol/d $'+fmtN(q.vol*24)+'  wallet/d '+fmt(q.wallet*24)+'</div>'+
+      '<div class="sz">vol $'+fmtN(volNow)+'  wallet '+fmt(wal)+' · vol/h $'+fmtN(q.vol)+'  wallet/h '+fmt(q.wallet)+' · vol/d $'+fmtN(q.vol*24)+'  wallet/d '+fmt(q.wallet*24)+' · bank $'+fmtN(b.bankedRun)+'  bank/h '+fmt(q.bank)+'  bank/d '+fmt(q.bank*24)+'</div>'+
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
