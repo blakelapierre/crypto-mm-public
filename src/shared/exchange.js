@@ -241,6 +241,17 @@ export function createExchange(cfg, orderRegistry) {
     async getOrderStatus(orderId, venue = name) {
       if (!orderId) return null;
       if (String(orderId).startsWith('dry-')) return { status: (orderRegistry.get(orderId) || {}).status || 'open' };
+      if (venue === 'kraken' && cfg.useUserWebsocket && process.env.KRAKEN_REST_STATUS !== '1') {
+        const rec = orderRegistry.get(orderId);
+        if (!rec) return null;
+        return {
+          status: String(rec.status || 'open').toUpperCase(),
+          filledSize: rec.filledSize || 0,
+          filledValue: rec.filledValue || 0,
+          fee: rec.fee || 0,
+          avgPrice: rec.avgPrice || rec.price || 0,
+        };
+      }
       if (venue === 'coinbase') {
         try {
           const res = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/' + orderId);
