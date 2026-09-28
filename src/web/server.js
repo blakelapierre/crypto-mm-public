@@ -8,6 +8,7 @@ const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
 const sparks = new Map();
+const sparkFills = new Map();
 const SPARK_MS = Number(process.env.SPARK_WINDOW_MS || 15 * 60 * 1000);
 const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 5000);
 
@@ -28,6 +29,19 @@ function noteSparks(bot, markets) {
 function sparkSeries(bot, symbol) {
   return sparks.get(bot + ':' + symbol) || [];
 }
+function noteSparkFill(bot, fill) {
+  const sym = String(fill.symbol || '').toUpperCase() || String(fill.pair || '').split('-')[0].toUpperCase();
+  if (!sym) return;
+  const k = bot + ':' + sym;
+  const arr = sparkFills.get(k) || [];
+  arr.push({ ...fill, ts: fill.ts || new Date().toISOString() });
+  const cut = Date.now() - SPARK_MS;
+  sparkFills.set(k, arr.filter((f) => Date.parse(f.ts || 0) >= cut));
+}
+function sparkFillsFor(bot, symbol) {
+  const cut = Date.now() - SPARK_MS;
+  return (sparkFills.get(bot + ':' + String(symbol || '').toUpperCase()) || []).filter((f) => Date.parse(f.ts || 0) >= cut);
+}
 
 function auth(req) {
   if (!TOKEN) return true;
@@ -38,7 +52,7 @@ function auth(req) {
 function collect() {
   return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot))).map((b) => ({
     ...b,
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: (b.fills || []).filter((f) => String(f.symbol || '').toUpperCase() === String(m.symbol || '').toUpperCase() || String(f.pair || '').toUpperCase().startsWith(String(m.symbol || '').toUpperCase())) })),
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol) })),
   }));
 }
 
@@ -405,6 +419,7 @@ const server = http.createServer(async (req, res) => {
           asks: orders.filter((o) => String(o.side).toLowerCase() === 'sell').length,
         };
       });
+      noteSparkFill(id, fill);
       bots.set(id, { ...prev, fills, markets, bot: id });
       broadcast();
       res.writeHead(204); res.end();

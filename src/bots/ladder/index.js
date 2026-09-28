@@ -89,53 +89,81 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
     })();
     (async () => {
-      let lastRotateAt = Date.now();
-      await sleep(Math.max(cfg.volScanMs || 60000, 90000));
+      const enteredAt = new Map();
+      for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
+      const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
+      const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
+      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || 24);
+      const levels = Math.max(1, cfg.mmLevels || 1);
+      await sleep(Math.max(cfg.volScanMs || 60000, 30000));
       while (true) {
         try {
-          if (Date.now() - lastRotateAt < rotateMin) {
-            await sleep(Math.min(15000, rotateMin));
-            continue;
-          }
           const ranked = volScan.ranking();
-          const bandN = cfg.mmMaxPairs + Number(process.env.ROTATE_HYSTERESIS || 2);
-          const band = new Set(ranked.slice(0, bandN).map((r) => r.pair));
-          const next = mmAlloc.filter((a) => band.has(a.pair));
-          for (const r of ranked) {
-            if (next.length >= cfg.mmMaxPairs) break;
-            if (!next.some((x) => x.pair === r.pair)) next.push(r);
+          const now = Date.now();
+          let live = null;
+          try { live = await getLive(); } catch { live = null; }
+          const free = live ? Number(live.freeQuote || 0) : 0;
+          function costOf(row) {
+            const mid = Number(row.last || 0);
+            const minV = (row.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
+            const minUsd = Math.max(cfg.minOrderUsd || 1, mid > 0 ? minV * mid : cfg.minOrderUsd || 1);
+            return minUsd * levels * 2;
           }
-          if (next.length) {
-            const nextPairs = new Set(next.map((a) => a.pair));
-            const prev = new Set(mmAlloc.map((a) => a.pair));
-            const changed = [...nextPairs].some((p) => !prev.has(p)) || [...prev].some((p) => !nextPairs.has(p));
-            if (changed) {
-              lastRotateAt = Date.now();
-              console.log('MM rotate -> ' + next.map((a) => a.symbol).join(','));
-              const leaving = mmAlloc.filter((a) => !nextPairs.has(a.pair)).map((a) => a.symbol);
-              for (const [pair] of pairState) {
-                if (!nextPairs.has(pair)) {
-                  try { await ex.cancelPair(pair); } catch { /* ignore */ }
-                  pairState.delete(pair);
+          const keep = [];
+          const leaving = [];
+          for (const a of mmAlloc) {
+            const meta = volStatsForSymbol(a.symbol);
+            const range = meta ? Number(meta.rangePct || 0) : 0;
+            const age = now - (enteredAt.get(a.pair) || now);
+            const weak = range < exitPct;
+            if (weak && age >= rotateMin) leaving.push(a);
+            else keep.push(a);
+          }
+          const have = new Set(keep.map((a) => a.pair));
+          const additions = [];
+          let budget = free;
+          for (const a of keep) budget -= costOf(a);
+          for (const r of ranked) {
+            if (have.has(r.pair)) continue;
+            if (keep.length + additions.length >= hardMax) break;
+            if (Number(r.rangePct || 0) < enterPct) continue;
+            if (!(r.pair && r.symbol)) continue;
+            const need = costOf(r);
+            if (budget < need) continue;
+            additions.push(r);
+            budget -= need;
+          }
+          if (leaving.length || additions.length) {
+            if (leaving.length) console.log('MM exit ' + leaving.map((a) => a.symbol).join(',') + ' (>=' + (rotateMin / 60000) + 'm)');
+            if (additions.length) console.log('MM enter ' + additions.map((a) => a.symbol + ' ' + Number(a.rangePct).toFixed(2) + '%').join(', '));
+            const leavePairs = new Set(leaving.map((a) => a.pair));
+            const leaveSyms = leaving.map((a) => a.symbol);
+            for (const a of leaving) {
+              try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
+              pairState.delete(a.pair);
+              enteredAt.delete(a.pair);
+            }
+            mmAlloc.length = 0;
+            const next = [...keep, ...additions];
+            const invEach = next[0] && keep[0] ? keep[0].invTargetQuote : 0;
+            for (const a of next) {
+              mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: a.invTargetQuote || invEach });
+              if (!enteredAt.has(a.pair)) enteredAt.set(a.pair, now);
+            }
+            saveMmSet(mmAlloc);
+            setSizeUniverse(mmAlloc.map((x) => x.symbol));
+            if (cfg.exchange === 'coinbase' && (leaveSyms.length || additions.length)) {
+              try {
+                if (leaveSyms.length) {
+                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms);
+                  await liquidateSymbols(cfg, ex, await getLive(), leaveSyms);
                 }
-              }
-              const invEach = mmAlloc[0] ? mmAlloc[0].invTargetQuote : 0;
-              mmAlloc.length = 0;
-              for (const a of next) mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: invEach });
-              saveMmSet(mmAlloc);
-              setSizeUniverse(mmAlloc.map((x) => x.symbol));
-              if (cfg.exchange === 'coinbase' && leaving.length) {
-                try {
-                  console.log('bank skim 1% leaving ' + leaving.join(','));
-                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaving);
-                  await liquidateSymbols(cfg, ex, await getLive(), leaving);
-                  await seedNewInventory(cfg, ex, mmAlloc, await getLive());
-                } catch (e) { console.warn('rotate bank/liq', e.message); }
-              }
+                if (additions.length) await seedNewInventory(cfg, ex, additions.map((a) => mmAlloc.find((x) => x.pair === a.pair)).filter(Boolean), await getLive());
+              } catch (e) { console.warn('rotate bank/liq', e.message); }
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
-        await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 180000);
+        await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
   }
