@@ -209,6 +209,19 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const state = pairState.get(a.pair);
   const ladder = state.ladder;
+  const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol));
+  const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
+  if (wantLv > haveLv) {
+    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol);
+    const extraB = next.buys.filter((o) => o.level > haveLv);
+    const extraS = next.sells.filter((o) => o.level > haveLv);
+    if (extraB.length || extraS.length) {
+      console.log('  EXPAND grid ' + a.symbol + ' L' + haveLv + ' -> L' + wantLv + ' range=' + (rangeFrac(a.symbol) * 100).toFixed(2) + '%');
+      ladder.buys.push(...extraB);
+      ladder.sells.push(...extraS);
+      await placeLadder(cfg, ex, a.pair, { buys: extraB, sells: extraS }, a, getLive);
+    }
+  }
   const before = new Map([...ladder.buys, ...ladder.sells].filter((o) => o.orderId).map((o) => [o.orderId, o.status]));
   let filledNow = syncLadderFromRegistry(ladder, orderRegistry);
   for (const o of [...ladder.buys, ...ladder.sells]) {
