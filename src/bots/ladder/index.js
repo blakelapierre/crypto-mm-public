@@ -110,7 +110,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       await sleep(150);
     }
     if (!runMm._lastPnl || Date.now() - runMm._lastPnl > 30000) {
-      try { pnl.markHoldings(await getLive()); } catch { /* ignore */ }
+      let liveSnap = null;
+      try { liveSnap = await getLive(); pnl.markHoldings(liveSnap); } catch { /* ignore */ }
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       const snap = pnl.print(mids);
@@ -119,16 +120,23 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const a of mmAlloc) {
         const st = pairState.get(a.pair);
         const legs = st && st.ladder ? [...st.ladder.buys, ...st.ladder.sells] : [];
-        const bids = legs.filter((o) => o.side === 'buy' && o.status === 'open').length;
-        const asks = legs.filter((o) => o.side === 'sell' && o.status === 'open').length;
+        const openB = legs.filter((o) => o.side === 'buy' && o.status === 'open');
+        const openA = legs.filter((o) => o.side === 'sell' && o.status === 'open');
+        const bids = openB.length;
+        const asks = openA.length;
+        const bidUsd = openB.reduce((s, o) => s + Number(o.size) * Number(o.price), 0);
+        const askUsd = openA.reduce((s, o) => s + Number(o.size) * Number(o.price), 0);
         const mid = st && st.lastMid;
         const vs = volStatsForSymbol(a.symbol);
         const fee = realizedFeeBps(a.pair);
         const w = sizeWeightForSymbol(a.symbol);
+        const book = (snap.rows || []).find((r) => r.symbol === a.symbol) || {};
         marketRows.push({
           symbol: a.symbol,
           mid: mid ? Number(mid).toFixed(6) : 'n/a',
-          bids, asks,
+          bids, asks, bidUsd, askUsd,
+          buyUsd: book.buyUsd || 0,
+          sellUsd: book.sellUsd || 0,
           vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x',
@@ -137,13 +145,32 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           '  ' + String(a.symbol).padEnd(8) +
             ' mid=' + (mid ? Number(mid).toFixed(6) : 'n/a') +
             '  bid/ask ' + bids + '/' + asks +
+            '  bid$=' + bidUsd.toFixed(2) + ' ask$=' + askUsd.toFixed(2) +
+            '  vol buy=$' + Number(book.buyUsd || 0).toFixed(2) +
+            ' sell=$' + Number(book.sellUsd || 0).toFixed(2) +
             '  w=' + w.toFixed(2) + 'x' +
-            '  vol=' + (vs ? vs.rangePct.toFixed(2) + '%' : 'n/a') +
+            '  range=' + (vs ? vs.rangePct.toFixed(2) + '%' : 'n/a') +
             '  fee=' + (fee != null ? fee.toFixed(1) + 'bps' : 'n/a')
         );
       }
+      const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
+      const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
+      const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
+      const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
+      const volBuy = marketRows.reduce((s, m) => s + (Number(m.buyUsd) || 0), 0);
+      const volSell = marketRows.reduce((s, m) => s + (Number(m.sellUsd) || 0), 0);
+      console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
+        '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
+        '  vol buy=$' + volBuy.toFixed(2) + ' sell=$' + volSell.toFixed(2));
       saveMmSet(mmAlloc);
-      postStatus({ bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote, pnl: snap, markets: marketRows });
+      postStatus({
+        bot: process.env.BOT || 'ladder',
+        exchange: cfg.exchange,
+        quote: cfg.quote,
+        pnl: snap,
+        markets: marketRows,
+        working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
+      });
       runMm._lastPnl = Date.now();
     }
     await sleep(cfg.updateIntervalMs);
