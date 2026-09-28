@@ -11,7 +11,7 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle,
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
-import { createVolScan } from '../../shared/vol-scan.js';
+import { createVolScan, setSizeUniverse } from '../../shared/vol-scan.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -28,6 +28,7 @@ const ex = createExchange(cfg, orderRegistry);
 
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
   console.log('\nladder MM');
+  setSizeUniverse(mmAlloc.map((a) => a.symbol));
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
     ws = startCoinbaseUserWs(cfg, (id, st) => markOrderFromExchange(orderRegistry, id, st, pnl));
@@ -74,6 +75,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               mmAlloc.length = 0;
               for (const a of next) mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: invEach });
               saveMmSet(mmAlloc);
+              setSizeUniverse(mmAlloc.map((x) => x.symbol));
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
