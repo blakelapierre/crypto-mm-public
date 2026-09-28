@@ -23,7 +23,7 @@ export async function krakenPrivate(cfg, endpoint, params = {}) {
     body: qs.stringify(body),
   });
   const data = await res.json();
-  if (data.error?.length) throw new Error(data.error.join(' | '));
+  if (data.error && data.error.length) throw new Error(data.error.join(' | '));
   return data.result;
 }
 
@@ -32,19 +32,25 @@ export function startKrakenUserWs(cfg, onStatus) {
   let ws = null;
   let timer = null;
   let closed = false;
+  let backoff = 5000;
+  let cachedTok = null;
   async function token() {
+    if (cachedTok) return cachedTok;
     const r = await krakenPrivate(cfg, 'GetWebSocketsToken');
-    return r && r.token;
+    cachedTok = r && r.token;
+    return cachedTok;
   }
   function handle(msg) {
     if (!Array.isArray(msg)) return;
-    const channel = msg[1] || msg[msg.length - 1];
+    const channel = msg.find((x) => x === 'ownTrades' || x === 'openOrders');
+    if (!channel) return;
     const payload = msg[0];
     if (!payload) return;
     const rows = Array.isArray(payload) ? payload : [payload];
     for (const row of rows) {
-      const entries = typeof row === 'object' && !Array.isArray(row) ? Object.entries(row) : [];
-      for (const [id, o] of entries) {
+      if (!row || typeof row !== 'object') continue;
+      for (const [id, o] of Object.entries(row)) {
+        if (!o || typeof o !== 'object') continue;
         if (channel === 'ownTrades' || o.ordertxid) {
           onStatus(o.ordertxid || id, 'FILLED', {
             filledSize: parseFloat(o.vol || 0) || 0,
@@ -54,9 +60,12 @@ export function startKrakenUserWs(cfg, onStatus) {
             ordertype: o.ordertype || o.orderType,
             taker: /market/i.test(String(o.ordertype || o.orderType || '')),
           });
-        } else if (channel === 'openOrders' || o.status) {
-          const map = { closed: 'FILLED', open: 'OPEN', canceled: 'CANCELLED', cancelled: 'CANCELLED', expired: 'EXPIRED' };
-          const st = map[String(o.status || '').toLowerCase()] || String(o.status || '').toUpperCase();
+        } else if (channel === 'openOrders') {
+          const raw = String(o.status || '').toLowerCase();
+          if (!raw) continue;
+          const map = { closed: 'FILLED', open: 'OPEN', pending: 'OPEN', canceled: 'CANCELLED', cancelled: 'CANCELLED', expired: 'EXPIRED' };
+          const st = map[raw];
+          if (!st) continue;
           onStatus(id, st, {
             filledSize: parseFloat(o.vol_exec || 0) || 0,
             avgPrice: parseFloat(o.avg_price || o.avgPrice || 0) || 0,
@@ -68,18 +77,24 @@ export function startKrakenUserWs(cfg, onStatus) {
   const connect = async () => {
     if (closed) return;
     let tok;
-    try { tok = await token(); } catch (e) { console.warn('Kraken WS token', e.message); schedule(); return; }
+    try { tok = await token(); } catch (e) { console.warn('Kraken WS token', e.message); cachedTok = null; schedule(); return; }
     if (!tok) { schedule(); return; }
     try { ws = new WebSocket('wss://ws-auth.kraken.com'); } catch (e) { console.warn('Kraken WS create', e.message); schedule(); return; }
     ws.on('open', () => {
       console.log('Kraken user WS connected');
+      backoff = 5000;
       ws.send(JSON.stringify({ event: 'subscribe', subscription: { name: 'ownTrades', token: tok } }));
       ws.send(JSON.stringify({ event: 'subscribe', subscription: { name: 'openOrders', token: tok } }));
     });
     ws.on('message', (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
-      if (msg.event === 'heartbeat' || msg.event === 'systemStatus' || msg.event === 'subscriptionStatus') return;
+      if (msg && msg.event === 'subscriptionStatus' && msg.status === 'error') {
+        console.warn('Kraken WS sub', msg.errorMessage || msg.error || JSON.stringify(msg));
+        cachedTok = null;
+        return;
+      }
+      if (msg && (msg.event === 'heartbeat' || msg.event === 'systemStatus' || msg.event === 'subscriptionStatus')) return;
       handle(msg);
     });
     ws.on('close', () => { if (!closed) { console.warn('Kraken user WS closed'); schedule(); } });
@@ -87,16 +102,61 @@ export function startKrakenUserWs(cfg, onStatus) {
   };
   const schedule = () => {
     if (timer || closed) return;
+    const wait = backoff;
+    backoff = Math.min(backoff * 2, 60000);
+    timer = setTimeout(() => { timer = null; connect(); }, wait);
+  };
+  connect();
+  return { close() { closed = true; try { if (ws) ws.close(); } catch { /* ignore */ } } };
+}
+
+export function startKrakenTickerWs(pairs, onTick) {
+  const list = [...new Set((pairs || []).filter(Boolean))];
+  if (!list.length) return { close() {}, setPairs() {} };
+  let ws = null;
+  let timer = null;
+  let closed = false;
+  let want = list;
+  function subscribe(sock, names) {
+    if (!sock || sock.readyState !== 1 || !names.length) return;
+    sock.send(JSON.stringify({ event: 'subscribe', pair: names, subscription: { name: 'ticker' } }));
+  }
+  const connect = () => {
+    if (closed) return;
+    try { ws = new WebSocket('wss://ws.kraken.com'); } catch (e) { console.warn('Kraken ticker WS', e.message); schedule(); return; }
+    ws.on('open', () => { console.log('Kraken ticker WS ' + want.join(',')); subscribe(ws, want); });
+    ws.on('message', (buf) => {
+      let msg;
+      try { msg = JSON.parse(buf.toString()); } catch { return; }
+      if (!Array.isArray(msg)) return;
+      const ch = msg[2] || msg[1];
+      if (ch !== 'ticker') return;
+      const data = msg[1] || {};
+      const pair = msg[3] || msg[4];
+      const bid = parseFloat((data.b && data.b[0]) || 0);
+      const ask = parseFloat((data.a && data.a[0]) || 0);
+      const last = parseFloat((data.c && data.c[0]) || 0);
+      if (!(bid > 0 && ask > 0) && !(last > 0)) return;
+      onTick({ pair, bid: bid || last, ask: ask || last, mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : last });
+    });
+    ws.on('close', () => { if (!closed) schedule(); });
+    ws.on('error', (e) => console.warn('Kraken ticker', e.message));
+  };
+  const schedule = () => {
+    if (timer || closed) return;
     timer = setTimeout(() => { timer = null; connect(); }, 5000);
   };
   connect();
-  return { close() { closed = true; try { ws && ws.close(); } catch { /* ignore */ } } };
+  return {
+    close() { closed = true; try { if (ws) ws.close(); } catch { /* ignore */ } },
+    setPairs(next) { want = [...new Set((next || []).filter(Boolean))]; subscribe(ws, want); },
+  };
 }
 
 export async function krakenPublic(endpoint, params = {}) {
   const q = qs.stringify(params);
-  const res = await fetch(`${KRAKEN_BASE}/0/public/${endpoint}${q ? '?' + q : ''}`);
+  const res = await fetch(KRAKEN_BASE + '/0/public/' + endpoint + (q ? '?' + q : ''));
   const data = await res.json();
-  if (data.error?.length) throw new Error(data.error.join(' | '));
+  if (data.error && data.error.length) throw new Error(data.error.join(' | '));
   return data.result;
 }
