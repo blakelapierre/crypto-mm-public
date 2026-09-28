@@ -22,10 +22,19 @@ export function coinbaseWsMids() {
   return out;
 }
 export function coinbaseWsBook(pair) {
-  const rec = tickerBooks.get(String(pair || '').toUpperCase());
-  if (!rec || Date.now() - rec.at > tickerStaleMs()) return null;
-  return rec;
+  const p = String(pair || '').toUpperCase();
+  const keys = [p];
+  if (p.endsWith('-USDC')) keys.push(p.replace(/-USDC$/, '-USD'));
+  else if (p.endsWith('-USD')) keys.push(p + 'C');
+  const stale = tickerStaleMs();
+  const now = Date.now();
+  for (const k of keys) {
+    const rec = tickerBooks.get(k);
+    if (rec && rec.mid > 0 && now - rec.at <= stale) return rec;
+  }
+  return null;
 }
+export function rememberCoinbaseBook(pair, bid, ask, last) { return noteTicker(pair, bid, ask, last); }
 function noteTicker(pair, bid, ask, last) {
   const p = String(pair || '').toUpperCase();
   if (!p) return null;
@@ -34,6 +43,8 @@ function noteTicker(pair, bid, ask, last) {
   if (!(mid > 0)) return null;
   const rec = { pair: p, bid: b || mid, ask: a || mid, mid, last: l || mid, at: Date.now() };
   tickerBooks.set(p, rec);
+  if (p.endsWith('-USDC')) tickerBooks.set(p.replace(/-USDC$/, '-USD'), rec);
+  else if (p.endsWith('-USD') && !p.endsWith('-USDC')) tickerBooks.set(p + 'C', rec);
   return rec;
 }
 
@@ -176,18 +187,25 @@ export function startCoinbaseTickerWs(pairs, onTick) {
     try { ws = new WebSocket(COINBASE_MARKET_WS); }
     catch (e) { console.warn('Coinbase ticker WS create', e.message); schedule(); return; }
     ws.on('open', () => {
-      console.log('Coinbase ticker WS ' + products.join(','));
+      const chunk = Number(process.env.TICKER_SUB_CHUNK || 40);
+      console.log('Coinbase ticker WS n=' + products.length + ' chunk=' + chunk);
       ws.send(JSON.stringify({ type: 'subscribe', channel: 'heartbeats', product_ids: products.slice(0, 1) }));
-      ws.send(JSON.stringify({ type: 'subscribe', channel: 'ticker', product_ids: products }));
+      for (let i = 0; i < products.length; i += chunk) {
+        ws.send(JSON.stringify({ type: 'subscribe', channel: 'ticker', product_ids: products.slice(i, i + chunk) }));
+      }
     });
     ws.on('message', (buf) => {
       let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
       if (msg.channel === 'heartbeats' || msg.channel === 'subscriptions') return;
+      const tickers = [];
       for (const ev of msg.events || []) {
-        for (const tk of ev.tickers || []) {
-          const rec = noteTicker(tk.product_id, tk.best_bid || tk.bid, tk.best_ask || tk.ask, tk.price);
-          if (rec && onTick) onTick(rec);
-        }
+        if (ev.tickers) tickers.push(...ev.tickers);
+        else if (ev.product_id || ev.ticker) tickers.push(ev.ticker || ev);
+      }
+      if (msg.product_id && (msg.best_bid || msg.price)) tickers.push(msg);
+      for (const tk of tickers) {
+        const rec = noteTicker(tk.product_id || tk.productId, tk.best_bid || tk.bid, tk.best_ask || tk.ask, tk.price);
+        if (rec && onTick) onTick(rec);
       }
     });
     ws.on('close', () => { console.warn('Coinbase ticker WS closed'); schedule(); });

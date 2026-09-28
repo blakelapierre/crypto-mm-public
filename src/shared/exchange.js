@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
 import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } from './sizing.js';
-import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook } from './coinbase.js';
+import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 
 function money(v) {
@@ -91,6 +91,7 @@ export function createExchange(cfg, orderRegistry) {
             const book = (data.pricebooks || [])[0];
             if (book && book.bids && book.bids[0] && book.asks && book.asks[0]) {
               const bid = parseFloat(book.bids[0].price); const ask = parseFloat(book.asks[0].price);
+              rememberCoinbaseBook(pair, bid, ask);
               return { mid: (bid + ask) / 2, bid, ask, pair, venue };
             }
           } catch { /* fallback */ }
@@ -134,6 +135,7 @@ export function createExchange(cfg, orderRegistry) {
               if (!(book.bids && book.bids[0] && book.asks && book.asks[0])) continue;
               const bid = parseFloat(book.bids[0].price);
               const ask = parseFloat(book.asks[0].price);
+              rememberCoinbaseBook(book.product_id, bid, ask);
               const rec = { mid: (bid + ask) / 2, bid, ask, pair: book.product_id, venue, src: 'rest-batch' };
               out.set(book.product_id, rec);
               for (const p0 of part) {

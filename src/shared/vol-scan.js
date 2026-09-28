@@ -36,7 +36,11 @@ export async function fetchAllMids(cfg, productMap) {
     return sym && !(mids[sym] > 0);
   });
   if (!missing.length) return mids;
-  const chunk = 10;
+  if (process.env.VOL_SCAN_REST === '0') {
+    if (missing.length) console.log('vol scan ws-only missing=' + missing.length);
+    return mids;
+  }
+  const chunk = Number(process.env.VOL_SCAN_REST_CHUNK || 25);
   for (let i = 0; i < missing.length; i += chunk) {
     const ids = missing.slice(i, i + chunk);
     try {
@@ -51,17 +55,7 @@ export async function fetchAllMids(cfg, productMap) {
         if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
       }
     } catch (e) {
-      for (const id of ids) {
-        try {
-          const one = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(id));
-          const book = (one.pricebooks || [])[0];
-          if (!book) continue;
-          const bid = parseFloat((book.bids && book.bids[0] && book.bids[0].price) || 0);
-          const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
-          const sym = rev.get(book.product_id || id);
-          if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
-        } catch { /* skip */ }
-      }
+      console.warn('vol scan batch skip', ids.length, (e && e.message || '').slice(0, 80));
     }
     if (i + chunk < missing.length) await sleep(120);
   }
