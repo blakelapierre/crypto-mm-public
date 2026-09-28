@@ -81,7 +81,7 @@ th{color:#8b98a5;font-weight:500}
 tr.sell,tr.sell td{color:#f85149}
 tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
-.spark{vertical-align:middle;display:block}
+.spark{vertical-align:middle;display:block}.spark-hl{font-size:10px;color:#8b98a5;line-height:1.2}.spark-hl .hi{color:#3fb950}.spark-hl .lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 </style>
@@ -96,18 +96,29 @@ function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Num
 function fmtN(n){if(n==null||!Number.isFinite(Number(n)))return '';return Number(n).toFixed(2);}
 function sumMarkets(b,key){return (b.markets||[]).reduce((s,m)=>s+Number(m[key]||0),0);}
 function weightOf(m){return Number(m.wNum||parseFloat(m.w)||0);}
+function sparkDigits(vals){
+  const span=Math.max.apply(null,vals)-Math.min.apply(null,vals);
+  if(!(span>0)) return 4;
+  if(span>=10) return 2;
+  if(span>=1) return 3;
+  if(span>=0.1) return 4;
+  if(span>=0.01) return 5;
+  return 6;
+}
 function sparkSvg(vals){
   if(!vals||vals.length<2) return '';
   const w=72,h=18;
-  const min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
-  const span=(max-min)||1e-12;
+  const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals);
+  const span=(hi-lo)||1e-12;
   const pts=vals.map((v,i)=>{
     const x=(i/(vals.length-1))*w;
-    const y=h-2-((v-min)/span)*(h-4);
+    const y=h-2-((v-lo)/span)*(h-4);
     return x.toFixed(1)+','+y.toFixed(1);
   }).join(' ');
   const up=vals[vals.length-1]>=vals[0];
-  return '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+pts+'"/></svg>';
+  const d=sparkDigits(vals);
+  return '<div class="spark-wrap"><svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+pts+'"/></svg>'+
+    '<div class="spark-hl"><span class="hi">H '+hi.toFixed(d)+'</span> <span class="lo">L '+lo.toFixed(d)+'</span></div></div>';
 }
 function apiBlock(b){
   const a=b.api||{};
@@ -128,12 +139,14 @@ function priceDigits(ords){
     const i=s.indexOf('.');
     if(i>=0) d=Math.max(d,s.length-i-1);
   }
-  return d;
+  if(!d) d=4;
+  return Math.min(8,d);
 }
 function fmtPx(px,d){
   const n=Number(px);
   if(!Number.isFinite(n)) return px==null?'':String(px);
-  return d>0?n.toFixed(d):String(Math.round(n));
+  const dd=Math.min(8, d==null?6:d);
+  return dd>0?n.toFixed(dd):String(Math.round(n));
 }
 function orderBook(m){
   const ords=m.orders||[];
@@ -151,7 +164,7 @@ function orderBook(m){
 function walletTable(b){
   const rows=[...(b.wallet||[])].sort((a,c)=>Number(c.value||0)-Number(a.value||0));
   if(!rows.length) return '<h2>Wallet</h2><p class="age">no positions</p>';
-  const body=rows.map(w=>'<tr><td>'+esc(w.asset)+'</td><td>'+esc(w.amount)+'</td><td class="px">'+esc(w.mid)+'</td><td>'+fmtN(w.value)+'</td></tr>').join('');
+  const body=rows.map(w=>'<tr><td>'+esc(w.asset)+'</td><td>'+esc(w.amount)+'</td><td class="px">'+esc(fmtPx(w.mid,6))+'</td><td>'+fmtN(w.value)+'</td></tr>').join('');
   const tot=rows.reduce((s,w)=>s+Number(w.value||0),0);
   return '<h2>Wallet</h2><table><thead><tr><th>Asset</th><th>Amount</th><th>Mid</th><th>Value '+esc(b.quote||'')+'</th></tr></thead><tbody>'+
     body+'<tr><td colspan="3">Total</td><td>'+fmtN(tot)+'</td></tr></tbody></table>';
@@ -171,7 +184,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark)+'</div></td><td>'+esc(m.mid)+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
