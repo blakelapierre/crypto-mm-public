@@ -16,7 +16,7 @@ import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol 
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
-import { postStatus } from '../../shared/status-client.js';
+import { postStatus, postMids } from '../../shared/status-client.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -44,6 +44,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const n = String(tk.pair || '').toUpperCase();
         if (p === n || p.replace('-USDC', '-USD') === n.replace('-USDC', '-USD')) {
           st.lastMid = tk.mid; st.lastBid = tk.bid; st.lastAsk = tk.ask;
+          if (st.symbol) postMids([{ symbol: st.symbol, pair, mid: tk.mid, bid: tk.bid, ask: tk.ask }]);
         }
       }
     });
@@ -58,6 +59,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const n = String(tk.pair || '').replace('/', '').toUpperCase();
         if (p === n || p.includes(n) || n.includes(p.replace('USD', ''))) {
           st.lastMid = tk.mid; st.lastBid = tk.bid; st.lastAsk = tk.ask;
+          if (st.symbol) postMids([{ symbol: st.symbol, pair, mid: tk.mid, bid: tk.bid, ask: tk.ask }]);
         }
       }
     });

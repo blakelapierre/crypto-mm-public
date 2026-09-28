@@ -249,6 +249,33 @@ const server = http.createServer(async (req, res) => {
     } catch { res.writeHead(400); res.end('bad json'); }
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/mids') {
+    if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const id = String(msg.bot || 'unknown');
+      const prev = bots.get(id) || { bot: id, markets: [] };
+      const incoming = msg.mids || [];
+      const bySym = new Map((prev.markets || []).map((m) => [String(m.symbol || '').toUpperCase(), { ...m }]));
+      for (const row of incoming) {
+        const sym = String(row.symbol || '').toUpperCase();
+        if (!sym || !(Number(row.mid) > 0)) continue;
+        const cur = bySym.get(sym) || { symbol: sym, orders: [] };
+        cur.mid = row.mid;
+        if (row.bid != null) cur.bid = row.bid;
+        if (row.ask != null) cur.ask = row.ask;
+        bySym.set(sym, cur);
+      }
+      prev.markets = [...bySym.values()];
+      bots.set(id, prev);
+      noteSparks(id, incoming.map((r) => ({ symbol: r.symbol, mid: r.mid })));
+      broadcast();
+      res.writeHead(204); res.end();
+    } catch { res.writeHead(400); res.end('bad json'); }
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/fill') {
     if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
     let body = '';
