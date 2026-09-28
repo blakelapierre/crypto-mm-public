@@ -2,10 +2,12 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import WebSocket from 'ws';
-import { noteApi } from './api-timing.js';
+import { noteApi, noteApiCacheHit } from './api-timing.js';
 
 const COINBASE_BASE = 'https://api.coinbase.com';
 export const COINBASE_USER_WS = 'wss://advanced-trade-ws-user.coinbase.com';
+const bookHttpCache = new Map();
+function bookCacheTtl() { return Number(process.env.BOOK_CACHE_MS || 1000); }
 
 function base64url(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
@@ -71,6 +73,14 @@ export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {})
 export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
   const t0 = Date.now();
   try {
+    if (method === 'GET' && String(reqPath).includes('best_bid_ask')) {
+      const ttl = bookCacheTtl();
+      const hit = bookHttpCache.get(reqPath);
+      if (ttl > 0 && hit && Date.now() - hit.at < ttl) {
+        noteApiCacheHit();
+        return hit.data;
+      }
+    }
     const headers = {
       Authorization: 'Bearer ' + coinbaseJwt(cfg, method, reqPath),
       'Content-Type': 'application/json',
@@ -84,6 +94,9 @@ export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, res.ok);
     if (!res.ok) throw new Error('Coinbase ' + res.status + ' ' + method + ' ' + reqPath + ': ' + JSON.stringify(data));
+    if (method === 'GET' && String(reqPath).includes('best_bid_ask')) {
+      bookHttpCache.set(reqPath, { at: Date.now(), data });
+    }
     return data;
   } catch (e) {
     noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, false);
