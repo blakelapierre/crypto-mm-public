@@ -142,7 +142,7 @@ function resizeLeg(cfg, a, o, live) {
     const hard = Number(process.env.INV_CAP_HARD || 1.4);
     if (cap > 0 && held >= cap * hard) return 0;
     if (cap > 0 && held >= cap && ret <= 0) return 0;
-    const pairs = Math.max(1, pairState.size || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 1);
+    const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
     const room = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
