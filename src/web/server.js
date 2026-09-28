@@ -13,11 +13,9 @@ function auth(req) {
   const q = new URL(req.url, 'http://local').searchParams.get('token');
   return h === TOKEN || q === TOKEN;
 }
-
 function collect() {
   return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot)));
 }
-
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
 }
@@ -30,13 +28,19 @@ function fmtN(n) {
   if (n == null || !Number.isFinite(Number(n))) return '';
   return Number(n).toFixed(2);
 }
+function sumMarkets(b, key) {
+  return (b.markets || []).reduce((s, m) => s + Number(m[key] || 0), 0);
+}
 
 function htmlPage() {
   const rows = collect();
   const cards = rows.map((b) => {
     const p = b.pnl || {};
+    const w = b.working || {};
     const mk = (b.markets || []).map((m) =>
       '<tr><td>' + esc(m.symbol) + '</td><td>' + esc(m.mid) + '</td><td>' + m.bids + '/' + m.asks +
+      '</td><td>' + fmtN(m.bidUsd) + '</td><td>' + fmtN(m.askUsd) +
+      '</td><td>' + fmtN(m.buyUsd) + '</td><td>' + fmtN(m.sellUsd) +
       '</td><td>' + esc(m.vol) + '</td><td>' + esc(m.fee) + '</td><td>' + esc(m.w) + '</td></tr>'
     ).join('');
     const age = b.ts ? Math.round((Date.now() - b.ts) / 1000) + 's ago' : '';
@@ -47,9 +51,15 @@ function htmlPage() {
       '<div><label>MAKER</label><b>' + fmt(p.makerPnl) + '</b></div>' +
       '<div><label>FEES</label><b>' + fmt(p.fees != null ? -p.fees : null) + '</b></div>' +
       '<div><label>TAKER</label><b>' + fmt(p.otherPnl) + '</b></div>' +
-      '<div><label>BANK</label><b>' + fmt(b.banked) + '</b></div></div>' +
-      '<table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>' +
-      (mk || '<tr><td colspan="6">no markets</td></tr>') + '</tbody></table></section>';
+      '<div><label>BANK</label><b>' + fmt(b.banked) + '</b></div>' +
+      '<div><label>Bids</label><b>' + fmtN(w.bids) + '</b></div>' +
+      '<div><label>Asks</label><b>' + fmtN(w.asks) + '</b></div>' +
+      '<div><label>Inventory</label><b>' + fmtN(w.inventory) + '</b></div>' +
+      '<div><label>Cash</label><b>' + fmtN(w.cash) + '</b></div>' +
+      '<div><label>Vol buy</label><b>' + fmtN(sumMarkets(b, 'buyUsd')) + '</b></div>' +
+      '<div><label>Vol sell</label><b>' + fmtN(sumMarkets(b, 'sellUsd')) + '</b></div></div>' +
+      '<table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>' +
+      (mk || '<tr><td colspan="10">no markets</td></tr>') + '</tbody></table></section>';
   }).join('');
   return '<!doctype html><html><head><meta charset="utf-8"/><meta http-equiv="refresh" content="5"/>' +
     '<title>crypto-mm status</title><style>:root{color-scheme:dark}body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}h1{font-size:20px;font-weight:600}h2{font-size:16px;margin:0 0 12px}h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}.kpi div{min-width:90px}.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}.kpi b{font-size:16px}.kpi span{display:block;font-size:12px;color:#8b98a5}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}th{color:#8b98a5;font-weight:500}</style></head><body><h1>crypto-mm status</h1><p class="age">' +
