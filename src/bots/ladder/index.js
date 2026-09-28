@@ -193,12 +193,24 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
+      const quoteHold = liveSnap ? Number(liveSnap.quoteHold || 0) : 0;
+      const wallet = [];
+      const qAmt = cashUsd + quoteHold;
+      wallet.push({ asset: cfg.quote, amount: qAmt, mid: 1, value: qAmt });
+      const pos = (liveSnap && liveSnap.positions) || {};
+      for (const [sym, p0] of Object.entries(pos)) {
+        const amt = Number(p0.amount || 0);
+        const mid = Number(p0.mid || mids[sym] || 0);
+        const value = Number(p0.valueQuote != null ? p0.valueQuote : amt * mid);
+        wallet.push({ asset: sym, amount: amt, mid, value });
+      }
+      wallet.sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
         '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2));
       saveMmSet(mmAlloc);
       postStatus({
         bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
-        pnl: snap, markets: marketRows,
+        pnl: snap, markets: marketRows, wallet,
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(),
       });
