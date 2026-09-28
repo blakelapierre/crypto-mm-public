@@ -138,6 +138,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .hdr-stats label{color:#8b98a5;font-size:10px}
 .hdr-stats b{font-size:13px}
 .hdr-stats span{color:#8b98a5}
+.kpi span.ph{font-size:12px}.kpi span.pd{font-size:11px;opacity:.95}
+.kpi span.pw{font-size:10px;opacity:.85}.kpi span.pm{font-size:9px;opacity:.75}
+.kpi span.py{font-size:8px;opacity:.65}
+.hdr-stats .pw{font-size:10px}.hdr-stats .pm{font-size:9px}.hdr-stats .py{font-size:8px;opacity:.7}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:8px;line-height:normal}
 .board-card .cell{flex:0 0 auto;width:118px;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
@@ -195,6 +199,17 @@ function projectOf(b){
     price: Number(pnl.pricePnl||0)/hours,
     bank: bankRun/hours,
   };
+}
+function projLines(q, key, sparkPts, t0, money){
+  const h=q[key], d=h*24, w=h*24*7, m=h*24*30, y=h*24*365;
+  const show=money?fmt:fmtN;
+  const pre=money?'':'$';
+  const sign=function(v){return money?show(v):pre+show(v);};
+  return '<span class="ph">/h '+sign(h)+'</span>'+sparkSvg(rateSeries(sparkPts,t0,false))+
+    '<span class="pd">/d '+sign(d)+'</span>'+sparkSvg(rateSeries(sparkPts,t0,true))+
+    '<span class="pw">/7d '+sign(w)+'</span>'+
+    '<span class="pm">/30d '+sign(m)+'</span>'+
+    '<span class="py">/365d '+sign(y)+'</span>';
 }
 function rateSeries(points, startedAt, daily){
   const t0=startedAt||((points&&points[0]&&points[0].t)||Date.now());
@@ -355,18 +370,10 @@ function card(b){
   const t0=(b.pnl&&b.pnl.startedAt)||b.ts||Date.now();
   return '<section class="card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+
     '</small> <span class="age">'+age+'</span></h2><div class="kpi">'+
-    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+
-      '<span>/h '+fmt(q.wallet)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).wallet,t0,false))+
-      '<span>/d '+fmt(q.wallet*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).wallet,t0,true))+'</div>'+
-    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+
-      '<span>/h '+fmt(q.price)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).price,t0,false))+
-      '<span>/d '+fmt(q.price*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).price,t0,true))+'</div>'+
-    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+
-      '<span>/h '+fmt(q.maker)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,false))+
-      '<span>/d '+fmt(q.maker*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).maker,t0,true))+'</div>'+
-    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+
-      '<span>/h '+fmt(q.fees!=null?-q.fees:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,false))+
-      '<span>/d '+fmt(q.fees!=null?-q.fees*24:null)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).fees,t0,true))+'</div>'+
+    '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+projLines(q,'wallet',(b.kpiSpark||{}).wallet,t0,true)+'</div>'+
+    '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+projLines(q,'price',(b.kpiSpark||{}).price,t0,true)+'</div>'+
+    '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+projLines(q,'maker',(b.kpiSpark||{}).maker,t0,true)+'</div>'+
+    '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+projLines({fees:q.fees!=null?-q.fees:0},'fees',(b.kpiSpark||{}).fees,t0,true)+'</div>'+
     '<div><label>TAKER</label><b>'+fmt(p.takerFees!=null?-p.takerFees:null)+'</b></div>'+
     '<div><label>GAP</label><b>'+fmt(p.otherPnl)+'</b></div>'+
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
@@ -376,12 +383,8 @@ function card(b){
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+
-    '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+
-      '<span>/h $'+fmtN(q.vol)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).vol,t0,false))+
-      '<span>/d $'+fmtN(q.vol*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).vol,t0,true))+'</div>'+
-    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+
-      '<span>/h '+fmt(q.bank)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,false))+
-      '<span>/d '+fmt(q.bank*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,true))+'</div></div>'+
+    '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+projLines(q,'vol',(b.kpiSpark||{}).vol,t0,false)+'</div>'+
+    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+projLines(q,'bank',(b.kpiSpark||{}).bank,t0,true)+'</div></div>'+
     
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+fillsTable(b)+apiBlock(b)+'</section>';
@@ -404,9 +407,9 @@ function boardHtml(rows){
     const wal=b.pnl&&b.pnl.walletGain;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
       '<div class="hdr-stats">'+
-        '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b><span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span></div>'+
-        '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span></div>'+
-        '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span></div>'+
+        '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b><span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
+        '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
+        '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
