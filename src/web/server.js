@@ -7,6 +7,27 @@ loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
 const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
+const sparks = new Map();
+const SPARK_MS = Number(process.env.SPARK_WINDOW_MS || 15 * 60 * 1000);
+const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 5000);
+
+function noteSparks(bot, markets) {
+  const now = Date.now();
+  for (const m of markets || []) {
+    const mid = parseFloat(m.mid);
+    if (!(mid > 0) || !m.symbol) continue;
+    const k = bot + ':' + m.symbol;
+    const arr = sparks.get(k) || [];
+    const last = arr[arr.length - 1];
+    if (!last || now - last.t >= SPARK_GAP) arr.push({ t: now, p: mid });
+    else last.p = mid;
+    while (arr.length && now - arr[0].t > SPARK_MS) arr.shift();
+    sparks.set(k, arr);
+  }
+}
+function sparkSeries(bot, symbol) {
+  return (sparks.get(bot + ':' + symbol) || []).map((x) => x.p);
+}
 
 function auth(req) {
   if (!TOKEN) return true;
@@ -15,7 +36,10 @@ function auth(req) {
   return h === TOKEN || q === TOKEN;
 }
 function collect() {
-  return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot)));
+  return [...bots.values()].sort((a, b) => String(a.bot).localeCompare(String(b.bot))).map((b) => ({
+    ...b,
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol) })),
+  }));
 }
 
 const PAGE = `<!doctype html>
@@ -57,6 +81,7 @@ th{color:#8b98a5;font-weight:500}
 tr.sell,tr.sell td{color:#f85149}
 tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
+.spark{vertical-align:middle;display:block}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 </style>
@@ -71,6 +96,19 @@ function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Num
 function fmtN(n){if(n==null||!Number.isFinite(Number(n)))return '';return Number(n).toFixed(2);}
 function sumMarkets(b,key){return (b.markets||[]).reduce((s,m)=>s+Number(m[key]||0),0);}
 function weightOf(m){return Number(m.wNum||parseFloat(m.w)||0);}
+function sparkSvg(vals){
+  if(!vals||vals.length<2) return '';
+  const w=72,h=18;
+  const min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
+  const span=(max-min)||1e-12;
+  const pts=vals.map((v,i)=>{
+    const x=(i/(vals.length-1))*w;
+    const y=h-2-((v-min)/span)*(h-4);
+    return x.toFixed(1)+','+y.toFixed(1);
+  }).join(' ');
+  const up=vals[vals.length-1]>=vals[0];
+  return '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+pts+'"/></svg>';
+}
 function apiBlock(b){
   const a=b.api||{};
   const routes=a.routes||[];
@@ -133,7 +171,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'</td><td>'+esc(m.mid)+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark)+'</div></td><td>'+esc(m.mid)+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
@@ -205,6 +243,7 @@ const server = http.createServer(async (req, res) => {
       const id = String(msg.bot || 'unknown');
       const prev = bots.get(id) || {};
       bots.set(id, { ...prev, ...msg, fills: msg.fills || prev.fills || [], bot: id, ts: Date.now() });
+      noteSparks(id, msg.markets || prev.markets);
       broadcast();
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
