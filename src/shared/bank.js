@@ -86,6 +86,8 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
 }
 
 export async function liquidateSymbols(cfg, ex, live, symbols) {
+  const jobs = [];
+  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 200);
   for (const sym of symbols) {
     const pos = live.positions[sym];
     if (!pos || !(pos.amount > 0) || !pos.pair) continue;
@@ -94,10 +96,13 @@ export async function liquidateSymbols(cfg, ex, live, symbols) {
       console.log('  skip liq ' + sym + ' below min');
       continue;
     }
-    console.log('  MARKET SELL ' + sellAmt + ' ' + sym + ' (leave rotation)');
-    try { await ex.marketSell(pos.pair, sellAmt); } catch (e) { console.warn('  liq ' + sym, e.message); }
-    await sleep(cfg.rateLimitMs || 200);
+    jobs.push({ sym, pos, sellAmt });
   }
+  await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
+    console.log('  MARKET SELL ' + j.sellAmt + ' ' + j.sym + ' (leave rotation)');
+    try { await ex.marketSell(j.pos.pair, j.sellAmt); }
+    catch (e) { console.warn('  liq ' + j.sym, e.message); }
+  })));
 }
 
 export async function seedNewInventory(cfg, ex, mmAlloc, live) {
