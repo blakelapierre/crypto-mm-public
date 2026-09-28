@@ -210,9 +210,19 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
         '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2));
       saveMmSet(mmAlloc);
+      const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
+      const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
+      const proj = {
+        hours,
+        vol: volNow / hours,
+        maker: Number(snap.makerPnl || 0) / hours,
+        fees: Number(snap.fees || 0) / hours,
+        wallet: Number(snap.walletGain || 0) / hours,
+        price: Number(snap.pricePnl || 0) / hours,
+      };
       postStatus({
         bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
-        pnl: snap, markets: marketRows, wallet,
+        pnl: snap, markets: marketRows, wallet, proj,
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
       });

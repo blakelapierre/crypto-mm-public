@@ -96,6 +96,31 @@ function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Num
 function fmtN(n){if(n==null||!Number.isFinite(Number(n)))return '';return Number(n).toFixed(2);}
 function sumMarkets(b,key){return (b.markets||[]).reduce((s,m)=>s+Number(m[key]||0),0);}
 function weightOf(m){return Number(m.wNum||parseFloat(m.w)||0);}
+function projectOf(b){
+  const started=(b.pnl&&b.pnl.startedAt)||(b.proj&&b.proj.startedAt)||b.ts;
+  const hours=Math.max((Date.now()-(started||Date.now()))/3600000, 1/60);
+  const vol=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
+  const pnl=b.pnl||{};
+  return {
+    hours,
+    vol: vol/hours,
+    maker: Number(pnl.makerPnl||0)/hours,
+    fees: Number(pnl.fees||0)/hours,
+    wallet: Number(pnl.walletGain||0)/hours,
+    price: Number(pnl.pricePnl||0)/hours,
+  };
+}
+function projBlock(b){
+  const q=projectOf(b);
+  const h=q.hours>=1?q.hours.toFixed(2)+'h':(q.hours*60).toFixed(0)+'m';
+  return '<div class="kpi proj"><div><label>/hour</label><b>'+h+'</b></div>'+
+    '<div><label>Vol/h</label><b>'+fmtN(q.vol)+'</b></div>'+
+    '<div><label>Maker/h</label><b>'+fmt(q.maker)+'</b></div>'+
+    '<div><label>Fees/h</label><b>'+fmt(q.fees!=null?-q.fees:null)+'</b></div>'+
+    '<div><label>Wallet/h</label><b>'+fmt(q.wallet)+'</b></div>'+
+    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b></div></div>';
+}
+
 function sparkDigits(vals){
   const span=Math.max.apply(null,vals)-Math.min.apply(null,vals);
   if(!(span>0)) return 4;
@@ -238,7 +263,7 @@ function card(b){
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div></div>'+
-    apiBlock(b)+fillsTable(b)+
+    projBlock(b)+apiBlock(b)+fillsTable(b)+
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
 }

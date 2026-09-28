@@ -1,6 +1,7 @@
 import { bankedTotalUsd } from './bank.js';
 
 export function createPnl() {
+  const startedAt = Date.now();
   const books = new Map();
   let startEquity = null;
   let lastEquity = null;
@@ -115,7 +116,7 @@ export function createPnl() {
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedTotalUsd() - priceAcc - makerAcc + feesPaid : null;
-    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, takerFees, otherPnl: other, rows };
+    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
