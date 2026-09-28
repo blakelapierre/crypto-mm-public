@@ -28,5 +28,6 @@ export function backtestRungs(points, feeBps) {
       if (!best || row.edgePct > best.edgePct) best = row;
     }
   }
+  if (!best || best.touches < 3) return null;
   return best;
 }

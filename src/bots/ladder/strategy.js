@@ -310,7 +310,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const tick = Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals));
   if (!pairState.has(a.pair)) {
     const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
-    pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid, lastWeight: wNow });
+    pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid, lastWeight: wNow, bornAt: Date.now() });
     console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
     printLadder(a.symbol, a.pair, ladder, book);
@@ -362,7 +362,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const hint = rungHint(a.pair, a.symbol);
   const hintKey = hint ? (hint.levels + '@' + hint.stepBps) : '';
   const rungAge = Date.now() - (state.lastRungAt || 0);
-  const needRungs = hintKey && hintKey !== (state.rungKey || '') && rungAge > Number(process.env.RUNG_REQUOTE_MS || 60000);
+  const born = Date.now() - (state.bornAt || state.lastRequoteAt || 0);
+  const needRungs = hint && hint.touches >= 3 && hintKey && hintKey !== (state.rungKey || '') && rungAge > Number(process.env.RUNG_REQUOTE_MS || 60000) && born > 120000;
   if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
   const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs;
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
