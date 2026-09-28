@@ -7,7 +7,8 @@ let resolved = null;
 function filePath() {
   const raw = process.env.FILL_LOG;
   if (raw === '0' || raw === 'off' || raw === 'false') return null;
-  const rel = raw && raw.trim() ? raw.trim() : 'logs/fills.jsonl';
+  const bot = String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
+  const rel = raw && raw.trim() ? raw.trim() : 'logs/fills-' + bot + '.jsonl';
   return path.resolve(process.cwd(), rel);
 }
 
