@@ -5,6 +5,10 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
   const rec = orderRegistry.get(orderId);
   if (!rec) return;
   if (st === 'FILLED' || st === 'CLOSED') {
+    if (detail && (detail.taker || /market/i.test(String(detail.ordertype || detail.orderType || '')))) {
+      rec.taker = true;
+      rec.ordertype = detail.ordertype || 'market';
+    }
     if (detail) {
       if (detail.filledSize) rec.size = detail.filledSize;
       if (detail.avgPrice) rec.price = detail.avgPrice;
