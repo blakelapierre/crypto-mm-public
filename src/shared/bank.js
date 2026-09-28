@@ -7,6 +7,16 @@ function bankName() {
 }
 
 export async function resolvePortfolios(cfg) {
+  let perms = {};
+  try {
+    perms = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/key_permissions');
+  } catch (e) {
+    console.warn('bank key_permissions', e.message);
+  }
+  if (perms.can_transfer === false) {
+    console.warn('bank: API key has can_transfer=false — enable Transfer when creating the key');
+    return null;
+  }
   const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios');
   const list = data.portfolios || [];
   const want = bankName().toLowerCase();
@@ -15,16 +25,16 @@ export async function resolvePortfolios(cfg) {
     console.warn('bank portfolio not found: "' + bankName() + '" have=' + list.map((p) => p.name).join(', '));
     return null;
   }
+  const keyUuid = process.env.COINBASE_PORTFOLIO_UUID || perms.portfolio_uuid;
   const source =
-    list.find((p) => String(p.uuid) === process.env.COINBASE_PORTFOLIO_UUID) ||
+    list.find((p) => String(p.uuid) === String(keyUuid || '')) ||
     list.find((p) => String(p.type || '').toUpperCase() === 'DEFAULT') ||
-    list.find((p) => String(p.name || '').toLowerCase() === 'default') ||
     list.find((p) => p.uuid !== bank.uuid);
   if (!source || source.uuid === bank.uuid) {
-    console.warn('bank: could not resolve source portfolio');
+    console.warn('bank: could not resolve source portfolio (key uuid=' + (keyUuid || '?') + ')');
     return null;
   }
-  console.log('bank source=' + source.name + ' -> ' + bank.name);
+  console.log('bank source=' + source.name + ' (' + source.uuid + ') -> ' + bank.name + ' (' + bank.uuid + ') transfer=' + perms.can_transfer);
   return { source, bank };
 }
 
