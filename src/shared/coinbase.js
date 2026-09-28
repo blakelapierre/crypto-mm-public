@@ -24,8 +24,6 @@ function noteTicker(pair, bid, ask, last) {
   if (!(mid > 0)) return null;
   const rec = { pair: p, bid: b || mid, ask: a || mid, mid, last: l || mid, at: Date.now() };
   tickerBooks.set(p, rec);
-  if (p.endsWith('-USDC')) tickerBooks.set(p.replace(/-USDC$/, '-USD'), rec);
-  if (p.endsWith('-USD') && !p.endsWith('-USDC')) tickerBooks.set(p.replace(/-USD$/, '-USDC'), rec);
   return rec;
 }
 
@@ -160,13 +158,7 @@ export function startCoinbaseUserWs(cfg, onStatus) {
 }
 
 export function startCoinbaseTickerWs(pairs, onTick) {
-  const raw = [...new Set((pairs || []).map((p) => String(p || '').toUpperCase()).filter(Boolean))];
-  const list = [];
-  for (const p of raw) {
-    list.push(p);
-    if (p.endsWith('-USDC') && p !== 'USDT-USDC' && p !== 'EURC-USDC') list.push(p.replace(/-USDC$/, '-USD'));
-  }
-  const products = [...new Set(list)];
+  const products = [...new Set((pairs || []).map((p) => String(p || '').toUpperCase()).filter(Boolean))];
   if (!products.length) return { close() {} };
   let ws = null;
   let timer = null;
