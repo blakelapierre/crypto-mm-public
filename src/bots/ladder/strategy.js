@@ -40,8 +40,8 @@ export function printLadder(symbol, pair, ladder, book) {
   const sells = ladder.sells.filter(live);
   if (!buys.length && !sells.length) return;
   console.log(`\n[${new Date().toLocaleTimeString()}] ${symbol} ${pair} mid=${book.mid.toFixed(6)}`);
-  for (const o of buys) console.log(`  BUY  L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
-  for (const o of sells) console.log(`  SELL L${o.level} ${o.size} @ ${o.price}  [${o.status}]`);
+  for (const o of buys) console.log('  BUY  L' + o.level + ' ' + o.size + ' @ ' + o.price + '  ~$' + (Number(o.size) * Number(o.price)).toFixed(2) + '  [' + o.status + ']');
+  for (const o of sells) console.log('  SELL L' + o.level + ' ' + o.size + ' @ ' + o.price + '  ~$' + (Number(o.size) * Number(o.price)).toFixed(2) + '  [' + o.status + ']');
 }
 
 function pruneDone(ladder) {
