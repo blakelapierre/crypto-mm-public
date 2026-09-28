@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig } from '../../shared/env.js';
 import { createExchange } from '../../shared/exchange.js';
 import { startCoinbaseUserWs } from '../../shared/coinbase.js';
-import { startKrakenUserWs, startKrakenTickerWs } from '../../shared/kraken.js';
+import { startKrakenUserWs, startKrakenTickerWs, toWsPair } from '../../shared/kraken.js';
 import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
 import { createPnl } from '../../shared/pnl.js';
 import {
@@ -17,6 +17,7 @@ import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus } from '../../shared/status-client.js';
+import { snapshotApi } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -38,7 +39,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     ws = startCoinbaseUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
   } else if (cfg.exchange === 'kraken') {
     ws = startKrakenUserWs(cfg, (id, st, d) => markOrderFromExchange(orderRegistry, id, st, pnl, d));
-    const tickPairs = mmAlloc.map((a) => a.pair).filter(Boolean);
+    const tickPairs = mmAlloc.map((a) => a.wsname || toWsPair(a.pair)).filter(Boolean);
     const ticker = startKrakenTickerWs(tickPairs, (tk) => {
       for (const [pair, st] of pairState) {
         const p = String(pair || '').toUpperCase();
@@ -124,13 +125,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     pnl.print(mids, 'MM gain on stop');
     ws.close(); process.exit(0);
   });
-  while (true) {
-    for (const a of mmAlloc) {
-      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
-      catch (e) { console.error(a.symbol, e.message); }
-      await sleep(150);
-    }
-    if (!runMm._lastPnl || Date.now() - runMm._lastPnl > 30000) {
+  async function emitStatus() {
+    if (emitStatus.busy) return;
+    emitStatus.busy = true;
+    try {
       let liveSnap = null;
       try { liveSnap = await getLive(); pnl.markHoldings(liveSnap); } catch { /* ignore */ }
       const mids = {};
@@ -157,51 +155,47 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
         }));
         marketRows.push({
-          symbol: a.symbol,
-          mid: mid ? Number(mid).toFixed(6) : 'n/a',
+          symbol: a.symbol, mid: mid ? Number(mid).toFixed(6) : 'n/a',
           bids, asks, bidUsd, askUsd,
-          buyUsd: book.buyUsd || 0,
-          sellUsd: book.sellUsd || 0,
+          buyUsd: book.buyUsd || 0, sellUsd: book.sellUsd || 0,
           vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
-          w: w.toFixed(2) + 'x',
-          wNum: w,
-          orders,
+          w: w.toFixed(2) + 'x', wNum: w, orders,
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
       for (const m of marketRows) {
-        console.log(
-          '  ' + String(m.symbol).padEnd(8) +
-            ' mid=' + m.mid +
-            '  bid/ask ' + m.bids + '/' + m.asks +
-            '  bid$=' + Number(m.bidUsd).toFixed(2) + ' ask$=' + Number(m.askUsd).toFixed(2) +
-            '  vol buy=$' + Number(m.buyUsd || 0).toFixed(2) +
-            ' sell=$' + Number(m.sellUsd || 0).toFixed(2) +
-            '  w=' + m.w +
-            '  range=' + m.vol +
-            '  fee=' + m.fee
-        );
+        console.log('  ' + String(m.symbol).padEnd(8) + ' mid=' + m.mid + '  bid/ask ' + m.bids + '/' + m.asks +
+          '  bid$=' + Number(m.bidUsd).toFixed(2) + ' ask$=' + Number(m.askUsd).toFixed(2) +
+          '  vol buy=$' + Number(m.buyUsd || 0).toFixed(2) + ' sell=$' + Number(m.sellUsd || 0).toFixed(2) +
+          '  w=' + m.w + '  range=' + m.vol + '  fee=' + m.fee);
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
-      const volBuy = marketRows.reduce((s, m) => s + (Number(m.buyUsd) || 0), 0);
-      const volSell = marketRows.reduce((s, m) => s + (Number(m.sellUsd) || 0), 0);
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
-        '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
-        '  vol buy=$' + volBuy.toFixed(2) + ' sell=$' + volSell.toFixed(2));
+        '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2));
       saveMmSet(mmAlloc);
       postStatus({
-        bot: process.env.BOT || 'ladder',
-        exchange: cfg.exchange,
-        quote: cfg.quote,
-        pnl: snap,
-        markets: marketRows,
+        bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
+        pnl: snap, markets: marketRows,
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
+        api: snapshotApi(),
       });
-      runMm._lastPnl = Date.now();
+    } finally { emitStatus.busy = false; }
+  }
+  (async () => {
+    while (true) {
+      try { await emitStatus(); } catch (e) { console.warn('status tick', e.message); }
+      await sleep(Number(process.env.PNL_PRINT_MS || 30000));
+    }
+  })();
+  while (true) {
+    for (const a of mmAlloc) {
+      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
+      catch (e) { console.error(a.symbol, e.message); }
+      await sleep(150);
     }
     await sleep(cfg.updateIntervalMs);
   }
