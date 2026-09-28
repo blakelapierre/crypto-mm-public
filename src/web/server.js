@@ -34,6 +34,14 @@ function sumMarkets(b, key) {
 function weightOf(m) {
   return Number(m.wNum || parseFloat(m.w) || 0);
 }
+function apiHtml(b) {
+  const a = b.api || {};
+  const last = a.last || [];
+  if (!last.length) return '';
+  return '<div class="api">API avg ' + (a.avg || 0) + 'ms max ' + (a.max || 0) + 'ms<ul>' +
+    last.slice().reverse().map((c) => '<li>' + c.ms + 'ms ' + esc(c.venue) + ' ' + esc(c.label) + (c.ok === false ? ' FAIL' : '') + '</li>').join('') +
+    '</ul></div>';
+}
 
 function htmlPage() {
   const rows = collect();
@@ -68,11 +76,12 @@ function htmlPage() {
       '<div><label>Cash</label><b>' + fmtN(w.cash) + '</b></div>' +
       '<div><label>Vol buy</label><b>' + fmtN(sumMarkets(b, 'buyUsd')) + '</b></div>' +
       '<div><label>Vol sell</label><b>' + fmtN(sumMarkets(b, 'sellUsd')) + '</b></div></div>' +
+      apiHtml(b) +
       '<table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>' +
       (mk || '<tr><td colspan="10">no markets</td></tr>') + '</tbody></table></section>';
   }).join('');
   return '<!doctype html><html><head><meta charset="utf-8"/><meta http-equiv="refresh" content="5"/>' +
-    '<title>crypto-mm status</title><style>:root{color-scheme:dark}body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}h1{font-size:20px;font-weight:600}h2{font-size:16px;margin:0 0 12px}h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}.kpi div{min-width:90px}.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}.kpi b{font-size:16px}.kpi span{display:block;font-size:12px;color:#8b98a5}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}th{color:#8b98a5;font-weight:500}.ord,tr.orders td{color:#8b98a5;font-size:12px;font-family:ui-monospace,monospace}</style></head><body><h1>crypto-mm status</h1><p class="age">' +
+    '<title>crypto-mm status</title><style>:root{color-scheme:dark}body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}h1{font-size:20px;font-weight:600}h2{font-size:16px;margin:0 0 12px}h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}.kpi div{min-width:90px}.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}.kpi b{font-size:16px}.kpi span{display:block;font-size:12px;color:#8b98a5}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}th{color:#8b98a5;font-weight:500}.ord,tr.orders td{color:#8b98a5;font-size:12px;font-family:ui-monospace,monospace}.api{font-size:12px;color:#8b98a5;margin:8px 0}.api ul{margin:4px 0 0 16px;font-family:ui-monospace,monospace}</style></head><body><h1>crypto-mm status</h1><p class="age">' +
     (rows.length ? rows.length + ' bot(s)' : 'waiting for bot POSTs to /status') +
     ' · auto-refresh 5s</p>' +
     (cards || '<p>No reports yet. Start ladder/comp with STATUS_URL=http://127.0.0.1:' + PORT + '</p>') +
