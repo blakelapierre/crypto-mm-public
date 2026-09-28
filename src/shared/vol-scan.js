@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { setTimeout as sleep } from 'timers/promises';
 import { krakenPublic } from './kraken.js';
 import { coinbaseRequest } from './coinbase.js';
@@ -29,8 +31,7 @@ export async function fetchAllMids(cfg, productMap) {
     const ids = pairs.slice(i, i + chunk);
     try {
       const data = await coinbaseRequest(
-        cfg,
-        'GET',
+        cfg, 'GET',
         '/api/v3/brokerage/best_bid_ask?' + ids.map((id) => 'product_ids=' + encodeURIComponent(id)).join('&')
       );
       for (const book of data.pricebooks || []) {
@@ -49,12 +50,56 @@ export async function fetchAllMids(cfg, productMap) {
           const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
           const sym = rev.get(book.product_id || id);
           if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
-        } catch { /* skip invalid product_id */ }
+        } catch { /* skip */ }
       }
     }
     if (i + chunk < pairs.length) await sleep(120);
   }
   return mids;
+}
+
+function volFile() {
+  const raw = process.env.VOL_SCAN_FILE;
+  if (raw === 'off' || raw === '0' || raw === 'false') return null;
+  if (raw && raw.trim()) return path.resolve(process.cwd(), raw.trim());
+  const bot = String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
+  return path.resolve(process.cwd(), 'logs/vol-scan-' + bot + '.json');
+}
+
+export function saveVolScan(scan) {
+  const dest = volFile();
+  if (!dest || !scan || !scan.history) return;
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const hist = {};
+    for (const [sym, arr] of scan.history) hist[sym] = arr;
+    const scores = {};
+    for (const [k, v] of lastScore) scores[k] = v;
+    const meta = {};
+    for (const [k, v] of lastMeta) meta[k] = v;
+    fs.writeFileSync(dest, JSON.stringify({ ts: new Date().toISOString(), hist, scores, meta }));
+  } catch (e) { console.warn('vol-scan save', e.message); }
+}
+
+function loadVolInto(history) {
+  const dest = volFile();
+  if (!dest || !fs.existsSync(dest)) return 0;
+  try {
+    const j = JSON.parse(fs.readFileSync(dest, 'utf8'));
+    let n = 0;
+    for (const [sym, arr] of Object.entries(j.hist || {})) {
+      if (!Array.isArray(arr)) continue;
+      history.set(sym, arr.filter((x) => x && x.mid > 0 && x.t));
+      n += history.get(sym).length;
+    }
+    for (const [k, v] of Object.entries(j.scores || {})) lastScore.set(k, Number(v) || 0);
+    for (const [k, v] of Object.entries(j.meta || {})) lastMeta.set(k, v);
+    if (n) console.log('restored vol-scan samples=' + n + ' symbols=' + history.size);
+    return n;
+  } catch (e) {
+    console.warn('vol-scan load', e.message);
+    return 0;
+  }
 }
 
 const lastScore = new Map();
@@ -84,6 +129,7 @@ export function volStatsForSymbol(sym) {
 export function createVolScan(cfg, productMap) {
   const windowMs = (cfg.volWindowMin || 15) * 60 * 1000;
   const history = new Map();
+  loadVolInto(history);
   function push(sym, mid, now) {
     if (!(mid > 0)) return;
     if (!history.has(sym)) history.set(sym, []);
@@ -95,6 +141,7 @@ export function createVolScan(cfg, productMap) {
     const now = Date.now();
     const mids = await fetchAllMids(cfg, productMap);
     for (const [sym, mid] of Object.entries(mids)) push(sym, mid, now);
+    saveVolScan({ history });
     return Object.keys(mids).length;
   }
   function ranking() {
