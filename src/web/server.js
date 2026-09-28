@@ -129,6 +129,11 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 #board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
 #board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0;box-sizing:border-box}
 .board-card h2{margin:0 0 8px}
+.hdr-stats{display:flex;gap:16px;margin:0 0 8px;font-size:11px}
+.hdr-stats .col{display:flex;flex-direction:column;gap:1px}
+.hdr-stats label{color:#8b98a5;font-size:10px}
+.hdr-stats b{font-size:13px}
+.hdr-stats span{color:#8b98a5}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:8px;line-height:normal}
 .board-card .cell{flex:0 0 auto;width:118px;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
@@ -165,20 +170,21 @@ function projectOf(b){
 function projBlock(b){
   const q=projectOf(b);
   const h=q.hours>=1?q.hours.toFixed(2)+'h':(q.hours*60).toFixed(0)+'m';
+  const k=b.kpiSpark||{};
   return '<div class="kpi proj"><div><label>/hour</label><b>'+h+'</b></div>'+
-    '<div><label>Vol/h</label><b>'+fmtN(q.vol)+'</b></div>'+
-    '<div><label>Maker/h</label><b>'+fmt(q.maker)+'</b></div>'+
-    '<div><label>Fees/h</label><b>'+fmt(q.fees!=null?-q.fees:null)+'</b></div>'+
-    '<div><label>Wallet/h</label><b>'+fmt(q.wallet)+'</b></div>'+
-    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b></div>'+
-    '<div><label>Bank/h</label><b>'+fmt(q.bank)+'</b></div></div>'+
+    '<div><label>Vol/h</label><b>'+fmtN(q.vol)+'</b>'+sparkSvg(k.vol)+'</div>'+
+    '<div><label>Maker/h</label><b>'+fmt(q.maker)+'</b>'+sparkSvg(k.maker)+'</div>'+
+    '<div><label>Fees/h</label><b>'+fmt(q.fees!=null?-q.fees:null)+'</b>'+sparkSvg(k.fees)+'</div>'+
+    '<div><label>Wallet/h</label><b>'+fmt(q.wallet)+'</b>'+sparkSvg(k.wallet)+'</div>'+
+    '<div><label>Price/h</label><b>'+fmt(q.price)+'</b>'+sparkSvg(k.price)+'</div>'+
+    '<div><label>Bank/h</label><b>'+fmt(q.bank)+'</b>'+sparkSvg(k.bank)+'</div></div>'+
     '<div class="kpi proj"><div><label>/day</label><b></b></div>'+
-    '<div><label>Vol/d</label><b>'+fmtN(q.vol*24)+'</b></div>'+
-    '<div><label>Maker/d</label><b>'+fmt(q.maker*24)+'</b></div>'+
-    '<div><label>Fees/d</label><b>'+fmt(q.fees!=null?-q.fees*24:null)+'</b></div>'+
-    '<div><label>Wallet/d</label><b>'+fmt(q.wallet*24)+'</b></div>'+
-    '<div><label>Price/d</label><b>'+fmt(q.price*24)+'</b></div>'+
-    '<div><label>Bank/d</label><b>'+fmt(q.bank*24)+'</b></div></div>';
+    '<div><label>Vol/d</label><b>'+fmtN(q.vol*24)+'</b>'+sparkSvg(k.vol)+'</div>'+
+    '<div><label>Maker/d</label><b>'+fmt(q.maker*24)+'</b>'+sparkSvg(k.maker)+'</div>'+
+    '<div><label>Fees/d</label><b>'+fmt(q.fees!=null?-q.fees*24:null)+'</b>'+sparkSvg(k.fees)+'</div>'+
+    '<div><label>Wallet/d</label><b>'+fmt(q.wallet*24)+'</b>'+sparkSvg(k.wallet)+'</div>'+
+    '<div><label>Price/d</label><b>'+fmt(q.price*24)+'</b>'+sparkSvg(k.price)+'</div>'+
+    '<div><label>Bank/d</label><b>'+fmt(q.bank*24)+'</b>'+sparkSvg(k.bank)+'</div></div>';
 }
 
 function sparkDigits(vals){
@@ -346,7 +352,11 @@ function boardHtml(rows){
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
     const wal=b.pnl&&b.pnl.walletGain;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
-      '<div class="sz">vol $'+fmtN(volNow)+'  wallet '+fmt(wal)+' · vol/h $'+fmtN(q.vol)+'  wallet/h '+fmt(q.wallet)+' · vol/d $'+fmtN(q.vol*24)+'  wallet/d '+fmt(q.wallet*24)+' · bank $'+fmtN(b.bankedRun)+'  bank/h '+fmt(q.bank)+'  bank/d '+fmt(q.bank*24)+'</div>'+
+      '<div class="hdr-stats">'+
+        '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b><span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span></div>'+
+        '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span></div>'+
+        '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span></div>'+
+      '</div>'+
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
