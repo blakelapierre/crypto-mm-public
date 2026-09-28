@@ -218,19 +218,23 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
   if (!openB && !buyGate && !(cap > 0 && held >= cap)) await place('buy', formatPrice((book && (book.bid || book.mid)) || 0, a.pairDecimals));
 }
 
-export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null) {
-  const gap = Number(process.env.ORDER_STAGGER_MS || cfg.rateLimitMs || 150);
-  const legs = [...ladder.sells, ...ladder.buys];
+export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null, prefer = null) {
+  const gap = Number(process.env.ORDER_STAGGER_MS || 40);
+  const buys = ladder.buys || [];
+  const sells = ladder.sells || [];
+  const legs = prefer === 'buy' ? [...buys, ...sells] : [...sells, ...buys];
   await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
+    if (o.status === 'open' && o.orderId) return;
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
       if (!resized) { o.status = 'failed'; return; }
-      if (resized !== o.size) { console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' size ' + o.size + ' -> ' + resized); o.size = resized; }
+      if (resized !== o.size) { o.size = resized; }
     }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r && r.order_id) { o.orderId = r.order_id; o.status = 'open'; }
     else o.status = 'failed';
+    if (a) publishOrders(a, ladder, o.price);
   })));
 }
 
