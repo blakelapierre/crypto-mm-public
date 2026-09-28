@@ -2,6 +2,7 @@ const recent = [];
 const byKey = new Map();
 const MAX_RECENT = 40;
 let total = 0;
+let cacheHits = 0;
 const started = Date.now();
 
 export function noteApi(venue, label, ms, ok = true) {
@@ -18,6 +19,10 @@ export function noteApi(venue, label, ms, ok = true) {
   if (rec.ms >= 1000) console.warn('SLOW ' + rec.ms + 'ms ' + venue + ' ' + rec.label);
 }
 
+export function noteApiCacheHit() {
+  cacheHits += 1;
+}
+
 export function snapshotApi() {
   const last = recent.slice(-12);
   const routes = [...byKey.entries()]
@@ -30,6 +35,7 @@ export function snapshotApi() {
   return {
     last, routes, avg, max,
     n: total,
+    cacheHits,
     elapsedSec: Math.round(elapsedSec),
     perMin: Number((total / (elapsedSec / 60)).toFixed(1)),
   };
@@ -37,7 +43,7 @@ export function snapshotApi() {
 
 export function printApiTally() {
   const s = snapshotApi();
-  console.log('-- API tally n=' + s.n + '  ' + s.perMin + '/min  window avg=' + s.avg + 'ms max=' + s.max + 'ms --');
+  console.log('-- API tally n=' + s.n + ' http  cacheHits=' + s.cacheHits + '  ' + s.perMin + '/min  window avg=' + s.avg + 'ms max=' + s.max + 'ms --');
   for (const r of s.routes.slice(0, 15)) {
     console.log('  ' + String(r.n).padStart(4) + '  avg=' + String(r.avg).padStart(4) + 'ms  max=' + String(r.max).padStart(4) + 'ms  ' + r.key);
   }
