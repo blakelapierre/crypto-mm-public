@@ -58,6 +58,7 @@ export async function fetchAllMids(cfg, productMap) {
 }
 
 const lastScore = new Map();
+const lastMeta = new Map();
 let universe = [];
 
 export function setSizeUniverse(symbols) {
@@ -74,6 +75,10 @@ export function sizeWeightForSymbol(sym) {
   const mine = Math.max(1e-9, lastScore.get(key) || sum / names.length);
   const n = Math.max(1, names.length);
   return Math.min(3, Math.max(0.35, (mine / sum) * n));
+}
+
+export function volStatsForSymbol(sym) {
+  return lastMeta.get(String(sym || '').toUpperCase()) || null;
 }
 
 export function createVolScan(cfg, productMap) {
@@ -112,7 +117,11 @@ export function createVolScan(cfg, productMap) {
     }
     rows.sort((a, b) => b.volScore - a.volScore);
     lastScore.clear();
-    for (const r of rows) lastScore.set(r.symbol, r.volScore);
+    lastMeta.clear();
+    for (const r of rows) {
+      lastScore.set(r.symbol, r.volScore);
+      lastMeta.set(r.symbol, { volScore: r.volScore, rangePct: r.rangePct, samples: r.samples, last: r.last });
+    }
     return rows;
   }
   return { tick, ranking, history };
