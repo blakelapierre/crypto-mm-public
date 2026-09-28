@@ -25,18 +25,18 @@ const PAGE = `<!doctype html>
 <title>crypto-mm status</title>
 <style>
 :root{color-scheme:dark}
-body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:24px}
-h1{font-size:20px;font-weight:600}
-h2{font-size:16px;margin:0 0 12px}
+body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:14px;font-size:13px}
+h1{font-size:17px;font-weight:600;margin:0 0 8px}
+h2{font-size:13px;margin:0 0 8px}
 h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}
-.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px;margin:16px 0}
-.kpi{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px}
-.kpi div{min-width:90px}
-.kpi label{display:block;font-size:11px;color:#8b98a5;text-transform:uppercase}
-.kpi b{font-size:16px}
-.kpi span{display:block;font-size:12px;color:#8b98a5}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #30363d}
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin:10px 0}
+.kpi{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
+.kpi div{min-width:72px}
+.kpi label{display:block;font-size:10px;color:#8b98a5;text-transform:uppercase}
+.kpi b{font-size:14px}
+.kpi span{display:block;font-size:11px;color:#8b98a5}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:3px 6px;border-bottom:1px solid #30363d}
 th{color:#8b98a5;font-weight:500}
 .ord,tr.orders td{color:#8b98a5;font-size:12px;font-family:ui-monospace,monospace}
 .api-wrap{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 14px}
@@ -51,8 +51,12 @@ th{color:#8b98a5;font-weight:500}
 .split{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
 .split .wallet{flex:0 0 280px;max-width:320px}
 .split .markets{flex:1;min-width:420px}
-.book{width:auto;min-width:320px;font-family:ui-monospace,monospace;font-size:12px}
+.book{width:auto;min-width:280px;font-family:ui-monospace,monospace;font-size:11px}
+.book th,.book td{border:0;padding:1px 6px;line-height:1.25}
 .book td.px{text-align:right;font-variant-numeric:tabular-nums}
+tr.sell,tr.sell td{color:#f85149}
+tr.buy,tr.buy td{color:#3fb950}
+tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 </style>
@@ -79,15 +83,30 @@ function apiBlock(b){
     '</ul></div>';
   return '<div class="api-wrap">'+tally+times+'</div>';
 }
+function priceDigits(ords){
+  let d=0;
+  for(const o of ords||[]){
+    const s=String(o.price??'');
+    const i=s.indexOf('.');
+    if(i>=0) d=Math.max(d,s.length-i-1);
+  }
+  return d;
+}
+function fmtPx(px,d){
+  const n=Number(px);
+  if(!Number.isFinite(n)) return px==null?'':String(px);
+  return d>0?n.toFixed(d):String(Math.round(n));
+}
 function orderBook(m){
   const ords=m.orders||[];
+  const d=priceDigits(ords);
   const sells=ords.filter(o=>String(o.side).toLowerCase()==='sell').sort((a,b)=>Number(b.price)-Number(a.price));
   const buys=ords.filter(o=>String(o.side).toLowerCase()==='buy').sort((a,b)=>Number(b.price)-Number(a.price));
   const row=(cls,side,px,size,usd,st,id)=>
     '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
-  const lines=sells.map(o=>row('sell','SELL L'+o.level,o.price,o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
-  lines.push(row('mid','MID',m.mid,'','','',''));
-  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,o.price,o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
+  const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
+  lines.push(row('mid','MID',fmtPx(m.mid,d),'','','',''));
+  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
   return '<table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table>';
 }
