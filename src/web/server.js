@@ -84,7 +84,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:10px;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
-#board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:12px;margin:8px 0 14px;width:100%}
+#board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
 #board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0;box-sizing:border-box}
 .board-card h2{margin:0 0 8px}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:8px;line-height:normal}
@@ -288,7 +288,10 @@ function boardHtml(rows){
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
         '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>';
     }).join('');
-    return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2><div class="sparks">'+inner+'</div></section>';
+    const q=projectOf(b);
+    return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
+      '<div class="sz">vol/h $'+fmtN(q.vol)+' · wallet/h '+fmt(q.wallet)+'</div>'+
+      '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
 function render(data){
