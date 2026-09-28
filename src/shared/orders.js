@@ -1,4 +1,5 @@
 import { logFill } from './fill-log.js';
+import { assumedMakerFeeBps } from './fee-spread.js';
 import { postFill } from './status-client.js';
 
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
@@ -18,11 +19,13 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
     }
     if (rec.status !== 'filled') {
       rec.status = 'filled';
-      console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + (rec.fee ? ' fee=' + Number(rec.fee).toFixed(4) : ' fee=?'));
+      const notional = Number(rec.filledValue || 0) || (Number(rec.price || 0) * Number(rec.size || 0));
+      if (!(Number(rec.fee) > 0) && notional > 0) rec.fee = notional * (assumedMakerFeeBps() / 10000);
+      console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + ' fee=' + Number(rec.fee || 0).toFixed(4));
       if (pnl) pnl.recordFill(rec);
       logFill(rec, { orderId });
       rec.pnlRecorded = true;
-      rec.needFee = !(rec.fee > 0);
+      rec.needFee = false;
     } else if (rec.needFee && rec.fee > 0 && pnl && pnl.adjustFee) {
       pnl.adjustFee(rec, rec.fee);
       rec.needFee = false;
