@@ -181,14 +181,32 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const state = pairState.get(a.pair);
   const ladder = state.ladder;
   const before = new Map([...ladder.buys, ...ladder.sells].filter((o) => o.orderId).map((o) => [o.orderId, o.status]));
-  const filledNow = syncLadderFromRegistry(ladder, orderRegistry);
+  let filledNow = syncLadderFromRegistry(ladder, orderRegistry);
+  for (const o of [...ladder.buys, ...ladder.sells]) {
+    if (!o.orderId || o.status !== 'open') continue;
+    try {
+      const st = await ex.getOrderStatus(o.orderId);
+      const s = String((st && st.status) || '').toUpperCase();
+      if (s.indexOf('FILL') >= 0 && s.indexOf('PARTIAL') < 0) {
+        o.status = 'filled';
+        filledNow = true;
+        const rec = orderRegistry.get(o.orderId);
+        if (rec) rec.status = 'filled';
+      } else if (s === 'CANCELLED' || s === 'EXPIRED' || s === 'FAILED') {
+        o.status = 'cancelled';
+      }
+    } catch { /* ignore */ }
+  }
+  if (filledNow) state.lastEnsureAt = 0;
   await ensureBothSides(cfg, ex, a, ladder, book, getLive, state);
   const lastMid = state.lastMid || book.mid;
   const move = Math.abs(book.mid - lastMid) / (lastMid || book.mid);
-  const anyOpen = [...ladder.buys, ...ladder.sells].some((o) => o.status === 'open');
+  const openBuy = ladder.buys.some((o) => o.status === 'open');
+  const openSell = ladder.sells.some((o) => o.status === 'open');
+  const anyOpen = openBuy || openSell;
   const staleEmpty = !anyOpen && Date.now() - (state.lastRequoteAt || 0) > 15000;
   const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty;
-  if (!filledNow && anyOpen && !needRequote) return;
+  if (!filledNow && openBuy && openSell && !needRequote) return;
   if (needRequote && !filledNow) {
     console.log('  REQUOTE ' + a.symbol + ' mid ' + lastMid.toFixed(6) + ' -> ' + book.mid.toFixed(6));
     await cancelSide(ex, ladder.buys);
@@ -216,5 +234,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await skewOtherSide(cfg, ex, a, ladder, leg);
   }
   pruneDone(ladder);
+  state.lastEnsureAt = 0;
+  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }
