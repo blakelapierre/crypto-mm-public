@@ -1,18 +1,42 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
-import { sizeWeightForSymbol } from '../../shared/vol-scan.js';
+import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 
-export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null) {
-  const bps = applySpreadFromFees(cfg, pair);
-  const step = bps / 10000;
+function rangeFrac(symbol) {
+  const vs = volStatsForSymbol(symbol);
+  return vs && vs.rangePct > 0 ? vs.rangePct / 100 : 0;
+}
+function ladderLevelCount(cfg, range) {
+  let n = cfg.mmLevels || 1;
+  if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) n = Math.max(n, Number(process.env.MM_VOL_LEVELS || 3));
+  return n;
+}
+function gridStep(cfg, pair, symbol) {
+  const feeStep = applySpreadFromFees(cfg, pair) / 10000;
+  const range = rangeFrac(symbol);
+  const levels = ladderLevelCount(cfg, range);
+  if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) return Math.max(feeStep, range / (levels * 2 + 2));
+  return feeStep;
+}
+function exitStep(cfg, pair, symbol) {
+  const feeStep = applySpreadFromFees(cfg, pair) / 10000;
+  const range = rangeFrac(symbol);
+  const frac = Number(process.env.MM_RANGE_EXIT_FRAC || 0.4);
+  if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) return Math.max(feeStep, range * frac);
+  return feeStep;
+}
+
+export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null, symbol = null) {
+  const step = gridStep(cfg, pair, symbol);
+  const levels = ladderLevelCount(cfg, rangeFrac(symbol));
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
   const useBook = joinTouchForPair(cfg, pair) && book && book.bid && book.ask;
   let bid1 = useBook ? book.bid : mid * (1 - step);
   let ask1 = useBook ? book.ask : mid * (1 + step);
   if (bid1 >= ask1) { bid1 = mid - tick; ask1 = mid + tick; }
   const buys = []; const sells = [];
-  for (let i = 1; i <= cfg.mmLevels; i++) {
+  for (let i = 1; i <= levels; i++) {
     const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
     const buyPx = i === 1 ? bid1 : bid1 * (1 - (i - 1) * step);
     const sellPx = i === 1 ? ask1 : ask1 * (1 + (i - 1) * step);
@@ -117,8 +141,8 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   }
 }
 
-function nextSlidePrice(cfg, filledLeg, pairDecimals, pair) {
-  const step = applySpreadFromFees(cfg, pair) / 10000;
+function nextSlidePrice(cfg, filledLeg, pairDecimals, pair, symbol) {
+  const step = exitStep(cfg, pair, symbol);
   if (filledLeg.side === 'buy') return formatPrice(filledLeg.price * (1 - step), pairDecimals);
   return formatPrice(filledLeg.price * (1 + step), pairDecimals);
 }
@@ -127,7 +151,7 @@ async function slideSameSide(cfg, ex, a, ladder, filledLeg) {
   const sideLegs = filledLeg.side === 'buy' ? ladder.buys : ladder.sells;
   const working = sideLegs.filter((o) => o.status === 'open');
   if (working.length >= cfg.slideMaxLegsPerSide) return;
-  const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals, a.pair);
+  const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals, a.pair, a.symbol);
   const maxLevel = sideLegs.reduce((m, o) => Math.max(m, o.level || 0), 0);
   const neu = { level: maxLevel + 1, side: filledLeg.side, price, size: filledLeg.size, orderId: null, status: 'pending' };
   console.log('  SLIDE ' + neu.side.toUpperCase() + ' ' + a.symbol + ' ' + neu.size + ' @ ' + neu.price);
@@ -142,11 +166,11 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
   const otherSide = filledLeg.side === 'buy' ? 'sell' : 'buy';
   const others = otherSide === 'sell' ? ladder.sells : ladder.buys;
   const open = others.filter((o) => o.status === 'open' && o.orderId);
-  const tighten = cfg.skewTightenBps / 10000;
+  const step = exitStep(cfg, a.pair, a.symbol);
   if (!open.length) {
     const price = filledLeg.side === 'buy'
-      ? formatPrice(filledLeg.price * (1 + tighten), a.pairDecimals)
-      : formatPrice(filledLeg.price * (1 - tighten), a.pairDecimals);
+      ? formatPrice(filledLeg.price * (1 + step), a.pairDecimals)
+      : formatPrice(filledLeg.price * (1 - step), a.pairDecimals);
     const neu = { level: 1, side: otherSide, price, size: filledLeg.size, orderId: null, status: 'pending' };
     const r = await ex.limitOrder(a.pair, neu.side, neu.price, neu.size, { level: neu.level });
     if (r && r.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'failed';
@@ -157,8 +181,8 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
     ? open.reduce((b, o) => (o.price < b.price ? o : b))
     : open.reduce((b, o) => (o.price > b.price ? o : b));
   const newPx = otherSide === 'sell'
-    ? formatPrice(best.price * (1 - tighten), a.pairDecimals)
-    : formatPrice(best.price * (1 + tighten), a.pairDecimals);
+    ? formatPrice(best.price * (1 - step), a.pairDecimals)
+    : formatPrice(best.price * (1 + step), a.pairDecimals);
   if (newPx === best.price) return;
   await ex.cancelOrder(best.orderId);
   best.status = 'cancelled';
@@ -176,7 +200,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (!book) return;
   const sized = orderSizeUsd * sizeWeightForSymbol(a.symbol);
   if (!pairState.has(a.pair)) {
-    const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
+    const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol);
     pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid });
     console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
@@ -193,13 +217,10 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
       const st = await ex.getOrderStatus(o.orderId);
       const s = String((st && st.status) || '').toUpperCase();
       if (s.indexOf('FILL') >= 0 && s.indexOf('PARTIAL') < 0) {
-        o.status = 'filled';
-        filledNow = true;
+        o.status = 'filled'; filledNow = true;
         const rec = orderRegistry.get(o.orderId);
         if (rec) rec.status = 'filled';
-      } else if (s === 'CANCELLED' || s === 'EXPIRED' || s === 'FAILED') {
-        o.status = 'cancelled';
-      }
+      } else if (s === 'CANCELLED' || s === 'EXPIRED' || s === 'FAILED') o.status = 'cancelled';
     } catch { /* ignore */ }
   }
   if (filledNow) state.lastEnsureAt = 0;
@@ -213,15 +234,23 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty;
   if (!filledNow && openBuy && openSell && !needRequote) return;
   if (needRequote && !filledNow) {
-    console.log('  REQUOTE ' + a.symbol + ' mid ' + lastMid.toFixed(6) + ' -> ' + book.mid.toFixed(6));
-    await cancelSide(ex, ladder.buys);
+    console.log('  REQUOTE inside ' + a.symbol + ' mid ' + lastMid.toFixed(6) + ' -> ' + book.mid.toFixed(6));
+    const innerB = ladder.buys.filter((o) => (o.level || 1) === 1);
+    const innerS = ladder.sells.filter((o) => (o.level || 1) === 1);
+    await cancelSide(ex, innerB);
     await sleep(cfg.rateLimitMs);
-    await cancelSide(ex, ladder.sells);
+    await cancelSide(ex, innerS);
     await sleep(cfg.rateLimitMs);
-    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
-    state.ladder = next; state.lastMid = book.mid; state.lastRequoteAt = Date.now();
-    await placeLadder(cfg, ex, a.pair, next, a, getLive);
-    printLadder(a.symbol, a.pair, next, book);
+    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol);
+    const keepB = ladder.buys.filter((o) => (o.level || 1) !== 1 && o.status === 'open');
+    const keepS = ladder.sells.filter((o) => (o.level || 1) !== 1 && o.status === 'open');
+    const newB = next.buys.filter((o) => o.level === 1);
+    const newS = next.sells.filter((o) => o.level === 1);
+    state.ladder = { buys: [...keepB, ...newB], sells: [...keepS, ...newS], mid: book.mid };
+    state.lastMid = book.mid;
+    state.lastRequoteAt = Date.now();
+    await placeLadder(cfg, ex, a.pair, { buys: newB, sells: newS }, a, getLive);
+    printLadder(a.symbol, a.pair, state.ladder, book);
     return;
   }
   state.lastMid = book.mid;
@@ -229,7 +258,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (cfg.rebalanceOnFill) {
     await cancelSide(ex, ladder.buys);
     await cancelSide(ex, ladder.sells);
-    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
+    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol);
     state.ladder = next; state.lastMid = book.mid;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     return;
