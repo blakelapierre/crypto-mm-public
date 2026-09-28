@@ -161,6 +161,20 @@ function ourSpread(m){
   if(!(bid>0&&ask>0&&mid>0)) return null;
   return ((ask-bid)/mid)*10000;
 }
+function feeBpsOf(m){
+  const n=parseFloat(m.fee);
+  return Number.isFinite(n)?n:null;
+}
+function fmtSpread(m){
+  const spr=ourSpread(m);
+  if(spr==null) return '';
+  const pct=(spr/100).toFixed(2)+'%';
+  const fee=feeBpsOf(m);
+  if(fee==null) return pct+' ('+spr.toFixed(0)+'bps)';
+  const extra=spr-fee;
+  const rel=(extra>=0?'+':'')+extra.toFixed(0)+'bps vs fee';
+  return pct+' ('+rel+')';
+}
 
 function projectOf(b){
   const started=(b.pnl&&b.pnl.startedAt)||(b.proj&&b.proj.startedAt)||b.ts;
@@ -278,7 +292,7 @@ function orderBook(m){
   const row=(cls,side,px,size,usd,st,id)=>
     '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
   const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
-  const spr=ourSpread(m); lines.push(row('mid','MID',fmtPx(m.mid,d),spr!=null?spr.toFixed(1)+'bps':'','','',''));
+  lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','',''));
   buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
   return '<table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table>';
@@ -311,7 +325,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+((x=>x==null?'':x.toFixed(0)+'bps')(ourSpread(m)))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
@@ -364,7 +378,7 @@ function boardHtml(rows){
     const inner=cells.map(function(c){
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
-        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+(ourSpread(c.m)!=null?' · '+ourSpread(c.m).toFixed(0)+'bps':'')+'</div></div>';
+        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+(fmtSpread(c.m)?' · '+fmtSpread(c.m):'')+'</div></div>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
