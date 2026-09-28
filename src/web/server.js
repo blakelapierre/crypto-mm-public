@@ -81,7 +81,7 @@ th{color:#8b98a5;font-weight:500}
 tr.sell,tr.sell td{color:#f85149}
 tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
-.spark{vertical-align:middle;display:block}.spark-hl{font-size:10px;color:#8b98a5;line-height:1.2}.spark-hl .hi{color:#3fb950}.spark-hl .lo{color:#f85149}
+.spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:10px;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 </style>
@@ -105,10 +105,10 @@ function sparkDigits(vals){
   if(span>=0.01) return 5;
   return 6;
 }
-function sparkSvg(points, fills){
+function sparkSvg(points, fills, orders){
   const ptsIn=(!points||!points.length)?[]:points[0].p!=null?points:points.map(function(p){return {t:0,p:p};});
   if(ptsIn.length<2) return '';
-  const w=84,h=22;
+  const w=88,h=28;
   const t0=ptsIn[0].t, t1=ptsIn[ptsIn.length-1].t || t0+1;
   const spanT=Math.max(1,t1-t0);
   const marks=(fills||[]).map(function(f){
@@ -118,12 +118,17 @@ function sparkSvg(points, fills){
     if(Number.isFinite(ts) && (ts<t0-5000 || ts>t1+5000)) return null;
     return {t:Number.isFinite(ts)?ts:t1,p:px,side:String(f.side||'').toLowerCase()};
   }).filter(Boolean);
-  const vals=ptsIn.map(function(x){return x.p;}).concat(marks.map(function(m){return m.p;}));
+  const working=(orders||[]).map(function(o){
+    const px=Number(o.price);
+    if(!Number.isFinite(px)) return null;
+    return {p:px,side:String(o.side||'').toLowerCase()};
+  }).filter(Boolean);
+  const vals=ptsIn.map(function(x){return x.p;}).concat(marks.map(function(m){return m.p;})).concat(working.map(function(m){return m.p;}));
   const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals);
   const span=(hi-lo)||1e-12;
   function X(t,i){
-    if(t0 && t) return ((t-t0)/spanT)*w;
-    return (i/(ptsIn.length-1))*w;
+    if(t0 && t) return ((t-t0)/spanT)*(w-10);
+    return (i/(ptsIn.length-1))*(w-10);
   }
   function Y(p){ return h-3-((p-lo)/span)*(h-6); }
   const line=ptsIn.map(function(pt,i){ return X(pt.t,i).toFixed(1)+','+Y(pt.p).toFixed(1); }).join(' ');
@@ -132,9 +137,15 @@ function sparkSvg(points, fills){
     const fill=m.side==='sell'?'#f85149':'#3fb950';
     return '<circle cx="'+X(m.t,ptsIn.length-1).toFixed(1)+'" cy="'+Y(m.p).toFixed(1)+'" r="2.2" fill="'+fill+'" stroke="#0e1116" stroke-width="0.6"/>';
   }).join('');
+  const ticks=working.map(function(o){
+    const y=Y(o.p).toFixed(1);
+    const col=o.side==='sell'?'#f85149':'#3fb950';
+    return '<line x1="'+(w-9)+'" y1="'+y+'" x2="'+w+'" y2="'+y+'" stroke="'+col+'" stroke-width="1.6"/>';
+  }).join('');
   const d=sparkDigits(vals);
-  return '<div class="spark-wrap"><svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+'</svg>'+
-    '<div class="spark-hl"><span class="hi">H '+hi.toFixed(d)+'</span> <span class="lo">L '+lo.toFixed(d)+'</span></div></div>';
+  return '<div class="spark-wrap"><div class="spark-hl hi">H '+hi.toFixed(d)+'</div>'+
+    '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+ticks+'</svg>'+
+    '<div class="spark-hl lo">L '+lo.toFixed(d)+'</div></div>';
 }
 function apiBlock(b){
   const a=b.api||{};
@@ -200,7 +211,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
