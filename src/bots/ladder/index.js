@@ -210,12 +210,18 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       await sleep(Number(process.env.PNL_PRINT_MS || 30000));
     }
   })();
+  const gap = Number(process.env.ORDER_STAGGER_MS || cfg.rateLimitMs || 150);
+  const fresh = mmAlloc.filter((a) => !pairState.has(a.pair));
+  if (fresh.length) {
+    console.log('initial ladders concurrent n=' + fresh.length);
+    await Promise.all(fresh.map((a, i) => sleep(i * gap).then(() =>
+      processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
+    )));
+  }
   while (true) {
-    for (const a of mmAlloc) {
-      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
-      catch (e) { console.error(a.symbol, e.message); }
-      await sleep(150);
-    }
+    await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 80)).then(() =>
+      processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
+    )));
     await sleep(cfg.updateIntervalMs);
   }
 }
@@ -226,6 +232,12 @@ async function main() {
   if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) throw new Error('Missing Kraken keys');
   if (cfg.exchange === 'coinbase') console.log('JWT', ex.loadKeyInfo());
   const productMap = await ex.getProducts();
+  if (cfg.exchange === 'coinbase') {
+    const allPairs = [...new Set(Object.values(productMap).map((x) => x.pair).filter(Boolean))];
+    startCoinbaseTickerWs(allPairs, () => {});
+    console.log('ticker warmup ' + allPairs.length + ' products');
+    await sleep(Number(process.env.TICKER_WARMUP_MS || 2000));
+  }
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
   let live = await fetchLivePortfolio(cfg, ex, productMap);
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
