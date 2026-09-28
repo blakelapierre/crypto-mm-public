@@ -106,7 +106,8 @@ export function createPnl() {
       rows.push({ symbol: sym, price: priceBy.get(sym) || 0, maker: makerBy.get(sym) || 0, fills: b.fills || 0, fees: b.fees || 0 });
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
-    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, rows };
+    const other = wallet != null ? wallet - priceAcc - makerAcc + feesPaid : null;
+    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, otherPnl: other, rows };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
@@ -115,6 +116,7 @@ export function createPnl() {
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
     console.log('  FEES   ' + fmt(-s.fees) + '   venue commission (not in MAKER)');
+    if (s.otherPnl != null) console.log('  TAKER  ' + fmt(s.otherPnl) + '   residual so WALLET=PRICE+MAKER-FEES+TAKER');
     for (const r of s.rows) {
       console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' fees=' + r.fees.toFixed(4));
     }
