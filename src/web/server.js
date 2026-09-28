@@ -84,12 +84,13 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:10px;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
-.board{display:flex;flex-direction:column;gap:10px;margin:8px 0 14px}
-.board .bot-row{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:flex-end;gap:8px;overflow-x:auto}
-.board .bot-lab{flex:0 0 64px;font-size:11px;color:#8b98a5;padding-bottom:14px}
-.board .cell{flex:0 0 auto;width:108px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 8px}
-.board .cell .sym{font-size:12px;font-weight:600}
-.board .cell .sz{font-size:10px;color:#8b98a5}
+.board{display:block;margin:8px 0 14px}
+.board-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0 0 12px}
+.board-card h2{margin:0 0 8px}
+.board-card .sparks{white-space:nowrap;overflow-x:auto;overflow-y:hidden;line-height:0}
+.board-card .cell{display:inline-block;vertical-align:bottom;white-space:normal;line-height:1.2;width:118px;margin-right:8px;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
+.board-card .cell .sym{font-size:12px;font-weight:600}
+.board-card .cell .sz{font-size:10px;color:#8b98a5}
 </style>
 </head>
 <body>
@@ -287,7 +288,7 @@ function boardHtml(rows){
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
         '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>';
     }).join('');
-    return '<div class="bot-row"><div class="bot-lab">'+esc(b.bot)+'</div>'+inner+'</div>';
+    return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2><div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
 function render(data){
