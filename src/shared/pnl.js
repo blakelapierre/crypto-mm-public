@@ -5,6 +5,7 @@ export function createPnl() {
   let startEquity = null;
   let lastEquity = null;
   let feesPaid = 0;
+  let takerFees = 0;
   const inv = new Map();
   const lastMid = new Map();
   const priceBy = new Map();
@@ -36,6 +37,9 @@ export function createPnl() {
     }
     lastMid.set(sym, mid);
   }
+  function isTaker(rec) {
+    return !!(rec && (rec.taker || /market/i.test(String(rec.ordertype || rec.orderType || ''))));
+  }
   function recordFill(rec) {
     if (!rec) return;
     const qty = Number(rec.size);
@@ -50,6 +54,7 @@ export function createPnl() {
     makerAcc += edge;
     add(makerBy, sym, edge);
     feesPaid += fee;
+    if (isTaker(rec)) takerFees += fee;
     inv.set(sym, (inv.get(sym) || 0) + (buy ? qty : -qty));
     const b = book(sym);
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : qty * px;
@@ -110,7 +115,7 @@ export function createPnl() {
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedTotalUsd() - priceAcc - makerAcc + feesPaid : null;
-    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, otherPnl: other, rows };
+    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, takerFees, otherPnl: other, rows };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
@@ -118,8 +123,9 @@ export function createPnl() {
     if (s.walletGain != null) console.log('  WALLET ' + fmt(s.walletGain) + '   start=' + s.startEquity.toFixed(2) + ' now=' + s.lastEquity.toFixed(2));
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
-    console.log('  FEES   ' + fmt(-s.fees) + '   venue commission (not in MAKER)');
-    if (s.otherPnl != null) console.log('  TAKER  ' + fmt(s.otherPnl) + '   residual so WALLET+BANK=PRICE+MAKER-FEES+TAKER');
+    console.log('  FEES   ' + fmt(-s.fees) + '   all venue commission (not in MAKER)');
+    console.log('  TAKER  ' + fmt(-(s.takerFees || 0)) + '   market-order fees only');
+    if (s.otherPnl != null) console.log('  GAP    ' + fmt(s.otherPnl) + '   residual so WALLET+BANK=PRICE+MAKER-FEES+GAP');
     const b = bankedTotalUsd();
     if (b > 0) console.log('  BANK   ' + fmt(b) + '   moved to trade-bot-bank  wallet+bank=' + ((s.walletGain || 0) + b).toFixed(4));
     for (const r of s.rows) {
@@ -132,6 +138,7 @@ export function createPnl() {
     const n = Number(fee);
     if (!(n > 0)) return;
     feesPaid += n;
+    if (isTaker(rec)) takerFees += n;
     const bk = books.get(symbolOf(rec));
     if (bk) bk.fees += n;
   }
