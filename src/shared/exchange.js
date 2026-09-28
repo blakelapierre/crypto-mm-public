@@ -84,7 +84,32 @@ export function createExchange(cfg, orderRegistry) {
       const t = ticker[Object.keys(ticker)[0]];
       return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair, venue };
     },
+    async getBooks(pairs, venue = name) {
+      const out = new Map();
+      const list = [...new Set((pairs || []).filter(Boolean))];
+      if (!list.length) return out;
+      if (venue === 'kraken') {
+        try {
+          const ticker = await krakenPublic('Ticker', { pair: list.join(',') });
+          for (const [k, t] of Object.entries(ticker || {})) {
+            const bid = parseFloat(t.b[0]); const ask = parseFloat(t.a[0]);
+            const rec = { mid: (bid + ask) / 2, bid, ask, pair: k, venue };
+            out.set(k, rec);
+            for (const p of list) if (p === k || k.includes(p) || p.includes(k)) out.set(p, rec);
+          }
+        } catch (e) { console.warn('batch ticker', e.message); }
+        return out;
+      }
+      for (const p of list) {
+        try { const b = await this.getBook(p, venue); if (b) out.set(p, b); } catch { /* ignore */ }
+        await sleep(cfg.rateLimitMs || 200);
+      }
+      return out;
+    },
     async _touchThenMarket(pair, side, volume, quoteAmount, venue) {
+      if (venue === 'kraken' && process.env.MARKET_TOUCH_KRAKEN !== '1') {
+        return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
+      }
       const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 15000);
       if (!(waitMs > 0) || cfg.dryRun) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       let book;
