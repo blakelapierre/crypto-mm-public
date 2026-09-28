@@ -14,6 +14,7 @@ import { processPair } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
+import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -66,6 +67,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const changed = [...nextPairs].some((p) => !prev.has(p)) || [...prev].some((p) => !nextPairs.has(p));
             if (changed) {
               console.log('MM rotate -> ' + next.map((a) => a.symbol).join(','));
+              const leaving = mmAlloc.filter((a) => !nextPairs.has(a.pair)).map((a) => a.symbol);
               for (const [pair] of pairState) {
                 if (!nextPairs.has(pair)) {
                   try { await ex.cancelPair(pair); } catch { /* ignore */ }
@@ -77,6 +79,15 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               for (const a of next) mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: invEach });
               saveMmSet(mmAlloc);
               setSizeUniverse(mmAlloc.map((x) => x.symbol));
+              if (cfg.exchange === 'coinbase' && leaving.length) {
+                try {
+                  const liveRot = await getLive();
+                  console.log('bank skim 1% leaving ' + leaving.join(','));
+                  await skimToBank(cfg, liveRot, Number(process.env.BANK_ROTATE_PCT || 0.01), leaving);
+                  await liquidateSymbols(cfg, ex, await getLive(), leaving);
+                  await seedNewInventory(cfg, ex, mmAlloc, await getLive());
+                } catch (e) { console.warn('rotate bank/liq', e.message); }
+              }
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
@@ -135,6 +146,13 @@ async function main() {
   const productMap = await ex.getProducts();
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
   let live = await fetchLivePortfolio(cfg, ex, productMap);
+  if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
+    console.log('bank skim 0.5% -> trade bot bank');
+    try {
+      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005));
+      live = await fetchLivePortfolio(cfg, ex, productMap);
+    } catch (e) { console.warn('startup bank skim', e.message); }
+  }
   let lists = await buildLists(cfg, productMap, live.totalEquity);
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');
