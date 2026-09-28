@@ -1,12 +1,12 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
-import { applySpreadFromFees } from '../../shared/fee-spread.js';
+import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
 
-export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null) {
-  applySpreadFromFees(cfg);
-  const step = cfg.mmSpreadBps / 10000;
+export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null) {
+  const bps = applySpreadFromFees(cfg, pair);
+  const step = bps / 10000;
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
-  const useBook = cfg.joinTouch && book && book.bid && book.ask;
+  const useBook = joinTouchForPair(cfg, pair) && book && book.bid && book.ask;
   let bid1 = useBook ? book.bid : mid * (1 - step);
   let ask1 = useBook ? book.ask : mid * (1 + step);
   if (bid1 >= ask1) { bid1 = mid - tick; ask1 = mid + tick; }
@@ -115,8 +115,8 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   }
 }
 
-function nextSlidePrice(cfg, filledLeg, pairDecimals) {
-  const step = cfg.mmSpreadBps / 10000;
+function nextSlidePrice(cfg, filledLeg, pairDecimals, pair) {
+  const step = applySpreadFromFees(cfg, pair) / 10000;
   if (filledLeg.side === 'buy') return formatPrice(filledLeg.price * (1 - step), pairDecimals);
   return formatPrice(filledLeg.price * (1 + step), pairDecimals);
 }
@@ -125,7 +125,7 @@ async function slideSameSide(cfg, ex, a, ladder, filledLeg) {
   const sideLegs = filledLeg.side === 'buy' ? ladder.buys : ladder.sells;
   const working = sideLegs.filter((o) => o.status === 'open');
   if (working.length >= cfg.slideMaxLegsPerSide) return;
-  const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals);
+  const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals, a.pair);
   const maxLevel = sideLegs.reduce((m, o) => Math.max(m, o.level || 0), 0);
   const neu = { level: maxLevel + 1, side: filledLeg.side, price, size: filledLeg.size, orderId: null, status: 'pending' };
   console.log('  SLIDE ' + neu.side.toUpperCase() + ' ' + a.symbol + ' ' + neu.size + ' @ ' + neu.price);
@@ -168,9 +168,9 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const book = await ex.getBook(a.pair);
   if (!book) return;
   if (!pairState.has(a.pair)) {
-    const ladder = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book);
+    const ladder = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid });
-    console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6) + ' joinTouch=' + !!cfg.joinTouch);
+    console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
     printLadder(a.symbol, a.pair, ladder, book);
     return;
@@ -192,7 +192,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await sleep(cfg.rateLimitMs);
     await cancelSide(ex, ladder.sells);
     await sleep(cfg.rateLimitMs);
-    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book);
+    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     state.ladder = next; state.lastMid = book.mid; state.lastRequoteAt = Date.now();
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     printLadder(a.symbol, a.pair, next, book);
@@ -203,7 +203,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (cfg.rebalanceOnFill) {
     await cancelSide(ex, ladder.buys);
     await cancelSide(ex, ladder.sells);
-    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book);
+    const next = generateLadder(cfg, book.mid, orderSizeUsd, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair);
     state.ladder = next; state.lastMid = book.mid;
     await placeLadder(cfg, ex, a.pair, next, a, getLive);
     return;
