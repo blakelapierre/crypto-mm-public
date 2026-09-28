@@ -26,6 +26,17 @@ function coinbaseFee(o, fills = []) {
 export function createExchange(cfg, orderRegistry) {
   const name = cfg.exchange;
   const pairMeta = new Map();
+  const bookCache = new Map();
+  function bookTtl() { return Number(process.env.BOOK_CACHE_MS || 1000); }
+  async function cachedBook(pair, venue, loader) {
+    const key = String(venue) + ':' + String(pair);
+    const hit = bookCache.get(key);
+    const ttl = bookTtl();
+    if (ttl > 0 && hit && Date.now() - hit.at < ttl) return hit.book;
+    const book = await loader();
+    if (book) bookCache.set(key, { at: Date.now(), book });
+    return book;
+  }
   return {
     name,
     loadKeyInfo() {
@@ -63,26 +74,28 @@ export function createExchange(cfg, orderRegistry) {
         if (STABLECOINS.has(b) || KEEP_ASSETS.has(b)) continue;
         const base = b === 'XBT' ? 'BTC' : b;
         if (map[base]) continue;
-        const rec = { venue: 'kraken', pair: k, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0 };
+        const rec = { venue: 'kraken', pair: k, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0 };
         map[base] = rec; pairMeta.set(k, rec); if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
     },
     async getBook(pair, venue = name) {
-      if (venue === 'coinbase') {
-        try {
-          const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(pair));
-          const book = (data.pricebooks || [])[0];
-          if (book && book.bids && book.bids[0] && book.asks && book.asks[0]) {
-            const bid = parseFloat(book.bids[0].price); const ask = parseFloat(book.asks[0].price);
-            return { mid: (bid + ask) / 2, bid, ask, pair, venue };
-          }
-        } catch { /* fallback */ }
-        return null;
-      }
-      const ticker = await krakenPublic('Ticker', { pair });
-      const t = ticker[Object.keys(ticker)[0]];
-      return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair, venue };
+      return cachedBook(pair, venue, async () => {
+        if (venue === 'coinbase') {
+          try {
+            const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(pair));
+            const book = (data.pricebooks || [])[0];
+            if (book && book.bids && book.bids[0] && book.asks && book.asks[0]) {
+              const bid = parseFloat(book.bids[0].price); const ask = parseFloat(book.asks[0].price);
+              return { mid: (bid + ask) / 2, bid, ask, pair, venue };
+            }
+          } catch { /* fallback */ }
+          return null;
+        }
+        const ticker = await krakenPublic('Ticker', { pair });
+        const t = ticker[Object.keys(ticker)[0]];
+        return { mid: (parseFloat(t.b[0]) + parseFloat(t.a[0])) / 2, bid: parseFloat(t.b[0]), ask: parseFloat(t.a[0]), pair, venue };
+      });
     },
     async getBooks(pairs, venue = name) {
       const out = new Map();
@@ -107,10 +120,11 @@ export function createExchange(cfg, orderRegistry) {
       return out;
     },
     async _touchThenMarket(pair, side, volume, quoteAmount, venue) {
+      if (this.disableTouch) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       if (venue === 'kraken' && process.env.MARKET_TOUCH_KRAKEN !== '1') {
         return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       }
-      const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 15000);
+      const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 3000);
       if (!(waitMs > 0) || cfg.dryRun) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       let book;
       try { book = await this.getBook(pair, venue); } catch { book = null; }
