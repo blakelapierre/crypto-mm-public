@@ -11,7 +11,7 @@ import { realizedFeeBps } from '../../shared/fee-spread.js';
 function publishOrders(a, ladder, mid) {
   if (!a || !ladder) return;
   const legs = [...(ladder.buys || []), ...(ladder.sells || [])];
-  const orders = legs.filter((o) => o.status === 'open' || o.status === 'pending' || o.status === 'failed').map((o) => ({
+  const orders = legs.filter((o) => o.status === 'open').map((o) => ({
     side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
     usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
   }));

@@ -328,7 +328,7 @@ function fmtPx(px,d){
   return dd>0?n.toFixed(dd):String(Math.round(n));
 }
 function orderBook(m){
-  const ords=m.orders||[];
+  const ords=(m.orders||[]).filter(function(o){return String(o.status||'open').toLowerCase()==='open';});
   const d=priceDigits(ords);
   const sells=ords.filter(o=>String(o.side).toLowerCase()==='sell').sort((a,b)=>Number(b.price)-Number(a.price));
   const buys=ords.filter(o=>String(o.side).toLowerCase()==='buy').sort((a,b)=>Number(b.price)-Number(a.price));
