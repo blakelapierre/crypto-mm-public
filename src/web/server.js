@@ -125,7 +125,7 @@ tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:8px;opacity:.75;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .book-wrap{display:flex;gap:12px;align-items:flex-start}
-.book-wrap .mfills{font-size:11px;min-width:160px}
+.book-wrap .mfills{font-size:11px;min-width:160px}.book-wrap .mpnl{font-size:11px;min-width:110px;font-variant-numeric:tabular-nums}
 .book-wrap .mfills .buy{color:#3fb950}.book-wrap .mfills .sell{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
@@ -303,8 +303,9 @@ function orderBook(m){
     const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
     return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
   }).join('')||'<div class="age">no fills</div>';
+  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div></div>';
   return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
-    lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div></div>';
+    lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
 function walletTable(b){
   const rows=[...(b.wallet||[])].sort((a,c)=>Number(c.value||0)-Number(a.value||0));

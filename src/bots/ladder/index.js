@@ -217,6 +217,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x', wNum: w, orders,
+          pricePnl: book.price || 0, makerPnl: book.maker || 0, fees: book.fees || 0,
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
