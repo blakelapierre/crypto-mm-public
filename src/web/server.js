@@ -151,6 +151,17 @@ function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Num
 function fmtN(n){if(n==null||!Number.isFinite(Number(n)))return '';return Number(n).toFixed(2);}
 function sumMarkets(b,key){return (b.markets||[]).reduce((s,m)=>s+Number(m[key]||0),0);}
 function weightOf(m){return Number(m.wNum||parseFloat(m.w)||0);}
+function ourSpread(m){
+  if(m.spreadBps!=null&&Number.isFinite(Number(m.spreadBps))) return Number(m.spreadBps);
+  const buys=(m.orders||[]).filter(o=>String(o.side).toLowerCase()==='buy');
+  const sells=(m.orders||[]).filter(o=>String(o.side).toLowerCase()==='sell');
+  const bid=buys.reduce((x,o)=>Math.max(x,Number(o.price)||0),0);
+  const ask=sells.reduce((x,o)=>{const p=Number(o.price);return p>0&&(x===0||p<x)?p:x;},0);
+  const mid=Number(m.mid)||((bid&&ask)?(bid+ask)/2:0);
+  if(!(bid>0&&ask>0&&mid>0)) return null;
+  return ((ask-bid)/mid)*10000;
+}
+
 function projectOf(b){
   const started=(b.pnl&&b.pnl.startedAt)||(b.proj&&b.proj.startedAt)||b.ts;
   const hours=Math.max((Date.now()-(started||Date.now()))/3600000, 1/60);
@@ -267,7 +278,7 @@ function orderBook(m){
   const row=(cls,side,px,size,usd,st,id)=>
     '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
   const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
-  lines.push(row('mid','MID',fmtPx(m.mid,d),'','','',''));
+  const spr=ourSpread(m); lines.push(row('mid','MID',fmtPx(m.mid,d),spr!=null?spr.toFixed(1)+'bps':'','','',''));
   buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
   return '<table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table>';
@@ -300,11 +311,11 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+((x=>x==null?'':x.toFixed(0)+'bps')(ourSpread(m)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
-    '<tr class="orders"><td></td><td colspan="9">'+orderBook(m)+'</td></tr>'
+    '<tr class="orders"><td></td><td colspan="10">'+orderBook(m)+'</td></tr>'
   ).join('');
   const age=b.ts?Math.round((Date.now()-b.ts)/1000)+'s ago':'';
   const q=projectOf(b);
@@ -339,7 +350,7 @@ function card(b){
       '<span>/h '+fmt(q.bank)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,false))+
       '<span>/d '+fmt(q.bank*24)+'</span>'+sparkSvg(rateSeries((b.kpiSpark||{}).bank,t0,true))+'</div></div>'+
     apiBlock(b)+fillsTable(b)+
-    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
+    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div></section>';
 }
 function boardHtml(rows){
@@ -353,7 +364,7 @@ function boardHtml(rows){
     const inner=cells.map(function(c){
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
-        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+'</div></div>';
+        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+(ourSpread(c.m)!=null?' · '+ourSpread(c.m).toFixed(0)+'bps':'')+'</div></div>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');

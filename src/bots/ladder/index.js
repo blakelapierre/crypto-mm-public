@@ -203,9 +203,16 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
           usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
         }));
+        const bestBid = openB.reduce((m, o) => Math.max(m, Number(o.price) || 0), 0);
+        const bestAsk = openA.reduce((m, o) => {
+          const px = Number(o.price);
+          return px > 0 && (m === 0 || px < m) ? px : m;
+        }, 0);
+        const midN = Number(mid) || ((bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : 0);
+        const spreadBps = (bestBid > 0 && bestAsk > 0 && midN > 0) ? ((bestAsk - bestBid) / midN) * 10000 : null;
         marketRows.push({
           symbol: a.symbol, mid: mid ? Number(mid).toFixed(6) : 'n/a',
-          bids, asks, bidUsd, askUsd,
+          bids, asks, bidUsd, askUsd, bestBid, bestAsk, spreadBps,
           buyUsd: book.buyUsd || 0, sellUsd: book.sellUsd || 0,
           vol: vs ? vs.rangePct.toFixed(2) + '%' : 'n/a',
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
@@ -217,7 +224,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         console.log('  ' + String(m.symbol).padEnd(8) + ' mid=' + m.mid + '  bid/ask ' + m.bids + '/' + m.asks +
           '  bid$=' + Number(m.bidUsd).toFixed(2) + ' ask$=' + Number(m.askUsd).toFixed(2) +
           '  vol buy=$' + Number(m.buyUsd || 0).toFixed(2) + ' sell=$' + Number(m.sellUsd || 0).toFixed(2) +
-          '  w=' + m.w + '  range=' + m.vol + '  fee=' + m.fee);
+          '  w=' + m.w + '  range=' + m.vol + '  fee=' + m.fee +
+          (m.spreadBps != null ? '  spr=' + Number(m.spreadBps).toFixed(1) + 'bps' : ''));
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
