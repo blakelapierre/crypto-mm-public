@@ -292,11 +292,18 @@ function orderBook(m){
   const d=priceDigits(ords);
   const sells=ords.filter(o=>String(o.side).toLowerCase()==='sell').sort((a,b)=>Number(b.price)-Number(a.price));
   const buys=ords.filter(o=>String(o.side).toLowerCase()==='buy').sort((a,b)=>Number(b.price)-Number(a.price));
-  const row=(cls,side,px,size,usd,st,id)=>
-    '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
-  const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
-  lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','',''));
-  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
+  function pctMid(px){
+    const p=Number(px), mid=Number(m.mid);
+    if(!(p>0&&mid>0)) return '';
+    const pct=(p-mid)/mid*100;
+    const dd=Math.abs(pct)>=1?2:3;
+    return (pct>=0?'+':'')+pct.toFixed(dd)+'%';
+  }
+  const row=(cls,side,px,vs,size,usd,st,id)=>
+    '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(vs)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
+  const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
+  lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','','',''));
+  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
   const fills=(m.sparkFills||[]).slice().sort(function(a,c){return Date.parse(c.ts||0)-Date.parse(a.ts||0);}).slice(0,5);
   const fl=fills.map(function(f){
     const side=String(f.side||'').toLowerCase();
@@ -304,7 +311,7 @@ function orderBook(m){
     return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
   }).join('')||'<div class="age">no fills</div>';
   const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div></div>';
-  return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
+  return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>vs mid</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
 function walletTable(b){
