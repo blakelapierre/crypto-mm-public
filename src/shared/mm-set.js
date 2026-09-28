@@ -1,10 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 
+function botName() {
+  return String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
+}
+
 function filePath() {
   const raw = process.env.MM_SET_FILE;
   if (raw === 'off' || raw === '0' || raw === 'false') return null;
-  return path.resolve(process.cwd(), raw && raw.trim() ? raw.trim() : 'logs/mm-set.json');
+  if (raw && raw.trim()) return path.resolve(process.cwd(), raw.trim());
+  return path.resolve(process.cwd(), 'logs/mm-set-' + botName() + '.json');
 }
 
 export function loadMmSet() {
@@ -23,6 +28,7 @@ export function loadMmSet() {
 }
 
 export function saveMmSet(alloc) {
+  if (botName() === 'comp') return;
   const dest = filePath();
   if (!dest || !alloc || !alloc.length) return;
   try {
