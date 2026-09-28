@@ -58,6 +58,37 @@ function noteSparkFill(bot, fill) {
   const cut = Date.now() - SPARK_MS;
   sparkFills.set(k, arr.filter((f) => Date.parse(f.ts || 0) >= cut));
 }
+function backtestRungs(points, feeBps) {
+  if (!points || points.length < 8) return null;
+  const fee = (Number(feeBps) || 35) / 10000;
+  let best = null;
+  for (const levels of [1, 2, 3]) {
+    for (const stepBps of [25, 40, 55, 80, 110]) {
+      const step = stepBps / 10000;
+      let touches = 0, edge = 0;
+      let mid = Number(points[0].p);
+      if (!(mid > 0)) continue;
+      for (let i = 1; i < points.length; i++) {
+        const px = Number(points[i].p);
+        if (!(px > 0)) continue;
+        const move = (px - mid) / mid;
+        if (move <= -step) {
+          const L = Math.min(levels, Math.max(1, Math.floor(Math.abs(move) / step)));
+          touches += 1;
+          edge += L * step - 2 * fee;
+        } else if (move >= step) {
+          const L = Math.min(levels, Math.max(1, Math.floor(move / step)));
+          touches += 1;
+          edge += L * step - 2 * fee;
+        }
+        mid = px;
+      }
+      const row = { levels, stepBps, touches, edgePct: edge * 100 };
+      if (!best || row.edgePct > best.edgePct) best = row;
+    }
+  }
+  return best;
+}
 function sparkFillsFor(bot, symbol) {
   const cut = Date.now() - SPARK_MS;
   return (sparkFills.get(bot + ':' + String(symbol || '').toUpperCase()) || []).filter((f) => Date.parse(f.ts || 0) >= cut);
@@ -80,7 +111,7 @@ function collect() {
       vol: kpiSeries(b.bot, 'vol'),
       bank: kpiSeries(b.bot, 'bank'),
     },
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol) })),
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)) })),
   }));
 }
 
@@ -310,7 +341,8 @@ function orderBook(m){
     const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
     return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
   }).join('')||'<div class="age">no fills</div>';
-  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div></div>';
+  const rg=m.rungs; const rtxt=rg?('L'+rg.levels+' @ '+rg.stepBps+'bps · '+rg.touches+' x · edge '+Number(rg.edgePct).toFixed(2)+'%'):'rungs n/a';
+  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div class="age">'+rtxt+'</div></div>';
   return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>vs mid</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
