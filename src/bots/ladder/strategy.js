@@ -4,7 +4,7 @@ import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.j
 import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
-import { midRing, noteMid } from '../../shared/mid-ring.js';
+import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
 import { realizedFeeBps } from '../../shared/fee-spread.js';
 
@@ -138,12 +138,17 @@ function resizeLeg(cfg, a, o, live) {
   if (o.side === 'buy') {
     const cap = inventoryCapUsd(live);
     const held = inventoryUsd(live, a.symbol);
-    if (cap > 0 && held >= cap) return 0;
-    const pairs = Math.max(1, cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 1);
+    const ret = midReturn(a.symbol);
+    const hard = Number(process.env.INV_CAP_HARD || 1.4);
+    if (cap > 0 && held >= cap * hard) return 0;
+    if (cap > 0 && held >= cap && ret <= 0) return 0;
+    const pairs = Math.max(1, pairState.size || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 1);
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
-    const room = cap > 0 ? Math.max(0, cap - held) : cashShare;
-    const useUsd = Math.min(o.price * o.size, cashShare, room);
+    const room = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
+    let useUsd = Math.min(o.price * o.size, cashShare || cashShare, room || cashShare);
+    const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
+    if (useUsd < minUsd && live.freeQuote >= minUsd * 1.05 && !(cap > 0 && held >= cap * hard)) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
     if (size + 1e-12 < minV) return minV * o.price <= live.freeQuote * hair ? formatVolume(minV, a.lotDecimals) : 0;
@@ -220,7 +225,7 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
-      if (!resized) { o.status = 'failed'; console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' skip'); return; }
+      if (!resized) { o.status = 'failed'; return; }
       if (resized !== o.size) { console.log('  ' + o.side + ' L' + o.level + ' ' + a.symbol + ' size ' + o.size + ' -> ' + resized); o.size = resized; }
     }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
