@@ -159,13 +159,14 @@ async function cancelSide(ex, legs) {
   }
 }
 
-async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state = null) {
+async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state = null, forceSell = false) {
   const now = Date.now();
-  if (state && now - (state.lastEnsureAt || 0) < 20000) return;
   const isOpen = (o) => o.status === 'open' && o.orderId;
   const openS = ladder.sells.some(isOpen);
   const openB = ladder.buys.some(isOpen);
   if (openS && openB) return;
+  const buyGate = state && now - (state.lastEnsureAt || 0) < 20000;
+  if (openS && buyGate && !forceSell) return;
   const live = getLive ? await getLive() : null;
   const template = [...ladder.sells, ...ladder.buys].find((o) => o.size > 0);
   if (!template) return;
@@ -179,10 +180,10 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
     if (!(r && r.order_id) && state) state.lastEnsureAt = Date.now();
     await sleep(cfg.rateLimitMs);
   }
-  if (!openS) await place('sell', formatPrice(book.ask || book.mid, a.pairDecimals));
+  if (!openS) await place('sell', formatPrice((book && (book.ask || book.mid)) || 0, a.pairDecimals));
   const cap = live ? inventoryCapUsd(live) : 0;
   const held = live ? inventoryUsd(live, a.symbol) : 0;
-  if (!openB && !(cap > 0 && held >= cap)) await place('buy', formatPrice(book.bid || book.mid, a.pairDecimals));
+  if (!openB && !buyGate && !(cap > 0 && held >= cap)) await place('buy', formatPrice((book && (book.bid || book.mid)) || 0, a.pairDecimals));
 }
 
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null) {
@@ -349,11 +350,12 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   for (const leg of newlyFilled) {
+    if (leg.side === 'buy') await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
     await slideSameSide(cfg, ex, a, ladder, leg, book);
     await skewOtherSide(cfg, ex, a, ladder, leg);
   }
   pruneDone(ladder);
   state.lastEnsureAt = 0;
-  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state);
+  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }

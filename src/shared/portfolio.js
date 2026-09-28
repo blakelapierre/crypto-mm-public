@@ -11,6 +11,7 @@ async function staggerMap(items, fn, gapMs) {
 }
 
 const liveCache = new Map();
+export function invalidateLiveCache() { liveCache.clear(); }
 export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchange) {
   const ttl = Number(process.env.ACCOUNT_CACHE_MS || 8000);
   const key = String(venue || cfg.exchange);
