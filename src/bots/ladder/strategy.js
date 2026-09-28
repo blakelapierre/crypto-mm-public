@@ -366,12 +366,25 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
   const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs;
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
+  if (!openSell || !openBuy) {
+    const prefer = !openSell ? 'sell' : 'buy';
+    await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
+    publishOrders(a, ladder, book.mid);
+  }
   if ((needRequote && !filledNow) || pulled) {
     console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     const tickN = Number(tick) || 0;
-    const keepBuy = new Set(ladder.buys.filter((o) => o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN).map((o) => o.orderId));
-    const keepSell = new Set(ladder.sells.filter((o) => o.status === 'open' && o.orderId && Number(o.price) > book.mid + tickN).map((o) => o.orderId));
+    const stepNow = gridStep(cfg, a.pair, a.symbol);
+    const band = Math.max(tickN / (book.mid || 1), stepNow * (ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)) + 0.25));
+    const keepBuy = new Set(ladder.buys.filter((o) => {
+      if (!(o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN)) return false;
+      return (book.mid - Number(o.price)) / book.mid <= band;
+    }).map((o) => o.orderId));
+    const keepSell = new Set(ladder.sells.filter((o) => {
+      if (!(o.status === 'open' && o.orderId && Number(o.price) > book.mid + tickN)) return false;
+      return (Number(o.price) - book.mid) / book.mid <= band;
+    }).map((o) => o.orderId));
     await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open' && !keepBuy.has(o.orderId)));
     await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open' && !keepSell.has(o.orderId)));
     const keptB = ladder.buys.filter((o) => keepBuy.has(o.orderId));
