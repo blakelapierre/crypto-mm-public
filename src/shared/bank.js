@@ -6,6 +6,10 @@ function bankName() {
   return String(process.env.BANK_PORTFOLIO || 'trade bot bank').trim();
 }
 
+let bankedUsd = 0;
+export function bankedTotalUsd() { return bankedUsd; }
+export function noteBankedUsd(n) { const v = Number(n); if (v > 0) bankedUsd += v; }
+
 export async function resolvePortfolios(cfg) {
   let perms = {};
   try {
@@ -61,8 +65,9 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
   if (!filter) {
     const cash = (live.freeQuote || 0) * pct;
     if (cash >= 0.01) {
-      try { await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, cfg.quote, cash.toFixed(8)); }
-      catch (e) { console.warn('bank move ' + cfg.quote, e.message); }
+      try {
+        if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, cfg.quote, cash.toFixed(8))) noteBankedUsd(cash);
+      } catch (e) { console.warn('bank move ' + cfg.quote, e.message); }
     }
   }
   for (const [sym, pos] of Object.entries(live.positions || {})) {
@@ -71,8 +76,11 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null) {
     if (!(qty > 0)) continue;
     const send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
     if (!(Number(send) > 0)) continue;
-    try { await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, pos.currency || sym, send); }
-    catch (e) { console.warn('bank move ' + sym, e.message); }
+    try {
+      if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, pos.currency || sym, send)) {
+        noteBankedUsd(Number(send) * (pos.mid || 0));
+      }
+    } catch (e) { console.warn('bank move ' + sym, e.message); }
     await sleep(cfg.rateLimitMs || 200);
   }
 }
