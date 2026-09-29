@@ -231,12 +231,13 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .board-card .cell{flex:0 0 auto;width:56px;min-height:64px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:6px;padding:3px 3px;box-sizing:border-box}
 .board-card .cell .sym{font-size:9px;font-weight:600}
 .board-card .cell .sz{font-size:7px;color:#8b98a5;line-height:1.15;min-height:1.8em;margin-top:auto}
-.movers{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
-.movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:5px 8px;min-width:88px}
-.movers .mv .s{font-weight:600;font-size:12px}
-.movers .mv .r{font-size:11px;font-variant-numeric:tabular-nums}
+.movers{display:flex;flex-direction:column;align-items:center;gap:6px;margin:6px 0 4px;width:100%}
+.movers .row{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;width:100%}
+.movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 6px;min-width:72px;text-align:center}
+.movers .mv .s{font-weight:600;font-size:11px}
+.movers .mv .r{font-size:10px;font-variant-numeric:tabular-nums}
 .movers .up{color:#3fb950}.movers .dn{color:#f85149}
-.movers h3{width:100%;margin:0;font-size:11px;color:#8b98a5;font-weight:600}
+.movers h3{margin:0;font-size:11px;color:#8b98a5;font-weight:600;text-align:center;width:100%}
 </style>
 </head>
 <body>
@@ -523,39 +524,45 @@ function boardHtml(rows){
   }).join('');
 }
 function moversHtml(rows){
-  const byVol={};
+  const sparks={};
+  const byRange={};
   const byMove={};
   (rows||[]).forEach(function(b){
     (b.markets||[]).forEach(function(m){
-      const vol=Number(m.buyUsd||0)+Number(m.sellUsd||0);
-      const prev=byVol[m.symbol]||{symbol:m.symbol,vol:0,spark:m.spark,sparkFills:m.sparkFills,orders:m.orders};
-      prev.vol+=vol; if(!prev.spark) prev.spark=m.spark;
-      byVol[m.symbol]=prev;
-    });
-    (b.movers||[]).forEach(function(m){
-      const ret=Number(m.ret||0), range=Number(m.rangePct||0);
-      const cur=byMove[m.symbol];
-      if(!cur||Math.abs(ret)>Math.abs(cur.ret)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:range,last:m.last};
-    });
-    (b.markets||[]).forEach(function(m){
+      if(m.symbol) sparks[m.symbol]=m;
       const pts=m.spark||[];
       if(pts.length<2) return;
-      const a=Number(pts[0].p||pts[0]), b=Number(pts[pts.length-1].p||pts[pts.length-1]);
-      if(!(a>0&&b>0)) return;
-      const ret=(b-a)/a;
+      const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
+      if(!(a>0&&z>0)) return;
+      const ret=(z-a)/a;
+      const hi=Math.max.apply(null,pts.map(function(p){return Number(p.p||p);}));
+      const lo=Math.min.apply(null,pts.map(function(p){return Number(p.p||p);}));
+      const range=z>0?((hi-lo)/z)*100:0;
       const cur=byMove[m.symbol];
-      if(!cur||Math.abs(ret)>Math.abs(cur.ret||0)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:cur&&cur.rangePct,spark:pts,sparkFills:m.sparkFills,orders:m.orders};
+      if(!cur||Math.abs(ret)>Math.abs(cur.ret||0)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:range,spark:pts,sparkFills:m.sparkFills,orders:m.orders};
+    });
+    (b.movers||[]).forEach(function(m){
+      const range=Number(m.rangePct||0);
+      const ret=Number(m.ret||0);
+      const mk=sparks[m.symbol]||{};
+      const cur=byRange[m.symbol];
+      if(!cur||range>(cur.rangePct||0)) byRange[m.symbol]={symbol:m.symbol,rangePct:range,ret:ret,last:m.last,spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders};
     });
   });
-  const vols=Object.values(byVol).sort(function(a,c){return c.vol-a.vol;}).slice(0,8);
-  const moves=Object.values(byMove).sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);}).slice(0,8);
+  if(!Object.keys(byRange).length){
+    Object.keys(byMove).forEach(function(k){ byRange[k]=byMove[k]; });
+  }
+  const vols=Object.values(byRange).sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);}).slice(0,10);
+  const moves=Object.values(byMove).sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);}).slice(0,10);
   function cell(x, kind){
     const ret=x.ret, cls=ret>0?'up':(ret<0?'dn':'');
-    const extra=kind==='vol'?('vol $'+fmtN(x.vol)):(ret==null?'':((ret>=0?'+':'')+(ret*100).toFixed(2)+'%'));
-    return '<div class="mv"><div class="s">'+esc(x.symbol)+'</div>'+(x.spark?sparkSvg(x.spark,x.sparkFills,x.orders):'')+'<div class="r '+cls+'">'+extra+'</div></div>';
+    const extra=kind==='vol'
+      ? ((x.rangePct||0).toFixed(2)+'% rng')
+      : (ret==null?'':((ret>=0?'+':'')+(ret*100).toFixed(2)+'%'));
+    return '<div class="mv"><div class="s">'+esc(x.symbol)+'</div>'+(x.spark?sparkSvg(x.spark,x.sparkFills,x.orders,{w:40,h:14}):'')+'<div class="r '+cls+'">'+extra+'</div></div>';
   }
-  return '<h3>top volume</h3>'+vols.map(function(x){return cell(x,'vol');}).join('')+
-    '<h3>15m movers</h3>'+(moves.length?moves.map(function(x){return cell(x,'move');}).join(''):'<span class="age">waiting for 15m samples</span>');
+  return '<h3>15m volatility</h3><div class="row">'+(vols.length?vols.map(function(x){return cell(x,'vol');}).join(''):'<span class="age">waiting for vol-scan</span>')+'</div>'+
+    '<h3>15m price move</h3><div class="row">'+(moves.length?moves.map(function(x){return cell(x,'move');}).join(''):'<span class="age">waiting for 15m samples</span>')+'</div>';
 }
 function render(data){
   const rows=data.bots||[];
