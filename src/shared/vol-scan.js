@@ -135,6 +135,18 @@ export function sizeWeightForSymbol(sym) {
 export function volStatsForSymbol(sym) {
   return lastMeta.get(String(sym || '').toUpperCase()) || null;
 }
+export function topMovers(n = 8) {
+  const rows = [];
+  for (const [symbol, m] of lastMeta) {
+    const hist = lastHistory.get(symbol) || [];
+    const a = hist.length ? Number(hist[0].mid) : 0;
+    const b = hist.length ? Number(hist[hist.length - 1].mid) : Number(m.last || 0);
+    const ret = a > 0 ? (b - a) / a : 0;
+    rows.push({ symbol, rangePct: Number(m.rangePct || 0), last: b, ret });
+  }
+  rows.sort((a, b) => Math.abs(b.ret) - Math.abs(a.ret) || b.rangePct - a.rangePct);
+  return rows.slice(0, n);
+}
 export function midHistory(sym) {
   return lastHistory.get(String(sym || '').toUpperCase()) || [];
 }

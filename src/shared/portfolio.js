@@ -288,3 +288,32 @@ export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
     await sleep(cfg.rateLimitMs);
   }
 }
+
+export async function ensureQuoteForBids(cfg, ex, mmAlloc, live) {
+  const levels = Math.max(1, cfg.mmLevels || 1);
+  const need = mmAlloc.length * Math.max(cfg.minOrderUsd || 1, 1) * levels * 1.15;
+  if ((live.freeQuote || 0) >= need || !mmAlloc.length) {
+    console.log('quote for bids cash=' + (live.freeQuote || 0).toFixed(2) + ' need=' + need.toFixed(2));
+    return live;
+  }
+  let deficit = need - (live.freeQuote || 0);
+  const ranked = mmAlloc.map((a) => {
+    const pos = live.positions[a.symbol] || {};
+    return { a, held: Number(pos.valueQuote || 0), amt: Number(pos.amount || 0) };
+  }).sort((x, y) => y.held - x.held);
+  console.log('free quote for bids: sell $' + deficit.toFixed(2) + ' from heavy names');
+  for (const row of ranked) {
+    if (deficit <= 0) break;
+    if (row.held < (cfg.minOrderUsd || 1) * 2 || row.amt <= 0) continue;
+    const take = Math.min(deficit, row.held * 0.35);
+    const book = await ex.getBook(row.a.pair).catch(() => null);
+    const mid = (book && book.mid) || (row.amt ? row.held / row.amt : 0);
+    if (!(mid > 0)) continue;
+    const sellAmt = formatVolume(take / mid, row.a.lotDecimals);
+    if (sellAmt < (row.a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05)) continue;
+    console.log('  MARKET SELL ' + sellAmt + ' ' + row.a.symbol + ' to fund bids ~$' + take.toFixed(2));
+    try { await ex.marketSell(row.a.pair, sellAmt); deficit -= take; } catch (e) { console.warn('  fund-bid sell', e.message); }
+    await sleep(cfg.rateLimitMs || 200);
+  }
+  return live;
+}

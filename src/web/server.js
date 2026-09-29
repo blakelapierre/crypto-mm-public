@@ -138,7 +138,9 @@ const PAGE = `<!doctype html>
 <title>crypto-mm status</title>
 <style>
 :root{color-scheme:dark}
-body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:14px;font-size:13px}
+body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
+#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d}
+#root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
 h2{font-size:13px;margin:0 0 8px}
 h2 small,.age{color:#8b98a5;font-weight:400;margin-left:8px}
@@ -192,12 +194,21 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .board-card .cell{flex:0 0 auto;width:118px;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
 .board-card .cell .sz{font-size:10px;color:#8b98a5}
+.movers{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+.movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:5px 8px;min-width:88px}
+.movers .mv .s{font-weight:600;font-size:12px}
+.movers .mv .r{font-size:11px;font-variant-numeric:tabular-nums}
+.movers .up{color:#3fb950}.movers .dn{color:#f85149}
+.movers h3{width:100%;margin:0;font-size:11px;color:#8b98a5;font-weight:600}
 </style>
 </head>
 <body>
+<div id="pin">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
+<div id="movers" class="movers"></div>
 <div id="board" class="board"></div>
+</div>
 <div id="root"></div>
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -468,9 +479,46 @@ function boardHtml(rows){
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
+function moversHtml(rows){
+  const byVol={};
+  const byMove={};
+  (rows||[]).forEach(function(b){
+    (b.markets||[]).forEach(function(m){
+      const vol=Number(m.buyUsd||0)+Number(m.sellUsd||0);
+      const prev=byVol[m.symbol]||{symbol:m.symbol,vol:0,spark:m.spark,sparkFills:m.sparkFills,orders:m.orders};
+      prev.vol+=vol; if(!prev.spark) prev.spark=m.spark;
+      byVol[m.symbol]=prev;
+    });
+    (b.movers||[]).forEach(function(m){
+      const ret=Number(m.ret||0), range=Number(m.rangePct||0);
+      const cur=byMove[m.symbol];
+      if(!cur||Math.abs(ret)>Math.abs(cur.ret)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:range,last:m.last};
+    });
+    (b.markets||[]).forEach(function(m){
+      const pts=m.spark||[];
+      if(pts.length<2) return;
+      const a=Number(pts[0].p||pts[0]), b=Number(pts[pts.length-1].p||pts[pts.length-1]);
+      if(!(a>0&&b>0)) return;
+      const ret=(b-a)/a;
+      const cur=byMove[m.symbol];
+      if(!cur||Math.abs(ret)>Math.abs(cur.ret||0)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:cur&&cur.rangePct,spark:pts,sparkFills:m.sparkFills,orders:m.orders};
+    });
+  });
+  const vols=Object.values(byVol).sort(function(a,c){return c.vol-a.vol;}).slice(0,8);
+  const moves=Object.values(byMove).sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);}).slice(0,8);
+  function cell(x, kind){
+    const ret=x.ret, cls=ret>0?'up':(ret<0?'dn':'');
+    const extra=kind==='vol'?('vol $'+fmtN(x.vol)):(ret==null?'':((ret>=0?'+':'')+(ret*100).toFixed(2)+'%'));
+    return '<div class="mv"><div class="s">'+esc(x.symbol)+'</div>'+(x.spark?sparkSvg(x.spark,x.sparkFills,x.orders):'')+'<div class="r '+cls+'">'+extra+'</div></div>';
+  }
+  return '<h3>top volume</h3>'+vols.map(function(x){return cell(x,'vol');}).join('')+
+    '<h3>15m movers</h3>'+(moves.length?moves.map(function(x){return cell(x,'move');}).join(''):'<span class="age">waiting for 15m samples</span>');
+}
 function render(data){
   const rows=data.bots||[];
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
+  const mv=document.getElementById('movers');
+  if(mv) mv.innerHTML=moversHtml(rows);
   const board=document.getElementById('board');
   if(board) board.innerHTML=boardHtml(rows);
   document.getElementById('root').innerHTML=rows.map(card).join('')||'<p>No reports yet.</p>';

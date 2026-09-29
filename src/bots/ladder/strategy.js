@@ -58,7 +58,8 @@ function inventorySkew(live, symbol) {
   const inv = Number((pos && pos.valueQuote) || 0);
   const cash = Number(live.freeQuote || 0);
   const eq = Number(live.totalEquity || inv + cash) || 1;
-  const target = Number(process.env.INV_SKEW_TARGET || 0.45);
+  const n = Math.max(1, Number(process.env.MM_MAX_PAIRS || process.env.MM_LIVE_PAIRS || 2));
+  const target = Number(process.env.INV_SKEW_TARGET || Math.min(0.45, 0.9 / n));
   const strength = Number(process.env.INV_SKEW_STRENGTH || 0.75);
   return Math.max(-0.8, Math.min(0.8, (inv / eq - target) * strength));
 }
