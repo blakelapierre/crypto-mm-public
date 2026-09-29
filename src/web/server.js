@@ -247,18 +247,22 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .board-card .cell{flex:0 0 auto;width:118px;min-height:110px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
 .board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.2;min-height:2.2em;margin-top:auto}
-.movers{display:flex;flex-direction:column;align-items:center;gap:6px;margin:6px 0 4px;width:100%}
-.movers .row{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;width:100%}
-.movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 6px;min-width:72px;text-align:center}
+.movers{display:flex;flex-direction:row;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:6px;margin:6px 0 4px;width:100%}
+.movers .row{display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:flex-end;gap:6px;max-width:100%;overflow-x:auto}
+.movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 6px;min-width:72px;text-align:center;flex:0 0 auto}
 .movers .mv .s{font-weight:600;font-size:11px}
 .movers .mv .r{font-size:10px;font-variant-numeric:tabular-nums}
 .movers .up{color:#3fb950}.movers .dn{color:#f85149}
 .movers h3{margin:0;font-size:11px;color:#8b98a5;font-weight:600;text-align:center;width:100%}
-.movers .botg{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px}
+.movers .botg{display:flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px;width:auto;max-width:100%;flex:0 1 auto;box-sizing:border-box}
 .movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
-.movers .botg{display:flex;flex-direction:column;align-items:stretch;max-width:none;width:100%;box-sizing:border-box}
-.movers .botg .row{flex-wrap:nowrap;justify-content:flex-start;overflow-x:auto;width:100%}
+#top-row{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:12px;width:100%}
+#bank.bank-card{flex:0 1 240px;max-height:240px;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
+#bank .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
+#bank table{width:100%;border-collapse:collapse}
+#bank td{padding:1px 4px}
+#bank h3{margin:0 0 6px;font-size:12px}
 </style>
 </head>
 <body>
@@ -266,7 +270,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
 <div id="movers" class="movers"></div>
+<div id="top-row">
 <div id="board" class="board"></div>
+<div id="bank" class="bank-card"></div>
+</div>
 </div>
 <div id="root"></div>
 <script>
@@ -606,6 +613,27 @@ function moversHtml(rows){
   }).join('');
   return '<div class="row">'+cards+'</div>';
 }
+function bankHtml(rows){
+  const mids={};
+  const hold={};
+  (rows||[]).forEach(function(b){
+    (b.markets||[]).forEach(function(m){ const p=parseFloat(m.mid); if(m.symbol&&p>0) mids[String(m.symbol).toUpperCase()]=p; });
+    (b.wallet||[]).forEach(function(w){ const p=Number(w.mid); if(w.asset&&p>0) mids[String(w.asset).toUpperCase()]=p; });
+    (b.bankHoldings||[]).forEach(function(h){
+      const a=String(h.asset||'').toUpperCase();
+      if(!a) return;
+      hold[a]=(hold[a]||0)+Number(h.qty||0);
+    });
+  });
+  const rowsH=Object.keys(hold).map(function(a){
+    const qty=hold[a], mid=mids[a]||(a==='USDC'||a==='USD'||a==='USDT'?1:0);
+    return {a,qty,usd:qty*mid};
+  }).filter(function(x){return x.qty>0;}).sort(function(x,y){return y.usd-x.usd;});
+  if(!rowsH.length) return '<h3>bank</h3><div class="age">no bank snapshot yet</div>';
+  return '<h3>bank</h3><div class="bank-list"><table>'+rowsH.map(function(x){
+    return '<tr><td>'+esc(x.a)+'</td><td>'+esc(x.qty.toPrecision(6))+'</td><td>$'+fmtN(x.usd)+'</td></tr>';
+  }).join('')+'</table></div>';
+}
 function render(data){
   const rows=data.bots||[];
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
@@ -613,6 +641,8 @@ function render(data){
   if(mv) mv.innerHTML=moversHtml(rows);
   const board=document.getElementById('board');
   if(board) board.innerHTML=boardHtml(rows);
+  const bank=document.getElementById('bank');
+  if(bank) bank.innerHTML=bankHtml(rows);
   document.getElementById('root').innerHTML=rows.map(card).join('')||'<p>No reports yet.</p>';
 }
 function connect(){

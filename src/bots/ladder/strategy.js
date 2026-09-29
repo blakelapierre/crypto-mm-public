@@ -213,7 +213,7 @@ async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
     if (!lad) continue;
     for (const o of [...(lad.buys || []), ...(lad.sells || [])]) {
       if (o.status !== 'open' || !o.orderId) continue;
-      if (p === keepPair && o.side === keepSide && Number(o.level) === 1) continue;
+      if (Number(o.level) <= 1) continue;
       rows.push({ p, o });
     }
   }
@@ -469,6 +469,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const far = Number(process.env.FAR_QUOTE_MULT || 2.4);
   for (const o of [...ladder.buys, ...ladder.sells]) {
     if (!(o.status === 'open' && o.orderId && book.mid > 0)) continue;
+    if (Number(o.level) <= 1) continue;
     const off = o.side === 'buy' ? (book.mid - Number(o.price)) / book.mid : (Number(o.price) - book.mid) / book.mid;
     if (off > half * far) {
       logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why: 'far', offBps: off * 10000 });

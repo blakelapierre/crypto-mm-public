@@ -81,7 +81,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     pos.mid = book.mid;
     pos.valueQuote = pos.amount * book.mid;
     Object.assign(pos, info);
-    if (pos.valueQuote < cfg.dustUsd) { delete positions[sym]; continue; }
+    if (pos.valueQuote < cfg.dustUsd) continue;
     positionsValue += pos.valueQuote;
   }
   let totalEquity = freeQuote + quoteHold + positionsValue;
@@ -92,7 +92,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
       if (eb > 0) totalEquity = eb;
     } catch { /* keep */ }
   }
-  const liveOut = { freeQuote, quoteHold, positions, positionsValue, totalEquity };
+  const liveOut = { freeQuote, quoteHold, positions, positionsValue, totalEquity, rawPositions: { ...positions } };
   liveCache.set(key, { at: Date.now(), live: liveOut });
   return liveOut;
 }

@@ -47,6 +47,7 @@ export async function resolvePortfolios(cfg) {
     return null;
   }
   console.log('bank source=' + source.name + ' (' + source.uuid + ') -> ' + bank.name + ' (' + bank.uuid + ') transfer=' + perms.can_transfer);
+  lastBankUuid = bank.uuid;
   return { source, bank };
 }
 
@@ -59,7 +60,26 @@ async function moveFunds(cfg, sourceUuid, bankUuid, currency, value) {
     target_portfolio_uuid: bankUuid,
   });
   console.log('  BANK move ' + amt + ' ' + currency);
+  try { await refreshBankHoldings(cfg, bankUuid); } catch (e) { console.warn('bank refresh', e.message); }
   return true;
+}
+
+let lastBankHoldings = [];
+let lastBankUuid = null;
+export function bankHoldings() { return lastBankHoldings; }
+
+export async function refreshBankHoldings(cfg, bankUuid) {
+  const uuid = bankUuid || lastBankUuid;
+  if (!uuid || cfg.exchange !== 'coinbase') return lastBankHoldings;
+  lastBankUuid = uuid;
+  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios/' + uuid);
+  const p = data.portfolio || data;
+  const spots = p.spot_positions || [];
+  lastBankHoldings = spots.map((s) => ({
+    asset: String(s.asset || s.currency || '').toUpperCase(),
+    qty: Number(s.total_balance_crypto || s.available || s.total || 0),
+  })).filter((x) => x.asset && x.qty > 0);
+  return lastBankHoldings;
 }
 
 export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind = 'run') {
@@ -91,24 +111,34 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     } catch (e) { console.warn('bank move ' + sym, e.message); }
     await sleep(cfg.rateLimitMs || 200);
   }
+  try { await refreshBankHoldings(cfg, ports.bank.uuid); } catch (e) { console.warn('bank holdings', e.message); }
 }
 
-export async function liquidateSymbols(cfg, ex, live, symbols) {
+export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null) {
   const jobs = [];
   const gap = Number(process.env.SELL_STAGGER_MS || 40);
-  for (const sym of symbols) {
-    const pos = live.positions[sym];
-    if (!pos || !(pos.amount > 0) || !pos.pair) continue;
-    const sellAmt = formatVolume(pos.amount * 0.99, pos.lotDecimals);
-    if (sellAmt < (pos.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05)) {
-      console.log('  skip liq ' + sym + ' below min');
+  for (const raw of symbols) {
+    const sym = String(raw || '');
+    const pos = (live.positions && (live.positions[sym] || live.positions[sym.toUpperCase()])) || {};
+    const info = productMap && (productMap[sym] || productMap[sym.toUpperCase()]);
+    const pair = pos.pair || (info && info.pair);
+    const lot = pos.lotDecimals != null ? pos.lotDecimals : (info && info.lotDecimals);
+    const min = pos.ordermin || (info && info.ordermin) || 0;
+    const amt = Number(pos.amount || 0);
+    if (!(amt > 0) || !pair) {
+      console.log('  skip liq ' + sym + ' amt=' + amt + ' pair=' + (pair || 'none'));
       continue;
     }
-    jobs.push({ sym, pos, sellAmt });
+    const sellAmt = formatVolume(amt * 0.99, lot);
+    if (sellAmt < min * (cfg.volumeSafetyMargin || 1.05)) {
+      console.log('  skip liq ' + sym + ' below min amt=' + sellAmt);
+      continue;
+    }
+    jobs.push({ sym, pair, sellAmt });
   }
   await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
     console.log('  MARKET SELL ' + j.sellAmt + ' ' + j.sym + ' (leave rotation)');
-    try { await ex.marketSell(j.pos.pair, j.sellAmt); }
+    try { await ex.marketSell(j.pair, j.sellAmt); }
     catch (e) { console.warn('  liq ' + j.sym, e.message); }
   })));
 }

@@ -16,7 +16,7 @@ import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol,
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
-import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
+import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
@@ -287,6 +287,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
+        bankHoldings: bankHoldings(),
         movers: (() => {
           const map = new Map();
           for (const r of [...topVolatiles(12), ...topMovers(12)]) {
@@ -314,9 +315,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   const fresh = sortAllocByWeight(mmAlloc.filter((a) => !pairState.has(a.pair)));
   if (fresh.length) {
     console.log('initial ladders high-w first n=' + fresh.length + ' ' + fresh.map((a) => a.symbol).join(','));
-    await Promise.all(fresh.map((a, i) => sleep(i * gap).then(() =>
-      processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
-    )));
+    for (const a of fresh) {
+      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
+      catch (e) { console.error(a.symbol, e.message); }
+    }
   }
   let lastDump = 0;
   while (true) {
@@ -330,7 +332,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
         if (dump.length) {
           console.log('dump non-MM ' + dump.join(','));
-          await liquidateSymbols(cfg, ex, live, dump);
+          await liquidateSymbols(cfg, ex, live, dump, productMap);
         }
       } catch (e) { console.warn('orphan dump', e.message); }
     }
@@ -369,7 +371,7 @@ async function main() {
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
   if (dump.length && cfg.exchange !== 'print') {
     console.log('startup sell non-MM: ' + dump.join(','));
-    await liquidateSymbols(cfg, ex, live, dump);
+    await liquidateSymbols(cfg, ex, live, dump, productMap);
     live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
     lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }
