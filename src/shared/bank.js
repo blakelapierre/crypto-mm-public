@@ -139,7 +139,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     if (!(Number(send) > 0)) continue;
     jobs.push({ cur: pos.currency || sym, send, usd: Number(send) * (pos.mid || 0) });
   }
-  const gap = Number(process.env.BANK_STAGGER_MS || 40);
+  const gap = Number(process.env.BANK_STAGGER_MS || 250);
   await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
     try {
       if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, j.cur, j.send)) noteBankedUsd(j.usd, kind);
@@ -150,7 +150,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
 
 export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null) {
   const jobs = [];
-  const gap = Number(process.env.SELL_STAGGER_MS || 40);
+  const gap = Number(process.env.SELL_STAGGER_MS || 250);
   for (const raw of symbols) {
     const sym = String(raw || '');
     const pos = (live.positions && (live.positions[sym] || live.positions[sym.toUpperCase()])) || {};
@@ -190,7 +190,7 @@ export async function seedNewInventory(cfg, ex, mmAlloc, live) {
     budget -= spend;
     jobs.push({ a, spend });
   }
-  const gap = Number(process.env.SELL_STAGGER_MS || 40);
+  const gap = Number(process.env.SELL_STAGGER_MS || 250);
   await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
     try {
       const book = await ex.getBook(j.a.pair);
@@ -241,7 +241,7 @@ export async function dumpBankToTrade(cfg, fraction) {
     if (!(Number(send) > 0)) continue;
     jobs.push({ cur, send });
   }
-  const gap = Number(process.env.BANK_STAGGER_MS || 40);
+  const gap = Number(process.env.BANK_STAGGER_MS || 250);
   const results = await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
     try { await moveFunds(auth, bank.uuid, trade.uuid, j.cur, j.send); return 1; }
     catch (e) { console.warn('dump skip ' + j.cur, e.message); return 0; }

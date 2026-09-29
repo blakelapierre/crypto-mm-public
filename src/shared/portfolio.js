@@ -234,7 +234,7 @@ export function getMmOrderSizeUsd(cfg, mmCapital) {
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   console.log('\nCombined rebalance');
   const wanted = new Set(combinedTargets.map((a) => a.symbol));
-  const gap = Number(process.env.SELL_STAGGER_MS || 40);
+  const gap = Number(process.env.SELL_STAGGER_MS || 250);
   console.log('wallet:');
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     console.log('  ' + sym + ' amt=' + pos.amount + ' val=' + (pos.valueQuote || 0).toFixed(2) + ' ' + (wanted.has(sym) ? 'MM' : 'ORPHAN'));
@@ -298,7 +298,7 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
 
 export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
   let budget = safeSpend(cfg, live.freeQuote);
-  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 40);
+  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 250);
   const buyJobs = [];
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
@@ -349,6 +349,6 @@ export async function ensureQuoteForBids(cfg, ex, mmAlloc, live) {
   await staggerMap(jobs, async ({ row, sellAmt, take }) => {
     console.log('  MARKET SELL ' + sellAmt + ' ' + row.a.symbol + ' to fund bids ~$' + take.toFixed(2));
     try { await ex.marketSell(row.a.pair, sellAmt); } catch (e) { console.warn('  fund-bid sell', e.message); }
-  }, Number(process.env.SELL_STAGGER_MS || 40));
+  }, Number(process.env.SELL_STAGGER_MS || 250));
   return live;
 }

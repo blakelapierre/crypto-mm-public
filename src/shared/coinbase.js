@@ -103,7 +103,24 @@ export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {})
   return data + '.' + base64url(sig);
 }
 
+let writeChain = Promise.resolve();
+function enqueueWrite(fn) {
+  const gap = Number(process.env.CB_WRITE_GAP_MS || 180);
+  const run = writeChain.then(async () => {
+    if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+    return fn();
+  }, fn);
+  writeChain = run.catch(() => {});
+  return run;
+}
+
 export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
+  const mutating = method !== 'GET';
+  const exec = () => coinbaseRequestOnce(cfg, method, reqPath, bodyObj);
+  return mutating ? enqueueWrite(exec) : exec();
+}
+
+async function coinbaseRequestOnce(cfg, method, reqPath, bodyObj = null, attempt = 0) {
   const t0 = Date.now();
   try {
     if (method === 'GET' && String(reqPath).includes('best_bid_ask')) {
@@ -123,6 +140,11 @@ export async function coinbaseRequest(cfg, method, reqPath, bodyObj = null) {
     let data;
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     noteApi('coinbase', method + ' ' + shortPath(reqPath), Date.now() - t0, res.ok);
+    if (res.status === 429 && attempt < 4) {
+      const wait = Number(process.env.CB_429_MS || 400) * (attempt + 1);
+      await new Promise((r) => setTimeout(r, wait));
+      return coinbaseRequestOnce(cfg, method, reqPath, bodyObj, attempt + 1);
+    }
     if (!res.ok) throw new Error('Coinbase ' + res.status + ' ' + method + ' ' + reqPath + ': ' + JSON.stringify(data));
     if (method === 'GET' && String(reqPath).includes('best_bid_ask')) bookHttpCache.set(reqPath, { at: Date.now(), data });
     return data;
