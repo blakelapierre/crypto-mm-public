@@ -199,7 +199,7 @@ const PAGE = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
-#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d;max-height:40vh;overflow-y:auto}
+#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d;max-height:40vh;overflow:hidden;display:flex;flex-direction:column}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
 h2{font-size:13px;margin:0 0 8px}
@@ -264,13 +264,14 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .botg{display:flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px;width:auto;max-width:100%;flex:0 1 auto;box-sizing:border-box}
 .movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
-#top-row{display:flex;flex-wrap:nowrap;justify-content:center;align-items:flex-start;gap:12px;width:100%;overflow-x:auto}
-#board.board{flex:1 1 auto;min-width:0}
-#bank.bank-card{flex:0 0 220px;max-height:240px;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
+#top-row{display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:stretch;gap:12px;width:100%;flex:1;min-height:0;overflow:hidden}
+#board.board{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:100%}
+#bank.bank-card{flex:0 0 240px;max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #bank .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
 #bank table{width:100%;border-collapse:collapse}
 #bank td{padding:1px 4px}
-#bank h3{margin:0 0 6px;font-size:12px}
+#bank h3{margin:0 0 2px;font-size:12px}
+#bank .bank-total{font-size:16px;font-weight:700;margin:0 0 6px;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -649,8 +650,9 @@ function bankHtml(rows){
     const qty=hold[a], mid=mids[a]||(a==='USDC'||a==='USD'||a==='USDT'?1:0);
     return {a,qty,usd:qty*mid};
   }).filter(function(x){return x.qty>0;}).sort(function(x,y){return y.usd-x.usd;});
+  const tot=rowsH.reduce(function(s,x){return s+x.usd;},0);
   if(!rowsH.length) return '<h3>bank</h3><div class="age">no bank snapshot yet</div>';
-  return '<h3>bank</h3><div class="bank-list"><table>'+rowsH.map(function(x){
+  return '<h3>bank</h3><div class="bank-total">$'+fmtN(tot)+'</div><div class="bank-list"><table>'+rowsH.map(function(x){
     return '<tr><td>'+esc(x.a)+'</td><td>'+esc(x.qty.toPrecision(6))+'</td><td>$'+fmtN(x.usd)+'</td></tr>';
   }).join('')+'</table></div>';
 }

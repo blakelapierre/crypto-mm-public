@@ -235,7 +235,15 @@ export function createExchange(cfg, orderRegistry) {
         } catch { /* keep */ }
       }
       price = px;
-      const failCtx = (err) => console.error('LIMIT FAIL id=none', venue, pair, side, 'L' + (meta.level || ''), volume, '@', price, err);
+      const failCtx = (err) => {
+        const msg = String(err && err.message || err || '');
+        const k = venue + ':' + pair + ':' + side;
+        const now = Date.now();
+        if (now - (failCtx._at && failCtx._at[k] || 0) < 15000) return;
+        failCtx._at = failCtx._at || {};
+        failCtx._at[k] = now;
+        console.error('LIMIT FAIL id=none', venue, pair, side, 'L' + (meta.level || ''), volume, '@', price, msg);
+      };
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
         orderRegistry.set(id, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });

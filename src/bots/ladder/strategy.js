@@ -293,9 +293,18 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       pinAt.set(key, Date.now());
       return;
     }
+    if (side === 'sell' && live) {
+      const held = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0);
+      if (!(held > 0)) { pinAt.set(key, Date.now() + Number(process.env.FUNDS_COOL_MS || 45000)); return; }
+      if (Number(size) > held * 0.97) size = formatVolume(held * 0.9, a.lotDecimals);
+      if (!(Number(size) > 0)) { pinAt.set(key, Date.now()); return; }
+    }
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
-    if (!(r && r.order_id)) return;
+    if (!(r && r.order_id)) {
+      pinAt.set(key, Date.now() + Number(process.env.FUNDS_COOL_MS || 45000));
+      return;
+    }
     logEvent('place', { pair: a.pair, symbol: a.symbol, side, level: 1, price: target, size, orderId: r.order_id, mid });
     pinAt.set(key, Date.now());
     for (const o of l1) {
