@@ -11,7 +11,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids,
 } from '../../shared/portfolio.js';
-import { processPair } from './strategy.js';
+import { processPair, harvestLowWeightBids } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
@@ -299,6 +299,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     )));
   }
   while (true) {
+    try { await harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
     await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 80)).then(() =>
       processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
     )));

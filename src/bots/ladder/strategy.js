@@ -433,3 +433,32 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }
+
+export async function harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive) {
+  if (!mmAlloc || mmAlloc.length < 2) return;
+  let live = null;
+  try { live = await getLive(); } catch { return; }
+  const cash = Number(live && live.freeQuote || 0);
+  const need = Math.max(cfg.minOrderUsd || 1, 1) * 1.15;
+  const rows = mmAlloc.map((a) => {
+    const st = pairState.get(a.pair);
+    const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
+    const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
+    return { a, w, buys, ret: midReturn(a.symbol) };
+  }).sort((x, y) => x.w - y.w);
+  const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
+  if (!heavy) return;
+  const hungry = heavy.buys.length < 1 || (heavy.ret > 0.004 && cash < need);
+  if (!hungry) return;
+  const floor = heavy.w * Number(process.env.HARVEST_W_RATIO || 0.55);
+  for (const row of rows) {
+    if (row.a.pair === heavy.a.pair) continue;
+    if (row.w >= floor && cash >= need) continue;
+    if (!row.buys.length) continue;
+    const victim = [...row.buys].sort((p, q) => Number(p.price) - Number(q.price))[0];
+    console.log('  HARVEST ' + row.a.symbol + ' w=' + row.w.toFixed(2) + ' buy L' + victim.level + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2));
+    try { await ex.cancelOrder(victim.orderId); } catch { /* ignore */ }
+    victim.status = 'cancelled';
+    return;
+  }
+}
