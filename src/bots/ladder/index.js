@@ -356,7 +356,7 @@ async function main() {
     console.log('bank skim 0.5% -> trade bot bank');
     try {
       await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005), null, 'startup');
-      live = await fetchLivePortfolio(cfg, ex, productMap);
+      live = await waitForSettlement(cfg, ex, productMap, 'after startup bank skim');
     } catch (e) { console.warn('startup bank skim', e.message); }
   }
   let lists = await buildLists(cfg, productMap, live.totalEquity, live);
@@ -371,7 +371,7 @@ async function main() {
       console.log('bank leftover orphans ' + leftover.join(','));
       try { await skimToBank(cfg, live, 1, leftover, 'startup'); }
       catch (e) { console.warn('orphan bank', e.message); }
-      live = await fetchLivePortfolio(cfg, ex, productMap);
+      live = await waitForSettlement(cfg, ex, productMap, 'after orphan bank');
     }
     lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }

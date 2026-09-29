@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { coinbaseRequest } from './coinbase.js';
+import { invalidateLiveCache } from './portfolio.js';
 
 export function bankAuthCfg(cfg) {
   const key = process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY || process.env.COINBASE_BANK_API_KEY || '';
@@ -71,6 +72,7 @@ async function moveFunds(cfg, sourceUuid, targetUuid, currency, value) {
     target_portfolio_uuid: targetUuid,
   });
   console.log('  BANK move ' + amt + ' ' + currency);
+  invalidateLiveCache();
   const snap = lastBankUuid || null;
   if (snap) {
     try { await refreshBankHoldings(cfg, snap); } catch (e) { console.warn('bank refresh', e.message); }

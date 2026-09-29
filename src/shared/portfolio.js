@@ -99,6 +99,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
 
 export async function waitForSettlement(cfg, ex, productMap, label, venue) {
   console.log('\nSettle: ' + label);
+  invalidateLiveCache();
   await sleep(cfg.settleWaitMs);
   const polls = (venue === 'kraken' || cfg.exchange === 'kraken') ? Math.min(cfg.settlePolls || 3, 2) : (cfg.settlePolls || 3);
   let live = null;
