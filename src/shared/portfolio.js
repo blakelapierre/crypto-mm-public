@@ -62,7 +62,15 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   const want = [];
   for (const [sym, pos] of Object.entries(positions)) {
     const info = productMap[sym];
-    if (!info) { console.warn('  position ' + sym + ' amt=' + pos.amount + ' has no ' + cfg.quote + ' product'); continue; }
+    if (!info) {
+      if (!fetchLivePortfolio._dead) fetchLivePortfolio._dead = new Set();
+      if (!fetchLivePortfolio._dead.has(sym)) {
+        fetchLivePortfolio._dead.add(sym);
+        console.warn('  ignore ' + sym + ' amt=' + pos.amount + ' (no ' + cfg.quote + ' market)');
+      }
+      delete positions[sym];
+      continue;
+    }
     pairList.push(info.pair);
     want.push([sym, pos, info]);
   }
