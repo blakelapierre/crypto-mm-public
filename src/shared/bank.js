@@ -2,13 +2,13 @@ import { setTimeout as sleep } from 'timers/promises';
 import { coinbaseRequest } from './coinbase.js';
 
 export function bankAuthCfg(cfg) {
-  const key = process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY || '';
+  const key = process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY || process.env.COINBASE_BANK_API_KEY || '';
   if (!key) return cfg;
   return {
     ...cfg,
     coinbaseApiKey: key,
-    coinbaseApiSecret: process.env.BANK_COINBASE_API_SECRET || process.env.BANK_API_SECRET || '',
-    coinbaseSecretFile: process.env.BANK_COINBASE_API_SECRET_FILE || process.env.BANK_API_SECRET_FILE || '',
+    coinbaseApiSecret: process.env.BANK_COINBASE_API_SECRET || process.env.BANK_API_SECRET || process.env.COINBASE_BANK_API_SECRET || '',
+    coinbaseSecretFile: process.env.BANK_COINBASE_API_SECRET_FILE || process.env.BANK_API_SECRET_FILE || process.env.COINBASE_BANK_API_SECRET_FILE || '',
   };
 }
 import { formatVolume, calculateVolume, safeQuoteSize, safeSpend } from './sizing.js';
@@ -180,11 +180,15 @@ export async function seedNewInventory(cfg, ex, mmAlloc, live) {
 export async function dumpBankToTrade(cfg, fraction) {
   const pct = Number(fraction);
   if (!(pct > 0 && pct <= 1)) throw new Error('fraction must be 0-1, got ' + fraction);
-  const perms = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/key_permissions');
+  const auth = bankAuthCfg(cfg);
+  if (!(auth.coinbaseApiKey && (auth.coinbaseApiSecret || auth.coinbaseSecretFile))) {
+    throw new Error('Set BANK_COINBASE_API_KEY and BANK_COINBASE_API_SECRET or BANK_COINBASE_API_SECRET_FILE');
+  }
+  const perms = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/key_permissions');
   if (perms.can_transfer === false) {
     throw new Error('Bank API key can_transfer=false — enable Transfer on the bank key');
   }
-  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios');
+  const data = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/portfolios');
   const list = data.portfolios || [];
   const bankWant = bankName().toLowerCase();
   const tradeWant = String(process.env.TRADE_PORTFOLIO || process.env.TRADE_BOT_PORTFOLIO || '').trim().toLowerCase();
@@ -199,7 +203,7 @@ export async function dumpBankToTrade(cfg, fraction) {
   }
   if (bank.uuid === trade.uuid) throw new Error('Bank and trade resolved to the same portfolio ' + bank.name);
   console.log('dump ' + (pct * 100) + '%  ' + bank.name + ' (' + bank.uuid + ') -> ' + trade.name + ' (' + trade.uuid + ')');
-  const accts = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/accounts?limit=250');
+  const accts = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/accounts?limit=250');
   const rows = accts.accounts || [];
   let moved = 0;
   for (const a of rows) {
@@ -210,7 +214,7 @@ export async function dumpBankToTrade(cfg, fraction) {
     const send = qty >= 1 ? qty.toFixed(8) : String(qty);
     if (!(Number(send) > 0)) continue;
     try {
-      await moveFunds(cfg, bank.uuid, trade.uuid, cur, send);
+      await moveFunds(auth, bank.uuid, trade.uuid, cur, send);
       moved += 1;
     } catch (e) {
       console.warn('dump skip ' + cur, e.message);
