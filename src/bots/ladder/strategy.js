@@ -464,21 +464,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     } catch { /* ignore */ }
   }
   if (filledNow) state.lastEnsureAt = 0;
-  let pulled = await cancelCrossed(ex, ladder, book.mid, tick);
-  const half = l1HalfFrac(cfg, a.pair);
-  const far = Number(process.env.FAR_QUOTE_MULT || 2.4);
-  for (const o of [...ladder.buys, ...ladder.sells]) {
-    if (!(o.status === 'open' && o.orderId && book.mid > 0)) continue;
-    if (Number(o.level) <= 1) continue;
-    const off = o.side === 'buy' ? (book.mid - Number(o.price)) / book.mid : (Number(o.price) - book.mid) / book.mid;
-    if (off > half * far) {
-      logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why: 'far', offBps: off * 10000 });
-      console.log('  PULL far ' + o.side + ' ' + a.symbol + ' L' + o.level + ' off=' + (off * 10000).toFixed(0) + 'bps');
-      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-      o.status = 'cancelled';
-      pulled += 1;
-    }
-  }
+  const pulled = await cancelCrossed(ex, ladder, book.mid, tick);
   if (pulled) pruneDone(ladder);
   await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
   const lastMid = state.lastMid || book.mid;

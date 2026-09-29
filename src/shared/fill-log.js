@@ -33,6 +33,21 @@ function debugPath() {
   const rel = raw && raw.trim() ? raw.trim() : 'logs/debug-' + bot + '.jsonl';
   return path.resolve(process.cwd(), rel);
 }
+const DEBUG_SHAPES = {
+  session: ['kind', 'ts', 'bot', 'exchange', 'quote'],
+  place: ['kind', 'ts', 'bot', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
+  cancel: ['kind', 'ts', 'bot', 'id', 'side', 'level', 'price', 'why', 'offBps'],
+  fill: ['kind', 'ts', 'bot', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
+  fee: ['kind', 'ts', 'bot', 'id', 'pair', 'fee', 'notional'],
+};
+function debugArr(kind, obj) {
+  const keys = DEBUG_SHAPES[kind];
+  if (!keys) return [kind, obj];
+  const row = { kind, ts: obj.ts || new Date().toISOString(), bot: process.env.BOT || 'ladder', ...obj };
+  if (row.id == null && row.orderId) row.id = row.orderId;
+  if (row.feeSrc == null && row.feeSource) row.feeSrc = row.feeSource;
+  return keys.map((k) => (row[k] == null ? null : row[k]));
+}
 let debugResolved = null;
 function appendDebug(row) {
   const dest = debugPath();
@@ -46,7 +61,7 @@ function appendDebug(row) {
 }
 export function logEvent(kind, extra = {}) {
   try {
-    appendDebug({ kind, ts: new Date().toISOString(), bot: process.env.BOT || 'ladder', ...extra });
+    appendDebug(debugArr(kind, extra));
   } catch { /* ignore */ }
 }
 
@@ -59,7 +74,8 @@ export function logSession(extra = {}) {
       ...extra,
     };
     appendLine(row);
-    appendDebug(row);
+    appendDebug(['shapes', DEBUG_SHAPES]);
+    appendDebug(debugArr('session', row));
   } catch (e) { console.warn('fill log session', e.message); }
 }
 
@@ -74,7 +90,7 @@ export function logFeeUpdate(orderId, fee, extra = {}) {
       notional: extra.notional != null ? Number(extra.notional) : null,
     };
     appendLine(row);
-    appendDebug(row);
+    appendDebug(debugArr('fee', { ...row, id: orderId }));
     if (row.notional) noteFeeFill(row.fee, row.notional, row.pair);
   } catch (e) { console.warn('fill log fee', e.message); }
 }
@@ -106,7 +122,7 @@ export function logFill(rec, extra = {}) {
     };
     postFill({ ...row, fee: pnlFee || venueFee });
     appendLine(row);
-    appendDebug(row);
+    appendDebug(debugArr('fill', { ...row, id: row.orderId, feeSrc: row.feeSource }));
   } catch (e) {
     console.warn('fill log', e.message);
   }
