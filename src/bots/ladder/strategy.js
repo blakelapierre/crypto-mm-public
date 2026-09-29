@@ -6,6 +6,7 @@ import { tapeSizeMult, tapeEdgeBps, markRipSell, inRipCooldown } from '../../sha
 import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
+import { logEvent } from '../../shared/fill-log.js';
 
 
 
@@ -187,9 +188,10 @@ async function cancelCrossed(ex, ladder, mid, tick) {
   return n;
 }
 
-async function cancelSide(ex, legs) {
+async function cancelSide(ex, legs, why = 'cancel') {
   for (const o of legs) {
     if (o.orderId && o.status === 'open') {
+      logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why });
       await ex.cancelOrder(o.orderId);
       o.status = 'cancelled';
     }
@@ -306,7 +308,23 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
 }
 
 let livePairState = null;
+let liveMmAlloc = [];
 export function setLivePairState(m) { livePairState = m; }
+export function setLiveMmAlloc(arr) { liveMmAlloc = arr || []; }
+function heavierBare(selfPair) {
+  if (!liveMmAlloc.length || !livePairState) return false;
+  const self = liveMmAlloc.find((x) => x.pair === selfPair);
+  const wSelf = self ? sizeWeightForSymbol(self.symbol) : 0;
+  for (const a of liveMmAlloc) {
+    if (a.pair === selfPair) continue;
+    if (sizeWeightForSymbol(a.symbol) <= wSelf + 0.05) continue;
+    const st = livePairState.get(a.pair);
+    const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open');
+    const sells = ((st && st.ladder && st.ladder.sells) || []).filter((o) => o.status === 'open');
+    if (!buys.length || !sells.length) return true;
+  }
+  return false;
+}
 
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null, prefer = null) {
   const gap = Number(process.env.ORDER_STAGGER_MS || 40);
@@ -315,7 +333,7 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   const legs = prefer === 'buy' ? [...buys, ...sells] : [...sells, ...buys];
   await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
     if (o.status === 'open' && o.orderId) return;
-    if (o.side === 'buy' && Number(o.level) > 1 && livePairState && siblingHasBareBids(livePairState, pair)) {
+    if (Number(o.level) > 1 && (heavierBare(pair) || (o.side === 'buy' && livePairState && siblingHasBareBids(livePairState, pair)))) {
       o.status = 'pending';
       return;
     }
@@ -326,8 +344,10 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
       if (resized !== o.size) { o.size = resized; }
     }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
-    if (r && r.order_id) { o.orderId = r.order_id; o.status = 'open'; }
-    else o.status = 'failed';
+    if (r && r.order_id) {
+      o.orderId = r.order_id; o.status = 'open';
+      logEvent('place', { pair, symbol: a && a.symbol, side: o.side, level: o.level, price: o.price, size: o.size, orderId: r.order_id });
+    } else o.status = 'failed';
     if (a) publishOrders(a, ladder, o.price);
   })));
 }
@@ -444,7 +464,20 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     } catch { /* ignore */ }
   }
   if (filledNow) state.lastEnsureAt = 0;
-  const pulled = await cancelCrossed(ex, ladder, book.mid, tick);
+  let pulled = await cancelCrossed(ex, ladder, book.mid, tick);
+  const half = l1HalfFrac(cfg, a.pair);
+  const far = Number(process.env.FAR_QUOTE_MULT || 2.4);
+  for (const o of [...ladder.buys, ...ladder.sells]) {
+    if (!(o.status === 'open' && o.orderId && book.mid > 0)) continue;
+    const off = o.side === 'buy' ? (book.mid - Number(o.price)) / book.mid : (Number(o.price) - book.mid) / book.mid;
+    if (off > half * far) {
+      logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why: 'far', offBps: off * 10000 });
+      console.log('  PULL far ' + o.side + ' ' + a.symbol + ' L' + o.level + ' off=' + (off * 10000).toFixed(0) + 'bps');
+      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+      o.status = 'cancelled';
+      pulled += 1;
+    }
+  }
   if (pulled) pruneDone(ladder);
   await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
   const lastMid = state.lastMid || book.mid;

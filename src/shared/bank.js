@@ -95,7 +95,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
 
 export async function liquidateSymbols(cfg, ex, live, symbols) {
   const jobs = [];
-  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 200);
+  const gap = Number(process.env.SELL_STAGGER_MS || 40);
   for (const sym of symbols) {
     const pos = live.positions[sym];
     if (!pos || !(pos.amount > 0) || !pos.pair) continue;

@@ -11,7 +11,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids,
 } from '../../shared/portfolio.js';
-import { processPair, harvestLowWeightBids } from './strategy.js';
+import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
@@ -34,8 +34,15 @@ const pairState = new Map();
 const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
 
+function sortAllocByWeight(arr) {
+  arr.sort((a, b) => sizeWeightForSymbol(b.symbol) - sizeWeightForSymbol(a.symbol));
+  return arr;
+}
+
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
   console.log('\nladder MM');
+  sortAllocByWeight(mmAlloc);
+  setLiveMmAlloc(mmAlloc);
   setSizeUniverse(mmAlloc.map((a) => a.symbol));
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
@@ -304,16 +311,31 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     }
   })();
   const gap = Number(process.env.ORDER_STAGGER_MS || cfg.rateLimitMs || 150);
-  const fresh = mmAlloc.filter((a) => !pairState.has(a.pair));
+  const fresh = sortAllocByWeight(mmAlloc.filter((a) => !pairState.has(a.pair)));
   if (fresh.length) {
-    console.log('initial ladders concurrent n=' + fresh.length);
+    console.log('initial ladders high-w first n=' + fresh.length + ' ' + fresh.map((a) => a.symbol).join(','));
     await Promise.all(fresh.map((a, i) => sleep(i * gap).then(() =>
       processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
     )));
   }
+  let lastDump = 0;
   while (true) {
+    sortAllocByWeight(mmAlloc);
+    setLiveMmAlloc(mmAlloc);
+    if (Date.now() - lastDump > Number(process.env.ORPHAN_DUMP_MS || 60000)) {
+      lastDump = Date.now();
+      try {
+        const live = await getLive();
+        const keep = new Set(mmAlloc.map((a) => a.symbol));
+        const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
+        if (dump.length) {
+          console.log('dump non-MM ' + dump.join(','));
+          await liquidateSymbols(cfg, ex, live, dump);
+        }
+      } catch (e) { console.warn('orphan dump', e.message); }
+    }
     try { await harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
-    await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 80)).then(() =>
+    await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 40)).then(() =>
       processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
     )));
     await sleep(cfg.updateIntervalMs);

@@ -26,14 +26,40 @@ function appendLine(row) {
   fs.appendFileSync(dest, JSON.stringify(row) + '\n');
 }
 
+function debugPath() {
+  const bot = String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
+  const raw = process.env.DEBUG_LOG;
+  if (raw === '0' || raw === 'off') return null;
+  const rel = raw && raw.trim() ? raw.trim() : 'logs/debug-' + bot + '.jsonl';
+  return path.resolve(process.cwd(), rel);
+}
+let debugResolved = null;
+function appendDebug(row) {
+  const dest = debugPath();
+  if (!dest) return;
+  if (!debugResolved) {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    debugResolved = dest;
+    console.log('debug log -> ' + dest);
+  }
+  fs.appendFileSync(dest, JSON.stringify(row) + '\n');
+}
+export function logEvent(kind, extra = {}) {
+  try {
+    appendDebug({ kind, ts: new Date().toISOString(), bot: process.env.BOT || 'ladder', ...extra });
+  } catch { /* ignore */ }
+}
+
 export function logSession(extra = {}) {
   try {
-    appendLine({
+    const row = {
       kind: 'session',
       ts: new Date().toISOString(),
       bot: process.env.BOT || 'ladder',
       ...extra,
-    });
+    };
+    appendLine(row);
+    appendDebug(row);
   } catch (e) { console.warn('fill log session', e.message); }
 }
 
@@ -48,6 +74,7 @@ export function logFeeUpdate(orderId, fee, extra = {}) {
       notional: extra.notional != null ? Number(extra.notional) : null,
     };
     appendLine(row);
+    appendDebug(row);
     if (row.notional) noteFeeFill(row.fee, row.notional, row.pair);
   } catch (e) { console.warn('fill log fee', e.message); }
 }
@@ -79,6 +106,7 @@ export function logFill(rec, extra = {}) {
     };
     postFill({ ...row, fee: pnlFee || venueFee });
     appendLine(row);
+    appendDebug(row);
   } catch (e) {
     console.warn('fill log', e.message);
   }

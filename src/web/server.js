@@ -10,6 +10,7 @@ const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
 const sparks = new Map();
 const volSparks = new Map();
+const rangeSparks = new Map();
 const sparkFills = new Map();
 const SPARK_MS = Number(process.env.SPARK_WINDOW_MS || 15 * 60 * 1000);
 const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 1000);
@@ -70,6 +71,20 @@ function holdAllSparks() {
 }
 setInterval(holdAllSparks, SPARK_GAP);
 
+function noteRangeSparks(bot, movers) {
+  const now = Date.now();
+  for (const m of movers || []) {
+    const rng = Number(m.rangePct || 0);
+    if (!m.symbol) continue;
+    const k = bot + ':' + String(m.symbol).toUpperCase();
+    const arr = rangeSparks.get(k) || [];
+    const last = arr[arr.length - 1];
+    if (!last || now - last.t >= SPARK_GAP) arr.push({ t: now, p: rng });
+    else last.p = rng;
+    while (arr.length && now - arr[0].t > SPARK_MS) arr.shift();
+    rangeSparks.set(k, arr);
+  }
+}
 function noteVolSparks(bot, markets) {
   const now = Date.now();
   for (const m of markets || []) {
@@ -164,7 +179,8 @@ function collect() {
       bank: kpiSeries(b.bot, 'bank'),
     },
     edgeBps: b.edgeBps,
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), volSpark: volSparks.get(b.bot + ':' + m.symbol) || [], sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), volSpark: volSparks.get(b.bot + ':' + m.symbol) || [], rangeSpark: rangeSparks.get(b.bot + ':' + String(m.symbol).toUpperCase()) || [], sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
+    movers: (b.movers || []).map((m) => ({ ...m, rangeSpark: rangeSparks.get(b.bot + ':' + String(m.symbol).toUpperCase()) || [] })),
   }));
 }
 
@@ -241,7 +257,8 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .botg{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px}
 .movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
-.movers .botg{flex-direction:column;align-items:center;max-width:720px}
+.movers .botg{display:flex;flex-direction:column;align-items:stretch;max-width:none;width:100%;box-sizing:border-box}
+.movers .botg .row{flex-wrap:nowrap;justify-content:flex-start;overflow-x:auto;width:100%}
 </style>
 </head>
 <body>
@@ -549,7 +566,7 @@ function moversHtml(rows){
     if(kind==='vol'){
       (b.movers||[]).forEach(function(m){
         const mk=(b.markets||[]).find(function(x){return String(x.symbol).toUpperCase()===String(m.symbol).toUpperCase();})||{};
-        add({symbol:m.symbol,rangePct:Number(m.rangePct||0),ret:Number(m.ret||0),spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders});
+        add({symbol:m.symbol,rangePct:Number(m.rangePct||0),ret:Number(m.ret||0),spark:m.rangeSpark||mk.rangeSpark,sparkFills:null,orders:null});
       });
       if(!items.length){
         (b.markets||[]).forEach(function(m){
@@ -656,6 +673,7 @@ const server = http.createServer(async (req, res) => {
       bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
       noteVolSparks(id, msg.markets || prev.markets);
+      noteRangeSparks(id, msg.movers || []);
       const pnl = msg.pnl || prev.pnl || {};
       const vol = (msg.markets || prev.markets || []).reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
       noteKpiSpark(id, {
