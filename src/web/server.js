@@ -35,19 +35,39 @@ function kpiSeries(bot, key) {
 
 function noteSparks(bot, markets) {
   const now = Date.now();
+  const seen = new Set();
   for (const m of markets || []) {
     const mid = parseFloat(m.mid);
     if (!(mid > 0) || !m.symbol) continue;
     const k = bot + ':' + m.symbol;
+    seen.add(k);
     const arr = sparks.get(k) || [];
     const last = arr[arr.length - 1];
     if (!last || now - last.t >= SPARK_GAP) arr.push({ t: now, p: mid });
-    else last.p = mid;
+    else { last.p = mid; last.t = now; }
     while (arr.length && now - arr[0].t > SPARK_MS) arr.shift();
     sparks.set(k, arr);
   }
+  if (bot) {
+    const prefix = String(bot) + ':';
+    for (const [k, arr] of sparks) {
+      if (!k.startsWith(prefix) || seen.has(k) || !arr.length) continue;
+      const last = arr[arr.length - 1];
+      if (now - last.t >= SPARK_GAP) arr.push({ t: now, p: last.p, held: true });
+    }
+  }
   pruneSparks();
 }
+function holdAllSparks() {
+  const now = Date.now();
+  for (const [, arr] of sparks) {
+    if (!arr.length) continue;
+    const last = arr[arr.length - 1];
+    if (now - last.t >= SPARK_GAP) arr.push({ t: now, p: last.p, held: true });
+  }
+  pruneSparks();
+}
+setInterval(holdAllSparks, SPARK_GAP);
 function downsample(points, maxPts) {
   const arr = points || [];
   if (arr.length <= maxPts) return arr;
