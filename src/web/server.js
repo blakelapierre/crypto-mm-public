@@ -190,10 +190,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .kpi span.pw{font-size:10px;opacity:.85}.kpi span.pm{font-size:9px;opacity:.75}
 .kpi span.py{font-size:8px;opacity:.65}
 .hdr-stats .pw{font-size:10px}.hdr-stats .pm{font-size:9px}.hdr-stats .py{font-size:8px;opacity:.7}
-.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:8px;line-height:normal}
-.board-card .cell{flex:0 0 auto;width:118px;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
+.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;gap:8px;line-height:normal}
+.board-card .cell{flex:0 0 auto;width:124px;min-height:118px;display:flex;flex-direction:column;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
-.board-card .cell .sz{font-size:10px;color:#8b98a5}
+.board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.25;min-height:2.5em;margin-top:auto}
 .movers{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
 .movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:5px 8px;min-width:88px}
 .movers .mv .s{font-weight:600;font-size:12px}
@@ -463,17 +463,22 @@ function boardHtml(rows){
     }).sort(function(a,c){return c.score-a.score||c.work-a.work||c.vol-a.vol;});
     if(!cells.length) return '';
     const inner=cells.map(function(c){
+      const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
-        '<div class="sz">ord $'+fmtN(c.work)+' · vol $'+fmtN(c.vol)+(fmtSpread(c.m)?' · '+fmtSpread(c.m):'')+'</div></div>';
+        '<div class="sz">$'+fmtN(c.work)+' · v $'+fmtN(c.vol)+'<br>w '+esc(c.m.w||'')+(e?' · '+e:'')+'</div></div>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
     const wal=b.pnl&&b.pnl.walletGain;
+    const eq=b.pnl&&b.pnl.lastEquity;
+    const edge=b.edgeBps;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
       '<div class="hdr-stats">'+
+        '<div class="col"><label>wallet $</label><b>$'+fmtN(eq)+'</b><span>'+fmt(wal)+'</span></div>'+
+        '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+
         '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b><span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
-        '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
+        '<div class="col"><label>pnl</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
       '<div class="sparks">'+inner+'</div></section>';
