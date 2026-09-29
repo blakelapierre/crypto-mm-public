@@ -276,6 +276,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   async function pin(side, target) {
     const key = a.pair + ':' + side;
     if (Date.now() - (pinAt.get(key) || 0) < cool) return;
+    if (side === 'buy' && siblingHasBareBids(pairState || livePairState || new Map(), a.pair)) return;
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
     const l1 = open.filter((o) => Number(o.level) === 1);
@@ -375,7 +376,11 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   const legs = prefer === 'buy' ? [...buys, ...sells] : [...sells, ...buys];
   await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
     if (o.status === 'open' && o.orderId) return;
-    if (Number(o.level) > 1 && (heavierBare(pair) || (o.side === 'buy' && livePairState && siblingHasBareBids(livePairState, pair)))) {
+    if (o.side === 'buy' && livePairState && siblingHasBareBids(livePairState, pair)) {
+      o.status = 'pending';
+      return;
+    }
+    if (Number(o.level) > 1 && heavierBare(pair)) {
       o.status = 'pending';
       return;
     }
@@ -600,8 +605,13 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
 }
 
 export function siblingHasBareBids(pairState, selfPair) {
-  for (const [p, st] of pairState) {
-    if (p === selfPair) continue;
+  const self = (liveMmAlloc || []).find((x) => x.pair === selfPair);
+  const wSelf = self ? sizeWeightForSymbol(self.symbol) : 0;
+  const names = (liveMmAlloc && liveMmAlloc.length) ? liveMmAlloc : [];
+  for (const a of names) {
+    if (a.pair === selfPair) continue;
+    if (sizeWeightForSymbol(a.symbol) <= wSelf + 0.05) continue;
+    const st = pairState && pairState.get(a.pair);
     const n = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
     if (n === 0) return true;
   }
@@ -614,27 +624,25 @@ export async function harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive)
     const st = pairState.get(a.pair);
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
-    return { a, w, buys, ret: midReturn(a.symbol) };
+    const sells = ((st && st.ladder && st.ladder.sells) || []).filter((o) => o.status === 'open' && o.orderId);
+    return { a, w, buys, sells, st };
   });
-  const bare = rows.filter((r) => r.buys.length === 0).sort((x, y) => y.w - x.w);
-  const fat = rows.filter((r) => r.buys.length > 1).sort((x, y) => x.w - y.w || y.buys.length - x.buys.length);
-  if (!bare.length || !fat.length) {
-    const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
-    if (!heavy || heavy.buys.length) return;
-    const donor = [...rows].filter((r) => r.buys.length && r.w < heavy.w * 0.7).sort((x, y) => x.w - y.w)[0];
-    if (!donor) return;
-    const victim = [...donor.buys].sort((p, q) => Number(q.level) - Number(p.level) || Number(p.price) - Number(q.price))[0];
-    console.log('  HARVEST ' + donor.a.symbol + ' w=' + donor.w.toFixed(2) + ' buy L' + victim.level + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2));
-    try { await ex.cancelOrder(victim.orderId); } catch { /* ignore */ }
-    victim.status = 'cancelled';
-    return;
+  const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
+  if (!heavy) return;
+  if (heavy.buys.length && heavy.sells.length) return;
+  const donors = rows.filter((r) => r.a.pair !== heavy.a.pair && r.w < heavy.w * 0.6 && r.buys.length);
+  const jobs = [];
+  for (const d of donors) {
+    for (const o of d.buys) jobs.push({ d, o });
   }
-  const hungry = bare[0];
-  const donor = fat.find((r) => r.a.pair !== hungry.a.pair) || fat[0];
-  if (!donor || donor.a.pair === hungry.a.pair) return;
-  const extras = donor.buys.filter((o) => Number(o.level) > 1);
-  const victim = (extras.length ? extras : donor.buys).sort((p, q) => Number(q.level) - Number(p.level) || Number(p.price) - Number(q.price))[0];
-  console.log('  HARVEST ' + donor.a.symbol + ' w=' + donor.w.toFixed(2) + ' n=' + donor.buys.length + ' L' + victim.level + ' -> ' + hungry.a.symbol + ' w=' + hungry.w.toFixed(2));
-  try { await ex.cancelOrder(victim.orderId); } catch { /* ignore */ }
-  victim.status = 'cancelled';
+  if (!jobs.length) return;
+  console.log('  HARVEST ' + jobs.length + ' bids from ' + donors.map((d) => d.a.symbol).join(',') + ' -> ' + heavy.a.symbol);
+  await Promise.all(jobs.map(async ({ o }) => {
+    try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+    o.status = 'cancelled';
+  }));
+  if (heavy.st && getLive) {
+    const book = { mid: heavy.st.lastMid, bid: heavy.st.lastBid || heavy.st.lastMid, ask: heavy.st.lastAsk || heavy.st.lastMid };
+    if (book.mid) await pinL1(cfg, ex, heavy.a, heavy.st.ladder, book, getLive, pairState);
+  }
 }

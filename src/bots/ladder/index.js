@@ -104,7 +104,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
       const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
-      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || 24);
+      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || cfg.mmMaxPairs || 8);
       const levels = Math.max(1, cfg.mmLevels || 1);
       await sleep(Math.max(cfg.volScanMs || 60000, 30000));
       while (true) {
@@ -131,6 +131,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             if (weak && age >= rotateMin) leaving.push(a);
             else keep.push(a);
           }
+          keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
+          while (keep.length > hardMax) leaving.push(keep.pop());
           const have = new Set(keep.map((a) => a.pair));
           const additions = [];
           let budget = free * Number(process.env.VOL_ENTER_CASH_FRAC || 0.85);
