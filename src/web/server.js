@@ -508,8 +508,8 @@ function card(b){
     '<div><label>TAKER</label><b>'+fmt(p.takerFees!=null?-p.takerFees:null)+'</b></div>'+
     '<div><label>GAP</label><b>'+fmt(p.otherPnl)+'</b></div>'+
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
-    '<div><label>Bids</label><b>'+fmtN(w.bids)+'</b></div>'+
-    '<div><label>Asks</label><b>'+fmtN(w.asks)+'</b></div>'+
+    '<div><label>Buy orders</label><b>$'+fmtN(w.bids)+'</b></div>'+
+    '<div><label>Sell orders</label><b>$'+fmtN(w.asks)+'</b></div>'+
     '<div><label>Inventory</label><b>'+fmtN(w.inventory)+'</b></div>'+
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
@@ -551,7 +551,8 @@ function boardHtml(rows){
         '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>$'+fmtN(eq)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+
         '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b>'+sparkSvg((b.kpiSpark||{}).vol,null,null,{w:56,h:18})+'<span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
-        '<div class="col"><label>pnl</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
+        '<div class="col"><label>buys</label><b>$'+fmtN((b.working||{}).bids)+'</b></div>'+
+        '<div class="col"><label>sells</label><b>$'+fmtN((b.working||{}).asks)+'</b></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
       '<div class="sparks">'+inner+'</div></section>';
@@ -770,7 +771,17 @@ const server = http.createServer(async (req, res) => {
       m.orderTs = Date.now();
       if (msg.mid) m.mid = msg.mid;
       if (msg.pair) m.pair = msg.pair;
-      bots.set(id, { ...prev, markets, bot: id });
+      const open = (m.orders || []).filter(function(o){ return o.status === 'open'; });
+      m.bidUsd = open.filter(function(o){ return o.side === 'buy'; }).reduce(function(s,o){ return s + Number(o.usd != null ? o.usd : Number(o.size)*Number(o.price)); }, 0);
+      m.askUsd = open.filter(function(o){ return o.side === 'sell'; }).reduce(function(s,o){ return s + Number(o.usd != null ? o.usd : Number(o.size)*Number(o.price)); }, 0);
+      m.bids = open.filter(function(o){ return o.side === 'buy'; }).length;
+      m.asks = open.filter(function(o){ return o.side === 'sell'; }).length;
+      const working = { ...(prev.working || {}), bids: 0, asks: 0 };
+      for (const x of markets) {
+        working.bids += Number(x.bidUsd || 0);
+        working.asks += Number(x.askUsd || 0);
+      }
+      bots.set(id, { ...prev, markets, working, bot: id });
       broadcast();
       try {
         const frame = JSON.stringify({ type: 'orders', bot: id, symbol: msg.symbol, orders: m.orders, mid: m.mid });
