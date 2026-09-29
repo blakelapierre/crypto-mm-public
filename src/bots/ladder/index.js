@@ -280,7 +280,20 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        movers: [...topVolatiles(Number(process.env.MOVER_N || 12)), ...topMovers(Number(process.env.MOVER_N || 12))],
+        movers: (() => {
+          const map = new Map();
+          for (const r of [...topVolatiles(12), ...topMovers(12)]) {
+            const k = String(r.symbol || '').toUpperCase();
+            if (!k) continue;
+            const prev = map.get(k);
+            if (!prev) map.set(k, { ...r, symbol: k });
+            else {
+              if (Number(r.rangePct || 0) > Number(prev.rangePct || 0)) prev.rangePct = r.rangePct;
+              if (Math.abs(Number(r.ret || 0)) > Math.abs(Number(prev.ret || 0))) prev.ret = r.ret;
+            }
+          }
+          return [...map.values()];
+        })(),
       });
     } finally { emitStatus.busy = false; }
   }

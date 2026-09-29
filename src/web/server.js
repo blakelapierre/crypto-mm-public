@@ -537,10 +537,19 @@ function moversHtml(rows){
   }
   function itemsOf(b, kind){
     const items=[];
+    const seen={};
+    function add(row){
+      const k=String(row.symbol||'').toUpperCase();
+      if(!k) return;
+      const prev=seen[k];
+      if(!prev){ seen[k]=row; items.push(row); return; }
+      if(kind==='vol' && (row.rangePct||0)>(prev.rangePct||0)) Object.assign(prev,row);
+      if(kind!=='vol' && Math.abs(row.ret||0)>Math.abs(prev.ret||0)) Object.assign(prev,row);
+    }
     if(kind==='vol'){
       (b.movers||[]).forEach(function(m){
-        const mk=(b.markets||[]).find(function(x){return x.symbol===m.symbol;})||{};
-        items.push({symbol:m.symbol,rangePct:Number(m.rangePct||0),ret:Number(m.ret||0),spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders});
+        const mk=(b.markets||[]).find(function(x){return String(x.symbol).toUpperCase()===String(m.symbol).toUpperCase();})||{};
+        add({symbol:m.symbol,rangePct:Number(m.rangePct||0),ret:Number(m.ret||0),spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders});
       });
       if(!items.length){
         (b.markets||[]).forEach(function(m){
@@ -549,13 +558,13 @@ function moversHtml(rows){
           const hi=Math.max.apply(null,pts.map(function(p){return Number(p.p||p);}));
           const lo=Math.min.apply(null,pts.map(function(p){return Number(p.p||p);}));
           const z=Number(pts[pts.length-1].p||pts[pts.length-1]);
-          items.push({symbol:m.symbol,rangePct:z>0?((hi-lo)/z)*100:0,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+          add({symbol:m.symbol,rangePct:z>0?((hi-lo)/z)*100:0,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
         });
       }
       items.sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);});
     } else {
       (b.movers||[]).forEach(function(m){
-        items.push({symbol:m.symbol,ret:Number(m.ret||0),rangePct:Number(m.rangePct||0)});
+        add({symbol:m.symbol,ret:Number(m.ret||0),rangePct:Number(m.rangePct||0)});
       });
       if(!items.length){
         (b.markets||[]).forEach(function(m){
@@ -563,7 +572,7 @@ function moversHtml(rows){
           if(pts.length<2) return;
           const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
           if(!(a>0&&z>0)) return;
-          items.push({symbol:m.symbol,ret:(z-a)/a,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+          add({symbol:m.symbol,ret:(z-a)/a,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
         });
       }
       items.sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);});

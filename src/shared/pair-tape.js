@@ -52,16 +52,19 @@ export function tapeStats(pair) {
   return { edgeBps: tapeEdgeBps(pair), buyN: s.n, sellN: s.n, buyUsd: s.buyNot, sellUsd: s.sellNot };
 }
 
-export function bookEdgeBps(markets) {
-  let bn = 0, sn = 0, bq = 0, sq = 0;
+export function bookEdgeBps() {
+  let w = 0, acc = 0;
   for (const [pair] of last) {
+    const e = tapeEdgeBps(pair);
+    if (e == null) continue;
     const s = sums(rec(pair));
-    bn += s.buyNot; sn += s.sellNot; bq += s.buyQ; sq += s.sellQ;
+    const n = s.buyNot + s.sellNot;
+    if (!(n > 0)) continue;
+    acc += e * n;
+    w += n;
   }
-  if (!(bq > 0) || !(sq > 0)) return null;
-  const ab = bn / bq, as_ = sn / sq, mid = (ab + as_) / 2;
-  if (!(mid > 0)) return null;
-  return ((as_ - ab) / mid) * 10000;
+  if (!(w > 0)) return null;
+  return acc / w;
 }
 
 const ripAt = new Map();
