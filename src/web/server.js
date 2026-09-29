@@ -499,8 +499,8 @@ function boardHtml(rows){
     const cells=(b.markets||[]).map(function(m){
       const work=Number(m.bidUsd||0)+Number(m.askUsd||0);
       const vol=Number(m.buyUsd||0)+Number(m.sellUsd||0);
-      return {m,work,vol,score:work*2+vol};
-    }).sort(function(a,c){return c.score-a.score||c.work-a.work||c.vol-a.vol;});
+      return {m,work,vol,w:weightOf(m)};
+    }).sort(function(a,c){return c.w-a.w||c.work-a.work;});
     if(!cells.length) return '';
     const inner=cells.map(function(c){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
