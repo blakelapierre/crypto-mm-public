@@ -510,6 +510,7 @@ function card(b){
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
     '<div><label>Buy orders</label><b>$'+fmtN(w.bids)+'</b></div>'+
     '<div><label>Sell orders</label><b>$'+fmtN(w.asks)+'</b></div>'+
+    '<div><label>Book</label><b>$'+fmtN(Number(w.bids||0)+Number(w.asks||0))+'</b></div>'+
     '<div><label>Inventory</label><b>'+fmtN(w.inventory)+'</b></div>'+
     '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
@@ -553,6 +554,7 @@ function boardHtml(rows){
         '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b>'+sparkSvg((b.kpiSpark||{}).vol,null,null,{w:56,h:18})+'<span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
         '<div class="col"><label>buys</label><b>$'+fmtN((b.working||{}).bids)+'</b></div>'+
         '<div class="col"><label>sells</label><b>$'+fmtN((b.working||{}).asks)+'</b></div>'+
+        '<div class="col"><label>book</label><b>$'+fmtN(Number((b.working||{}).bids||0)+Number((b.working||{}).asks||0))+'</b></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
       '<div class="sparks">'+inner+'</div></section>';
@@ -649,7 +651,10 @@ function render(data){
   const board=document.getElementById('board');
   if(board) board.innerHTML=boardHtml(rows);
   const bank=document.getElementById('bank');
-  if(bank) bank.innerHTML=bankHtml(rows);
+  if(bank){
+    const snap=JSON.stringify((rows||[]).map(function(b){return b.bankHoldings||[];}));
+    if(window._bankSnap!==snap){ window._bankSnap=snap; bank.innerHTML=bankHtml(rows); }
+  }
   document.getElementById('root').innerHTML=rows.map(card).join('')||'<p>No reports yet.</p>';
 }
 function connect(){

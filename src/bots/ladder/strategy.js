@@ -150,15 +150,25 @@ function resizeLeg(cfg, a, o, live) {
     if (!isL1 && cap > 0 && held >= cap && ret <= 0) return 0;
     const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
-    const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
+    let reserved = 0;
+    if (livePairState) {
+      for (const [p, st] of livePairState) {
+        if (p === a.pair) continue;
+        for (const b of (st.ladder && st.ladder.buys) || []) {
+          if (b.status === 'open' && b.price && b.size) reserved += Number(b.price) * Number(b.size);
+        }
+      }
+    }
+    const cashLeft = Math.max(0, live.freeQuote - reserved) * (cfg.capitalSafetyMargin || 0.92) * hair;
+    const cashShare = isL1 ? cashLeft : (cashLeft * w) / pairs;
     const room = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
     const wantUsd = Number(o.size) > 0 && o.price > 0 ? o.price * o.size : cashShare;
-    let useUsd = Math.min(wantUsd || cashShare, cashShare || wantUsd, isL1 ? (live.freeQuote * hair) : (room || cashShare));
+    let useUsd = isL1 ? Math.min(wantUsd || cashShare, cashLeft) : Math.min(wantUsd || cashShare, cashShare || wantUsd, room || cashShare);
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
-    if (useUsd < minUsd && live.freeQuote * hair >= minUsd) useUsd = minUsd;
+    if (useUsd < minUsd && cashLeft >= minUsd) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
-    if (size + 1e-12 < minV) return minV * o.price <= live.freeQuote * hair ? formatVolume(minV, a.lotDecimals) : 0;
+    if (size + 1e-12 < minV) return minV * o.price <= cashLeft ? formatVolume(minV, a.lotDecimals) : 0;
     return formatVolume(size, a.lotDecimals);
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;

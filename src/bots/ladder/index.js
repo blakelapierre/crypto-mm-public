@@ -287,13 +287,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        bankHoldings: await (async () => {
-          if (cfg.exchange === 'coinbase' && Date.now() - (emitStatus._bankAt || 0) > Number(process.env.BANK_HOLD_MS || 120000)) {
-            emitStatus._bankAt = Date.now();
-            try { await refreshBankHoldings(cfg); } catch (e) { console.warn('bank hold', e.message); }
-          }
-          return bankHoldings();
-        })(),
+        bankHoldings: bankHoldings(),
         movers: (() => {
           const map = new Map();
           for (const r of [...topVolatiles(12), ...topMovers(12)]) {
