@@ -1,96 +1,88 @@
 import fs from 'fs';
 import path from 'path';
-import { noteFeeFill, assumedMakerFeeBps } from './fee-spread.js';
+import { noteFeeFill } from './fee-spread.js';
 import { noteTapeFill } from './pair-tape.js';
 import { invalidateLiveCache } from './portfolio.js';
 import { postFill } from './status-client.js';
 
 let resolved = null;
+let debugResolved = null;
+
+function botName() {
+  return String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
+}
+
+const SHAPE_LIST = [
+  ['session', 'ts', 'bot', 'exchange', 'quote'],
+  ['place', 'ts', 'bot', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
+  ['cancel', 'ts', 'bot', 'id', 'side', 'level', 'price', 'why', 'offBps'],
+  ['fill', 'ts', 'bot', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
+  ['fee', 'ts', 'bot', 'id', 'pair', 'fee', 'notional'],
+];
+const SHAPE_ID = Object.fromEntries(SHAPE_LIST.map((s, i) => [s[0], i]));
+
+function packRow(kind, obj) {
+  const id = SHAPE_ID[kind];
+  const spec = id == null ? null : SHAPE_LIST[id];
+  const row = { ts: obj.ts || new Date().toISOString(), bot: process.env.BOT || 'ladder', ...obj };
+  if (row.id == null && row.orderId) row.id = row.orderId;
+  if (row.feeSrc == null && row.feeSource) row.feeSrc = row.feeSource;
+  if (!spec) return [kind, row];
+  return [id, ...spec.slice(1).map((k) => (row[k] == null ? null : row[k]))];
+}
 
 function filePath() {
   const raw = process.env.FILL_LOG;
   if (raw === '0' || raw === 'off' || raw === 'false') return null;
-  const bot = String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
-  const rel = raw && raw.trim() ? raw.trim() : 'logs/fills-' + bot + '.jsonl';
+  const rel = raw && raw.trim() ? raw.trim() : 'logs/fills-' + botName() + '.jsonl';
   return path.resolve(process.cwd(), rel);
-}
-
-function appendLine(row) {
-  const dest = filePath();
-  if (!dest) return;
-  if (!resolved) {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    resolved = dest;
-    console.log('fill log -> ' + dest);
-  }
-  fs.appendFileSync(dest, JSON.stringify(row) + '\n');
 }
 
 function debugPath() {
-  const bot = String(process.env.BOT || 'ladder').toLowerCase().replace(/[^a-z0-9_-]+/g, '') || 'ladder';
   const raw = process.env.DEBUG_LOG;
   if (raw === '0' || raw === 'off') return null;
-  const rel = raw && raw.trim() ? raw.trim() : 'logs/debug-' + bot + '.jsonl';
+  const rel = raw && raw.trim() ? raw.trim() : 'logs/debug-' + botName() + '.jsonl';
   return path.resolve(process.cwd(), rel);
 }
-const DEBUG_SHAPES = {
-  session: ['kind', 'ts', 'bot', 'exchange', 'quote'],
-  place: ['kind', 'ts', 'bot', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
-  cancel: ['kind', 'ts', 'bot', 'id', 'side', 'level', 'price', 'why', 'offBps'],
-  fill: ['kind', 'ts', 'bot', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
-  fee: ['kind', 'ts', 'bot', 'id', 'pair', 'fee', 'notional'],
-};
-function debugArr(kind, obj) {
-  const keys = DEBUG_SHAPES[kind];
-  if (!keys) return [kind, obj];
-  const row = { kind, ts: obj.ts || new Date().toISOString(), bot: process.env.BOT || 'ladder', ...obj };
-  if (row.id == null && row.orderId) row.id = row.orderId;
-  if (row.feeSrc == null && row.feeSource) row.feeSrc = row.feeSource;
-  return keys.map((k) => (row[k] == null ? null : row[k]));
-}
-let debugResolved = null;
-function appendDebug(row) {
-  const dest = debugPath();
+
+function appendTo(destHolder, destFn, label, row) {
+  const dest = destFn();
   if (!dest) return;
-  if (!debugResolved) {
+  if (!destHolder.v) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    debugResolved = dest;
-    console.log('debug log -> ' + dest);
+    destHolder.v = dest;
+    console.log(label + ' -> ' + dest);
   }
-  fs.appendFileSync(dest, JSON.stringify(row) + '\n');
+  fs.appendFileSync(destHolder.v, JSON.stringify(row) + '\n');
 }
+
+const fillDest = { v: null };
+const debugDest = { v: null };
+function appendLine(row) { appendTo(fillDest, filePath, 'fill log', row); }
+function appendDebug(row) { appendTo(debugDest, debugPath, 'debug log', row); }
+function writeBoth(row) { appendLine(row); appendDebug(row); }
+
 export function logEvent(kind, extra = {}) {
-  try {
-    appendDebug(debugArr(kind, extra));
-  } catch { /* ignore */ }
+  try { writeBoth(packRow(kind, extra)); } catch { /* ignore */ }
 }
 
 export function logSession(extra = {}) {
   try {
-    const row = {
-      kind: 'session',
-      ts: new Date().toISOString(),
-      bot: process.env.BOT || 'ladder',
-      ...extra,
-    };
-    appendLine(row);
-    appendDebug(['shapes', DEBUG_SHAPES]);
-    appendDebug(debugArr('session', row));
+    writeBoth(['shapes', SHAPE_LIST]);
+    writeBoth(packRow('session', extra));
   } catch (e) { console.warn('fill log session', e.message); }
 }
 
 export function logFeeUpdate(orderId, fee, extra = {}) {
   try {
     const row = {
-      kind: 'fee',
       ts: new Date().toISOString(),
       orderId,
       fee: Number(fee) || 0,
       pair: extra.pair || null,
       notional: extra.notional != null ? Number(extra.notional) : null,
     };
-    appendLine(row);
-    appendDebug(debugArr('fee', { ...row, id: orderId }));
+    writeBoth(packRow('fee', { ...row, id: orderId }));
     if (row.notional) noteFeeFill(row.fee, row.notional, row.pair);
   } catch (e) { console.warn('fill log fee', e.message); }
 }
@@ -104,7 +96,6 @@ export function logFill(rec, extra = {}) {
     noteTapeFill(rec.pair, rec.side, rec.price, rec.size);
     invalidateLiveCache();
     const row = {
-      kind: 'fill',
       ts: extra.ts || new Date().toISOString(),
       orderId: rec.orderId || rec.id || extra.orderId || null,
       venue: rec.venue || extra.venue || null,
@@ -120,9 +111,8 @@ export function logFill(rec, extra = {}) {
       filledValue: rec.filledValue != null ? Number(rec.filledValue) : null,
       notional,
     };
-    postFill({ ...row, fee: pnlFee || venueFee });
-    appendLine(row);
-    appendDebug(debugArr('fill', { ...row, id: row.orderId, feeSrc: row.feeSource }));
+    postFill({ ...row, kind: 'fill', fee: pnlFee || venueFee });
+    writeBoth(packRow('fill', { ...row, id: row.orderId, feeSrc: row.feeSource }));
   } catch (e) {
     console.warn('fill log', e.message);
   }
