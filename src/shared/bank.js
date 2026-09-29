@@ -62,16 +62,19 @@ export async function resolvePortfolios(cfg) {
   return { source, bank };
 }
 
-async function moveFunds(cfg, sourceUuid, bankUuid, currency, value) {
+async function moveFunds(cfg, sourceUuid, targetUuid, currency, value) {
   const amt = Number(value);
   if (!(amt > 0)) return false;
   await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/portfolios/move_funds', {
     funds: { value: String(amt), currency: String(currency).toUpperCase() },
     source_portfolio_uuid: sourceUuid,
-    target_portfolio_uuid: bankUuid,
+    target_portfolio_uuid: targetUuid,
   });
   console.log('  BANK move ' + amt + ' ' + currency);
-  try { await refreshBankHoldings(cfg, bankUuid); } catch (e) { console.warn('bank refresh', e.message); }
+  const snap = lastBankUuid || null;
+  if (snap) {
+    try { await refreshBankHoldings(cfg, snap); } catch (e) { console.warn('bank refresh', e.message); }
+  }
   return true;
 }
 
@@ -80,9 +83,9 @@ let lastBankUuid = null;
 export function bankHoldings() { return lastBankHoldings; }
 
 export async function refreshBankHoldings(cfg, bankUuid) {
-  const uuid = bankUuid || lastBankUuid;
+  const uuid = lastBankUuid || bankUuid;
   if (!uuid || cfg.exchange !== 'coinbase') return lastBankHoldings;
-  lastBankUuid = uuid;
+  if (!lastBankUuid) lastBankUuid = uuid;
   const auth = bankAuthCfg(cfg);
   if (auth === cfg && !(process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY)) {
     console.warn('bank refresh skipped: set BANK_COINBASE_API_KEY (+ SECRET or SECRET_FILE) for the bank portfolio key');
@@ -202,6 +205,7 @@ export async function dumpBankToTrade(cfg, fraction) {
     throw new Error('Need bank + trade portfolios. have=' + list.map((p) => p.name + '/' + p.uuid).join(', '));
   }
   if (bank.uuid === trade.uuid) throw new Error('Bank and trade resolved to the same portfolio ' + bank.name);
+  lastBankUuid = bank.uuid;
   console.log('dump ' + (pct * 100) + '%  ' + bank.name + ' (' + bank.uuid + ') -> ' + trade.name + ' (' + trade.uuid + ')');
   const accts = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/accounts?limit=250');
   const rows = accts.accounts || [];
