@@ -16,7 +16,7 @@ import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol,
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
-import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings } from '../../shared/bank.js';
+import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
@@ -287,7 +287,13 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        bankHoldings: bankHoldings(),
+        bankHoldings: await (async () => {
+          if (cfg.exchange === 'coinbase' && Date.now() - (emitStatus._bankAt || 0) > Number(process.env.BANK_HOLD_MS || 120000)) {
+            emitStatus._bankAt = Date.now();
+            try { await refreshBankHoldings(cfg); } catch (e) { console.warn('bank hold', e.message); }
+          }
+          return bankHoldings();
+        })(),
         movers: (() => {
           const map = new Map();
           for (const r of [...topVolatiles(12), ...topMovers(12)]) {

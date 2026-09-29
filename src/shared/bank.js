@@ -83,21 +83,35 @@ let lastBankUuid = null;
 export function bankHoldings() { return lastBankHoldings; }
 
 export async function refreshBankHoldings(cfg, bankUuid) {
-  const uuid = lastBankUuid || bankUuid;
-  if (!uuid || cfg.exchange !== 'coinbase') return lastBankHoldings;
-  if (!lastBankUuid) lastBankUuid = uuid;
+  if (cfg.exchange !== 'coinbase') return lastBankHoldings;
   const auth = bankAuthCfg(cfg);
-  if (auth === cfg && !(process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY)) {
-    console.warn('bank refresh skipped: set BANK_COINBASE_API_KEY (+ SECRET or SECRET_FILE) for the bank portfolio key');
-    return lastBankHoldings;
+  if (!(auth.coinbaseApiKey && (auth.coinbaseApiSecret || auth.coinbaseSecretFile))) return lastBankHoldings;
+  const uuid = lastBankUuid || bankUuid || process.env.BANK_PORTFOLIO_UUID || '';
+  if (uuid && !lastBankUuid) lastBankUuid = uuid;
+  try {
+    if (uuid) {
+      const data = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/portfolios/' + uuid);
+      const p = data.portfolio || data;
+      const spots = p.spot_positions || [];
+      lastBankHoldings = spots.map((s) => ({
+        asset: String(s.asset || s.currency || '').toUpperCase(),
+        qty: Number(s.total_balance_crypto || s.available_balance || s.available || s.total || 0),
+      })).filter((x) => x.asset && x.qty > 0);
+    }
+  } catch (e) {
+    console.warn('bank portfolio get', e.message);
   }
-  const data = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/portfolios/' + uuid);
-  const p = data.portfolio || data;
-  const spots = p.spot_positions || [];
-  lastBankHoldings = spots.map((s) => ({
-    asset: String(s.asset || s.currency || '').toUpperCase(),
-    qty: Number(s.total_balance_crypto || s.available || s.total || 0),
-  })).filter((x) => x.asset && x.qty > 0);
+  if (!lastBankHoldings.length) {
+    try {
+      const accts = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/accounts?limit=250');
+      lastBankHoldings = (accts.accounts || []).map((a) => ({
+        asset: String(a.currency || '').toUpperCase(),
+        qty: Number((a.available_balance && a.available_balance.value) || 0) + Number((a.hold && a.hold.value) || 0),
+      })).filter((x) => x.asset && x.qty > 0);
+    } catch (e) {
+      console.warn('bank accounts get', e.message);
+    }
+  }
   return lastBankHoldings;
 }
 

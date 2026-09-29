@@ -257,8 +257,9 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .botg{display:flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px;width:auto;max-width:100%;flex:0 1 auto;box-sizing:border-box}
 .movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
-#top-row{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:12px;width:100%}
-#bank.bank-card{flex:0 1 240px;max-height:240px;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
+#top-row{display:flex;flex-wrap:nowrap;justify-content:center;align-items:flex-start;gap:12px;width:100%;overflow-x:auto}
+#board.board{flex:1 1 auto;min-width:0}
+#bank.bank-card{flex:0 0 220px;max-height:240px;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #bank .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
 #bank table{width:100%;border-collapse:collapse}
 #bank td{padding:1px 4px}
@@ -530,10 +531,15 @@ function boardHtml(rows){
     if(!cells.length) return '';
     const inner=cells.map(function(c){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
+      const rng=c.m.vol&&String(c.m.vol).indexOf('%')>=0?c.m.vol:(c.m.rangePct!=null?Number(c.m.rangePct).toFixed(2)+'%':'');
+      const maker=Number(c.m.makerPnl||0), fees=Number(c.m.fees||0), price=Number(c.m.pricePnl||0);
+      const net=maker-fees-price;
+      const netCls=net>0?'up':(net<0?'dn':'');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+
         sparkSvg(c.m.volSpark,null,null,{w:88,h:16})+
-        '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+'</div></div>';
+        '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+(rng?' · '+esc(rng):'')+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+
+        '<br><span class="'+netCls+'">net '+fmt(net)+'</span></div></div>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
@@ -700,7 +706,7 @@ const server = http.createServer(async (req, res) => {
       const msg = JSON.parse(body || '{}');
       const id = String(msg.bot || 'unknown');
       const prev = bots.get(id) || {};
-      bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bot: id, ts: Date.now() });
+      bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bankHoldings: (msg.bankHoldings && msg.bankHoldings.length) ? msg.bankHoldings : (prev.bankHoldings || []), bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
       noteVolSparks(id, msg.markets || prev.markets);
       noteRangeSparks(id, msg.movers || []);
