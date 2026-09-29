@@ -46,9 +46,30 @@ function noteSparks(bot, markets) {
     while (arr.length && now - arr[0].t > SPARK_MS) arr.shift();
     sparks.set(k, arr);
   }
+  pruneSparks();
+}
+function downsample(points, maxPts) {
+  const arr = points || [];
+  if (arr.length <= maxPts) return arr;
+  const out = [];
+  const step = (arr.length - 1) / (maxPts - 1);
+  for (let i = 0; i < maxPts; i++) out.push(arr[Math.round(i * step)]);
+  return out;
+}
+function pruneSparks() {
+  const cut = Date.now() - SPARK_MS;
+  for (const [k, arr] of sparks) {
+    while (arr.length && arr[0].t < cut) arr.shift();
+    if (!arr.length) sparks.delete(k);
+  }
+  for (const [k, arr] of sparkFills) {
+    const keep = (arr || []).filter((f) => Date.parse(f.ts || 0) >= cut);
+    if (keep.length) sparkFills.set(k, keep);
+    else sparkFills.delete(k);
+  }
 }
 function sparkSeries(bot, symbol) {
-  return sparks.get(bot + ':' + symbol) || [];
+  return downsample(sparks.get(bot + ':' + symbol) || [], Number(process.env.SPARK_UI_POINTS || 180));
 }
 function noteSparkFill(bot, fill) {
   const sym = String(fill.symbol || '').toUpperCase() || String(fill.pair || '').split('-')[0].toUpperCase();
@@ -76,7 +97,7 @@ function mergeFills(prev, incoming) {
     const id = String(f.orderId || f.id || '') + '|' + String(f.ts || '') + '|' + String(f.price || '') + '|' + String(f.size || '');
     if (!map.has(id)) map.set(id, f);
   }
-  return [...map.values()].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0)).slice(0, 25);
+  return [...map.values()].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0)).slice(0, 10);
 }
 function mergeMarkets(prev, incoming) {
   const by = new Map((prev || []).map((m) => [String(m.symbol || '').toUpperCase(), { ...m }]));

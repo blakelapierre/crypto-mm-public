@@ -3,6 +3,7 @@ const WINDOW = Number(process.env.RUNG_WINDOW_MS || 15 * 60 * 1000);
 const GAP = Number(process.env.RUNG_SAMPLE_MS || 1000);
 
 export function noteMid(symbol, mid, t = Date.now()) {
+  sweepMidRings(t);
   const key = String(symbol || '').toUpperCase();
   const px = Number(mid);
   if (!key || !(px > 0)) return;
@@ -11,7 +12,19 @@ export function noteMid(symbol, mid, t = Date.now()) {
   if (last && t - last.t < GAP) last.p = px;
   else arr.push({ t, p: px });
   while (arr.length && t - arr[0].t > WINDOW) arr.shift();
+  const cap = Math.ceil(WINDOW / Math.max(GAP, 500)) + 4;
+  if (arr.length > cap) arr.splice(0, arr.length - cap);
   rings.set(key, arr);
+}
+
+let lastSweep = 0;
+export function sweepMidRings(now = Date.now()) {
+  if (now - lastSweep < 60 * 1000) return;
+  lastSweep = now;
+  for (const [k, arr] of rings) {
+    while (arr.length && now - arr[0].t > WINDOW) arr.shift();
+    if (!arr.length) rings.delete(k);
+  }
 }
 
 export function midRing(symbol) {

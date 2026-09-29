@@ -314,21 +314,21 @@ async function main() {
       live = await fetchLivePortfolio(cfg, ex, productMap);
     } catch (e) { console.warn('startup bank skim', e.message); }
   }
-  let lists = await buildLists(cfg, productMap, live.totalEquity);
+  let lists = await buildLists(cfg, productMap, live.totalEquity, live);
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
   if (dump.length && cfg.exchange !== 'print') {
     console.log('startup sell non-MM: ' + dump.join(','));
     await liquidateSymbols(cfg, ex, live, dump);
     live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
-    lists = await buildLists(cfg, productMap, live.totalEquity);
+    lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');
-  lists = await buildLists(cfg, productMap, live.totalEquity);
+  lists = await buildLists(cfg, productMap, live.totalEquity, live);
   await rebalanceBuysAfterSettle(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after buy pass');
-  lists = await buildLists(cfg, productMap, live.totalEquity);
+  lists = await buildLists(cfg, productMap, live.totalEquity, live);
   pnl.markHoldings(live);
   const orderSizeUsd = getMmOrderSizeUsd(cfg, lists.mmCapital);
   if (cfg.mmEnabled) await runMm(lists.mmAlloc, orderSizeUsd, productMap);

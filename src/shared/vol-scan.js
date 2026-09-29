@@ -94,8 +94,11 @@ function loadVolInto(history) {
     let n = 0;
     for (const [sym, arr] of Object.entries(j.hist || {})) {
       if (!Array.isArray(arr)) continue;
-      history.set(sym, arr.filter((x) => x && x.mid > 0 && x.t));
-      n += history.get(sym).length;
+      const cut = Date.now() - 15 * 60 * 1000;
+      const kept = arr.filter((x) => x && x.mid > 0 && x.t && x.t >= cut);
+      if (!kept.length) continue;
+      history.set(sym, kept);
+      n += kept.length;
     }
     for (const [k, v] of Object.entries(j.scores || {})) lastScore.set(k, Number(v) || 0);
     for (const [k, v] of Object.entries(j.meta || {})) lastMeta.set(k, v);
@@ -152,6 +155,10 @@ export function createVolScan(cfg, productMap) {
     const now = Date.now();
     const mids = await fetchAllMids(cfg, productMap);
     for (const [sym, mid] of Object.entries(mids)) push(sym, mid, now);
+    for (const [sym, arr] of history) {
+      while (arr.length && now - arr[0].t > windowMs) arr.shift();
+      if (!arr.length) history.delete(sym);
+    }
     saveVolScan({ history });
     return Object.keys(mids).length;
   }

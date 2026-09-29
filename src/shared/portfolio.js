@@ -102,7 +102,21 @@ export async function waitForSettlement(cfg, ex, productMap, label, venue) {
   return live;
 }
 
-export async function buildLists(cfg, productMap, totalEquity) {
+function holdingsRanking(live, productMap) {
+  const rows = [];
+  for (const [sym, pos] of Object.entries((live && live.positions) || {})) {
+    const info = productMap[sym];
+    if (!info) continue;
+    if (STABLECOINS.has(String(sym).toUpperCase())) continue;
+    const cap = Number(pos.valueQuote || 0);
+    if (!(cap > 0)) continue;
+    rows.push({ symbol: String(sym).toUpperCase(), market_cap: cap, ...info });
+  }
+  rows.sort((a, b) => b.market_cap - a.market_cap);
+  return rows;
+}
+
+export async function buildLists(cfg, productMap, totalEquity, live = null) {
   const forced = (cfg.symbols || []).map((s) => String(s).toUpperCase()).filter(Boolean);
   const tradable = [];
   function resolveInfo(sym) {
@@ -122,13 +136,32 @@ export async function buildLists(cfg, productMap, totalEquity) {
       console.log('  ' + sym + ' -> ' + info.pair + ' venue=' + info.venue);
     }
   } else {
-    const ranking = await getMarketCapRanking(Math.max(cfg.portfolioCoins, cfg.mmMaxPairs) * 3);
+    const needMcap = Number(cfg.portfolioFraction || 0) > 0;
+    let ranking = [];
+    if (needMcap || !loadMmSet().length) {
+      try {
+        ranking = await getMarketCapRanking(Math.max(cfg.portfolioCoins, cfg.mmMaxPairs) * 3);
+      } catch (e) {
+        console.warn('CoinGecko unavailable (' + e.message + ') — using held inventory');
+        ranking = holdingsRanking(live, productMap);
+      }
+    } else {
+      console.log('portfolioFraction=0, skip CoinGecko');
+    }
     for (const row of ranking) {
       if (STABLECOINS.has(row.symbol)) continue;
-      const info = productMap[row.symbol];
+      const info = productMap[row.symbol] || resolveInfo(row.symbol);
       if (!info) continue;
       tradable.push({ symbol: row.symbol, market_cap: row.market_cap, ...info });
     }
+  }
+  if (!tradable.length && !forced.length) {
+    for (const [sym, info] of Object.entries(productMap)) {
+      if (STABLECOINS.has(String(sym).toUpperCase())) continue;
+      tradable.push({ symbol: String(sym).toUpperCase(), market_cap: 1, ...info });
+      if (tradable.length >= Math.max(cfg.mmMaxPairs || 4, cfg.portfolioCoins || 0)) break;
+    }
+    if (tradable.length) console.warn('fallback MM universe from venue products n=' + tradable.length);
   }
   if (!tradable.length) throw new Error(forced.length ? 'No products for ' + forced.join(',') : 'No pairs');
   const saved = forced.length ? [] : loadMmSet();
