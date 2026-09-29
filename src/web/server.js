@@ -192,7 +192,7 @@ const PAGE = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
-#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d}
+#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d;max-height:40vh;overflow-y:auto}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
 h2{font-size:13px;margin:0 0 8px}
@@ -534,7 +534,7 @@ function boardHtml(rows){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
       const rng=c.m.vol&&String(c.m.vol).indexOf('%')>=0?c.m.vol:(c.m.rangePct!=null?Number(c.m.rangePct).toFixed(2)+'%':'');
       const maker=Number(c.m.makerPnl||0), fees=Number(c.m.fees||0), price=Number(c.m.pricePnl||0);
-      const net=maker-fees-price;
+      const net=maker-fees+price;
       const netCls=net>0?'up':(net<0?'dn':'');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+

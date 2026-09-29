@@ -5,6 +5,7 @@ import { coinbaseRequest } from './coinbase.js';
 import { krakenPrivate } from './kraken.js';
 import { getMarketCapRanking } from './coingecko.js';
 import { loadMmSet } from './mm-set.js';
+import { savedRangePct } from './vol-scan.js';
 
 async function staggerMap(items, fn, gapMs) {
   await Promise.all(items.map((item, i) => sleep(i * Math.max(0, gapMs)).then(() => fn(item))));
@@ -183,6 +184,17 @@ export async function buildLists(cfg, productMap, totalEquity, live = null) {
       if (info) mmList.push({ symbol: sym, market_cap: 1, ...info });
     }
     console.log('MM start from saved set: ' + mmList.map((a) => a.symbol).join(','));
+    const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
+    const scored = mmList.map((a) => ({ a, rng: savedRangePct(a.symbol) }));
+    const hot = scored.filter((x) => x.rng >= enterPct).map((x) => x.a);
+    if (hot.length && hot.length < mmList.length) {
+      console.log('MM drop cold <' + enterPct + '%: ' + scored.filter((x) => x.rng < enterPct).map((x) => x.a.symbol + ' ' + x.rng.toFixed(2) + '%').join(', '));
+      mmList = hot;
+    } else if (!hot.length && scored.some((x) => x.rng > 0)) {
+      scored.sort((x, y) => y.rng - x.rng);
+      mmList = scored.slice(0, Math.max(2, cfg.mmMaxPairs || 4)).map((x) => x.a);
+      console.log('MM none >=' + enterPct + '% — keep top ranges ' + mmList.map((a) => a.symbol).join(','));
+    }
   } else mmList = tradable.slice(0, cfg.mmMaxPairs);
   const skipPort = forced.length > 0 || saved.length > 0;
   const portfolio = skipPort ? [] : tradable.slice(0, cfg.portfolioCoins);

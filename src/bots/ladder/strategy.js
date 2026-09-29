@@ -209,7 +209,7 @@ async function cancelCrossed(ex, ladder, mid, tick) {
 async function cancelSide(ex, legs, why = 'cancel') {
   for (const o of legs) {
     if (o.orderId && o.status === 'open') {
-      logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why });
+      logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why, mid: o.mid || null });
       await ex.cancelOrder(o.orderId);
       o.status = 'cancelled';
     }
@@ -285,6 +285,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
     if (!(r && r.order_id)) return;
+    logEvent('place', { pair: a.pair, symbol: a.symbol, side, level: 1, price: target, size, orderId: r.order_id, mid });
     pinAt.set(key, Date.now());
     for (const o of l1) {
       try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
@@ -367,7 +368,7 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r && r.order_id) {
       o.orderId = r.order_id; o.status = 'open';
-      logEvent('place', { pair, symbol: a && a.symbol, side: o.side, level: o.level, price: o.price, size: o.size, orderId: r.order_id });
+      logEvent('place', { pair, symbol: a && a.symbol, side: o.side, level: o.level, price: o.price, size: o.size, orderId: r.order_id, mid: (livePairState && livePairState.get(pair) && livePairState.get(pair).lastMid) || o.price });
     } else o.status = 'failed';
     if (a) publishOrders(a, ladder, o.price);
   })));
@@ -484,7 +485,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
       } else if (s === 'CANCELLED' || s === 'EXPIRED' || s === 'FAILED') o.status = 'cancelled';
     } catch { /* ignore */ }
   }
-  if (filledNow) state.lastEnsureAt = 0;
+  if (filledNow) {
+    state.lastEnsureAt = 0;
+    pinAt.delete(a.pair + ':buy');
+    pinAt.delete(a.pair + ':sell');
+  }
   const pulled = await cancelCrossed(ex, ladder, book.mid, tick);
   if (pulled) pruneDone(ladder);
   await pinL1(cfg, ex, a, ladder, book, getLive, pairState);

@@ -14,8 +14,8 @@ function botName() {
 
 const SHAPE_LIST = [
   ['session', 'ts', 'bot', 'exchange', 'quote'],
-  ['place', 'ts', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
-  ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps'],
+  ['place', 'ts', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id', 'mid'],
+  ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps', 'mid'],
   ['fill', 'ts', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
   ['fee', 'ts', 'id', 'pair', 'fee', 'notional'],
 ];

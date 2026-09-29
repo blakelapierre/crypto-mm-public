@@ -71,6 +71,26 @@ function volFile() {
   return path.resolve(process.cwd(), 'logs/vol-scan-' + bot + '.json');
 }
 
+export function ensureVolLoaded() {
+  if (lastMeta.size || lastHistory.size) return;
+  loadVolInto(lastHistory);
+}
+export function savedRangePct(sym) {
+  ensureVolLoaded();
+  const key = String(sym || '').toUpperCase();
+  const m = lastMeta.get(key);
+  if (m && m.rangePct != null) return Number(m.rangePct) || 0;
+  const arr = lastHistory.get(key);
+  if (arr && arr.length >= 2) {
+    const mids = arr.map((x) => Number(x.mid)).filter((x) => x > 0);
+    if (mids.length >= 2) {
+      const lo = Math.min(...mids), hi = Math.max(...mids), last = mids[mids.length - 1];
+      return last > 0 ? ((hi - lo) / last) * 100 : 0;
+    }
+  }
+  return 0;
+}
+
 export function saveVolScan(scan) {
   const dest = volFile();
   if (!dest || !scan || !scan.history) return;
