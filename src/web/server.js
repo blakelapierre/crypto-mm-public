@@ -227,10 +227,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .kpi span.pw{font-size:10px;opacity:.85}.kpi span.pm{font-size:9px;opacity:.75}
 .kpi span.py{font-size:8px;opacity:.65}
 .hdr-stats .pw{font-size:10px}.hdr-stats .pm{font-size:9px}.hdr-stats .py{font-size:8px;opacity:.7}
-.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:4px;line-height:normal;width:100%}
-.board-card .cell{flex:0 0 auto;width:56px;min-height:64px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:6px;padding:3px 3px;box-sizing:border-box}
-.board-card .cell .sym{font-size:9px;font-weight:600}
-.board-card .cell .sz{font-size:7px;color:#8b98a5;line-height:1.15;min-height:1.8em;margin-top:auto}
+.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:8px;line-height:normal;width:100%}
+.board-card .cell{flex:0 0 auto;width:118px;min-height:110px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
+.board-card .cell .sym{font-size:12px;font-weight:600}
+.board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.2;min-height:2.2em;margin-top:auto}
 .movers{display:flex;flex-direction:column;align-items:center;gap:6px;margin:6px 0 4px;width:100%}
 .movers .row{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;width:100%}
 .movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 6px;min-width:72px;text-align:center}
@@ -238,6 +238,8 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .mv .r{font-size:10px;font-variant-numeric:tabular-nums}
 .movers .up{color:#3fb950}.movers .dn{color:#f85149}
 .movers h3{margin:0;font-size:11px;color:#8b98a5;font-weight:600;text-align:center;width:100%}
+.movers .botg{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:6px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:6px 8px;margin:0 4px}
+.movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 </style>
 </head>
 <body>
@@ -503,8 +505,8 @@ function boardHtml(rows){
     const inner=cells.map(function(c){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
-        sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:40,h:14})+
-        sparkSvg(c.m.volSpark,null,null,{w:40,h:10})+
+        sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+
+        sparkSvg(c.m.volSpark,null,null,{w:88,h:16})+
         '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+'</div></div>';
     }).join('');
     const q=projectOf(b);
@@ -514,7 +516,7 @@ function boardHtml(rows){
     const edge=b.edgeBps;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
       '<div class="hdr-stats">'+
-        '<div class="col"><label>wallet $</label><b>$'+fmtN(eq)+'</b><span>'+fmt(wal)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
+        '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>$'+fmtN(eq)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+
         '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b>'+sparkSvg((b.kpiSpark||{}).vol,null,null,{w:56,h:18})+'<span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
         '<div class="col"><label>pnl</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
@@ -524,36 +526,6 @@ function boardHtml(rows){
   }).join('');
 }
 function moversHtml(rows){
-  const sparks={};
-  const byRange={};
-  const byMove={};
-  (rows||[]).forEach(function(b){
-    (b.markets||[]).forEach(function(m){
-      if(m.symbol) sparks[m.symbol]=m;
-      const pts=m.spark||[];
-      if(pts.length<2) return;
-      const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
-      if(!(a>0&&z>0)) return;
-      const ret=(z-a)/a;
-      const hi=Math.max.apply(null,pts.map(function(p){return Number(p.p||p);}));
-      const lo=Math.min.apply(null,pts.map(function(p){return Number(p.p||p);}));
-      const range=z>0?((hi-lo)/z)*100:0;
-      const cur=byMove[m.symbol];
-      if(!cur||Math.abs(ret)>Math.abs(cur.ret||0)) byMove[m.symbol]={symbol:m.symbol,ret:ret,rangePct:range,spark:pts,sparkFills:m.sparkFills,orders:m.orders};
-    });
-    (b.movers||[]).forEach(function(m){
-      const range=Number(m.rangePct||0);
-      const ret=Number(m.ret||0);
-      const mk=sparks[m.symbol]||{};
-      const cur=byRange[m.symbol];
-      if(!cur||range>(cur.rangePct||0)) byRange[m.symbol]={symbol:m.symbol,rangePct:range,ret:ret,last:m.last,spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders};
-    });
-  });
-  if(!Object.keys(byRange).length){
-    Object.keys(byMove).forEach(function(k){ byRange[k]=byMove[k]; });
-  }
-  const vols=Object.values(byRange).sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);}).slice(0,10);
-  const moves=Object.values(byMove).sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);}).slice(0,10);
   function cell(x, kind){
     const ret=x.ret, cls=ret>0?'up':(ret<0?'dn':'');
     const extra=kind==='vol'
@@ -561,8 +533,42 @@ function moversHtml(rows){
       : (ret==null?'':((ret>=0?'+':'')+(ret*100).toFixed(2)+'%'));
     return '<div class="mv"><div class="s">'+esc(x.symbol)+'</div>'+(x.spark?sparkSvg(x.spark,x.sparkFills,x.orders,{w:40,h:14}):'')+'<div class="r '+cls+'">'+extra+'</div></div>';
   }
-  return '<h3>15m volatility</h3><div class="row">'+(vols.length?vols.map(function(x){return cell(x,'vol');}).join(''):'<span class="age">waiting for vol-scan</span>')+'</div>'+
-    '<h3>15m price move</h3><div class="row">'+(moves.length?moves.map(function(x){return cell(x,'move');}).join(''):'<span class="age">waiting for 15m samples</span>')+'</div>';
+  function groupRow(kind){
+    const groups=(rows||[]).map(function(b){
+      const items=[];
+      if(kind==='vol'){
+        (b.movers||[]).forEach(function(m){
+          const mk=(b.markets||[]).find(function(x){return x.symbol===m.symbol;})||{};
+          items.push({symbol:m.symbol,rangePct:Number(m.rangePct||0),ret:Number(m.ret||0),spark:mk.spark,sparkFills:mk.sparkFills,orders:mk.orders});
+        });
+        if(!items.length){
+          (b.markets||[]).forEach(function(m){
+            const pts=m.spark||[];
+            if(pts.length<2) return;
+            const hi=Math.max.apply(null,pts.map(function(p){return Number(p.p||p);}));
+            const lo=Math.min.apply(null,pts.map(function(p){return Number(p.p||p);}));
+            const z=Number(pts[pts.length-1].p||pts[pts.length-1]);
+            items.push({symbol:m.symbol,rangePct:z>0?((hi-lo)/z)*100:0,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+          });
+        }
+        items.sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);});
+      } else {
+        (b.markets||[]).forEach(function(m){
+          const pts=m.spark||[];
+          if(pts.length<2) return;
+          const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
+          if(!(a>0&&z>0)) return;
+          items.push({symbol:m.symbol,ret:(z-a)/a,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+        });
+        items.sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);});
+      }
+      if(!items.length) return '';
+      return '<div class="botg"><div class="bn">'+esc(b.bot)+' '+esc(b.exchange||'')+'</div>'+items.slice(0,8).map(function(x){return cell(x,kind);}).join('')+'</div>';
+    }).join('');
+    return groups || '<span class="age">waiting</span>';
+  }
+  return '<h3>15m volatility</h3><div class="row">'+groupRow('vol')+'</div>'+
+    '<h3>15m price move</h3><div class="row">'+groupRow('move')+'</div>';
 }
 function render(data){
   const rows=data.bots||[];

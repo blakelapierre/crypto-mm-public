@@ -126,8 +126,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           }
           const have = new Set(keep.map((a) => a.pair));
           const additions = [];
-          let budget = free;
-          for (const a of keep) budget -= costOf(a);
+          let budget = free * Number(process.env.VOL_ENTER_CASH_FRAC || 0.85);
           const scored = ranked.map((r) => {
             const ret = midReturn(r.symbol);
             const tr = trendMult(r.symbol);
