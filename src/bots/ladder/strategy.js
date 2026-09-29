@@ -90,7 +90,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   if (bid1 >= ask1) { bid1 = mid - tick; ask1 = mid + tick; }
   const skewKey = String(symbol || '');
   const nowSk = Date.now();
-  if (sk && nowSk - (generateLadder._skewAt && generateLadder._skewAt[skewKey] || 0) > 120000) {
+  if (sk && nowSk - (generateLadder._started || (generateLadder._started = nowSk)) > 180000 && nowSk - (generateLadder._skewAt && generateLadder._skewAt[skewKey] || 0) > 120000) {
     generateLadder._skewAt = generateLadder._skewAt || {};
     generateLadder._skewAt[skewKey] = nowSk;
     console.log('  SKEW inv ' + symbol + ' ' + sk.toFixed(2) + ' bidOff=' + (bidOff * 10000).toFixed(1) + 'bps askOff=' + (askOff * 10000).toFixed(1) + 'bps');
@@ -237,10 +237,6 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     const l1 = open.filter((o) => Number(o.level) === 1);
     const good = l1.find((o) => Math.abs(Number(o.price) / target - 1) <= tol);
     if (good) return;
-    for (const o of l1) {
-      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-      o.status = 'cancelled';
-    }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
     if (!size) {
@@ -252,10 +248,15 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     if (!size) return;
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
+    if (!(r && r.order_id)) return;
+    for (const o of l1) {
+      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+      o.status = 'cancelled';
+    }
     legs.push({
       level: 1, side, price: target, size,
-      orderId: r && r.order_id || null,
-      status: r && r.order_id ? 'open' : 'failed',
+      orderId: r.order_id,
+      status: 'open',
     });
     if (a) publishOrders(a, ladder, mid);
   }
@@ -392,7 +393,9 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     pairState.set(a.pair, { ladder, symbol: a.symbol, lastMid: book.mid, lastWeight: wNow, bornAt: Date.now(), lastRequoteAt: Date.now() });
     console.log('\nInitial ladder ' + a.symbol + ' mid=' + book.mid.toFixed(6));
+    await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
     await placeLadder(cfg, ex, a.pair, ladder, a, getLive);
+    publishOrders(a, ladder, book.mid);
     printLadder(a.symbol, a.pair, ladder, book);
     return;
   }
@@ -447,7 +450,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const born = Date.now() - (state.bornAt || state.lastRequoteAt || 0);
   const needRungs = hint && hint.touches >= 3 && hintKey && hintKey !== (state.rungKey || '') && rungAge > Number(process.env.RUNG_REQUOTE_MS || 60000) && born > 120000;
   if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
-  const needRequote = move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs;
+  const grace = ageMs < Number(process.env.START_REQUOTE_GRACE_MS || 45000);
+  const needRequote = !grace && (move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs);
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if (!openSell || !openBuy) {
     const prefer = !openSell ? 'sell' : 'buy';
