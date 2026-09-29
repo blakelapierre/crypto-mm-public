@@ -411,11 +411,11 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+(m.edgeBps==null?'':((Number(m.edgeBps)>=0?'+':'')+Number(m.edgeBps).toFixed(0)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
-    '<tr class="orders"><td></td><td colspan="10">'+orderBook(m)+'</td></tr>'
+    '<tr class="orders"><td></td><td colspan="11">'+orderBook(m)+'</td></tr>'
   ).join('');
   const age=b.ts?Math.round((Date.now()-b.ts)/1000)+'s ago':'';
   const q=projectOf(b);
@@ -436,9 +436,10 @@ function card(b){
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+
     '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+projLines(q,'vol',(b.kpiSpark||{}).vol,t0,false)+'</div>'+
-    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+projLines(q,'bank',(b.kpiSpark||{}).bank,t0,true)+'</div></div>'+
+    '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+projLines(q,'bank',(b.kpiSpark||{}).bank,t0,true)+'</div>'+
+    '<div><label>Edge 1h</label><b>'+(b.edgeBps==null?'n/a':(Number(b.edgeBps)>=0?'+':'')+Number(b.edgeBps).toFixed(0)+'bps')+'</b></div></div>'+
     
-    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
+    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>edge</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+fillsTable(b)+apiBlock(b)+'</section>';
 }
 function boardHtml(rows){

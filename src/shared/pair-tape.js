@@ -1,37 +1,40 @@
 const last = new Map();
+const WINDOW = Number(process.env.TAPE_WINDOW_MS || 60 * 60 * 1000);
 
 function rec(pair) {
   const k = String(pair || '').toUpperCase();
-  if (!last.has(k)) last.set(k, { buys: [], sells: [], buyNot: 0, sellNot: 0, buyQ: 0, sellQ: 0 });
+  if (!last.has(k)) last.set(k, { fills: [] });
   return last.get(k);
+}
+
+function prune(r, now = Date.now()) {
+  const cut = now - WINDOW;
+  r.fills = (r.fills || []).filter((x) => x.t >= cut);
 }
 
 export function noteTapeFill(pair, side, price, size) {
   const px = Number(price), q = Number(size);
   if (!(px > 0) || !(q > 0) || !pair) return;
   const r = rec(pair);
-  const row = { px, q, n: px * q };
-  const cap = Number(process.env.TAPE_WINDOW || 40);
-  if (String(side).toLowerCase() === 'buy') {
-    r.buys.push(row); r.buyNot += row.n; r.buyQ += q;
-    while (r.buys.length > cap) {
-      const x = r.buys.shift();
-      r.buyNot -= x.n; r.buyQ -= x.q;
-    }
-  } else {
-    r.sells.push(row); r.sellNot += row.n; r.sellQ += q;
-    while (r.sells.length > cap) {
-      const x = r.sells.shift();
-      r.sellNot -= x.n; r.sellQ -= x.q;
-    }
+  r.fills.push({ t: Date.now(), side: String(side).toLowerCase(), px, q, n: px * q });
+  prune(r);
+}
+
+function sums(r) {
+  prune(r);
+  let buyNot = 0, sellNot = 0, buyQ = 0, sellQ = 0;
+  for (const x of r.fills) {
+    if (x.side === 'buy') { buyNot += x.n; buyQ += x.q; }
+    else { sellNot += x.n; sellQ += x.q; }
   }
+  return { buyNot, sellNot, buyQ, sellQ, n: r.fills.length };
 }
 
 export function tapeEdgeBps(pair) {
-  const r = rec(pair);
-  if (!(r.buyQ > 0) || !(r.sellQ > 0)) return null;
-  const ab = r.buyNot / r.buyQ;
-  const as_ = r.sellNot / r.sellQ;
+  const s = sums(rec(pair));
+  if (!(s.buyQ > 0) || !(s.sellQ > 0)) return null;
+  const ab = s.buyNot / s.buyQ;
+  const as_ = s.sellNot / s.sellQ;
   const mid = (ab + as_) / 2;
   if (!(mid > 0)) return null;
   return ((as_ - ab) / mid) * 10000;
@@ -40,12 +43,32 @@ export function tapeEdgeBps(pair) {
 export function tapeSizeMult(pair) {
   const e = tapeEdgeBps(pair);
   if (e == null) return 1;
-  if (e <= Number(process.env.TOXIC_EDGE_BPS || -40)) return Number(process.env.TOXIC_SIZE_MULT || 0.35);
-  if (e <= 0) return Number(process.env.FLAT_SIZE_MULT || 0.7);
-  return 1;
+  if (e < 0) return Number(process.env.NEG_EDGE_SIZE_MULT || 0.35);
+  return Number(process.env.POS_EDGE_SIZE_MULT || 1.35);
 }
 
 export function tapeStats(pair) {
-  const r = rec(pair);
-  return { edgeBps: tapeEdgeBps(pair), buyN: r.buys.length, sellN: r.sells.length };
+  const s = sums(rec(pair));
+  return { edgeBps: tapeEdgeBps(pair), buyN: s.n, sellN: s.n, buyUsd: s.buyNot, sellUsd: s.sellNot };
+}
+
+export function bookEdgeBps(markets) {
+  let bn = 0, sn = 0, bq = 0, sq = 0;
+  for (const [pair] of last) {
+    const s = sums(rec(pair));
+    bn += s.buyNot; sn += s.sellNot; bq += s.buyQ; sq += s.sellQ;
+  }
+  if (!(bq > 0) || !(sq > 0)) return null;
+  const ab = bn / bq, as_ = sn / sq, mid = (ab + as_) / 2;
+  if (!(mid > 0)) return null;
+  return ((as_ - ab) / mid) * 10000;
+}
+
+const ripAt = new Map();
+export function markRipSell(symbol) {
+  ripAt.set(String(symbol || '').toUpperCase(), Date.now());
+}
+export function inRipCooldown(symbol) {
+  const t = ripAt.get(String(symbol || '').toUpperCase()) || 0;
+  return Date.now() - t < Number(process.env.RIP_COOLDOWN_MS || 180000);
 }

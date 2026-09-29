@@ -13,6 +13,7 @@ import {
 } from '../../shared/portfolio.js';
 import { processPair } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
+import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
@@ -225,6 +226,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x', wNum: w, orders,
           pricePnl: book.price || 0, makerPnl: book.maker || 0, fees: book.fees || 0,
+          edgeBps: tapeEdgeBps(a.pair),
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
@@ -233,7 +235,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           '  bid$=' + Number(m.bidUsd).toFixed(2) + ' ask$=' + Number(m.askUsd).toFixed(2) +
           '  vol buy=$' + Number(m.buyUsd || 0).toFixed(2) + ' sell=$' + Number(m.sellUsd || 0).toFixed(2) +
           '  w=' + m.w + '  range=' + m.vol + '  fee=' + m.fee +
-          (m.spreadBps != null ? '  spr=' + Number(m.spreadBps).toFixed(1) + 'bps' : ''));
+          (m.spreadBps != null ? '  spr=' + Number(m.spreadBps).toFixed(1) + 'bps' : '') +
+          (m.edgeBps != null ? '  edge=' + Number(m.edgeBps).toFixed(0) + 'bps' : ''));
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
@@ -269,6 +272,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         pnl: snap, markets: marketRows, wallet, proj,
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
+        edgeBps: bookEdgeBps(),
       });
     } finally { emitStatus.busy = false; }
   }

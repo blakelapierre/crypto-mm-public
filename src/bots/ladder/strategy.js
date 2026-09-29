@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
 import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
 import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
-import { tapeSizeMult, tapeEdgeBps } from '../../shared/pair-tape.js';
+import { tapeSizeMult, tapeEdgeBps, markRipSell, inRipCooldown } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
@@ -49,7 +49,7 @@ function inventoryUsd(live, symbol) {
 }
 function inventoryCapUsd(live) {
   const eq = Number((live && live.totalEquity) || 0);
-  const frac = Number(process.env.INV_CAP_FRAC || 0.10);
+  const frac = Number(process.env.INV_CAP_FRAC || 0.08);
   return Math.max(0, eq * frac);
 }
 function inventorySkew(live, symbol) {
@@ -95,7 +95,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   }
   const buys = []; const sells = [];
   const ret = midReturn(symbol);
-  const buyLevels = ret < -0.005 ? 1 : levels;
+  const buyLevels = (ret < -0.005 || inRipCooldown(symbol)) ? 1 : levels;
   for (let i = 1; i <= levels; i++) {
     const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
     const buyPx = i === 1 ? bid1 : bid1 * (1 - (i - 1) * step);
@@ -409,6 +409,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   state.lastMid = book.mid;
   const newlyFilled = [...ladder.buys, ...ladder.sells].filter((o) => o.status === 'filled' && before.get(o.orderId) !== 'filled');
+  if (newlyFilled.some((o) => o.side === 'sell') && midReturn(a.symbol) > 0.005) markRipSell(a.symbol);
   if (cfg.rebalanceOnFill) {
     await cancelSide(ex, ladder.buys);
     await cancelSide(ex, ladder.sells);
