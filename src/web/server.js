@@ -158,11 +158,18 @@ function mergeMarkets(prev, incoming) {
     if (!k) continue;
     const old = by.get(k) || {};
     const live = old.orderTs && Date.now() - old.orderTs < 20000;
+    const orders = live && old.orders && old.orders.length ? old.orders : (m.orders || old.orders || []);
+    const open = (orders || []).filter((o) => o.status === 'open');
+    const fromBook = (side) => open.filter((o) => o.side === side).reduce((s, o) => s + Number(o.usd != null ? o.usd : Number(o.size) * Number(o.price) || 0), 0);
     by.set(k, {
       ...old,
       ...m,
-      orders: live && old.orders && old.orders.length ? old.orders : (m.orders || old.orders || []),
-      orderTs: live ? old.orderTs : old.orderTs,
+      orders,
+      orderTs: live ? old.orderTs : (m.orders ? Date.now() : old.orderTs),
+      bidUsd: open.length ? fromBook('buy') : (m.bidUsd != null ? m.bidUsd : old.bidUsd),
+      askUsd: open.length ? fromBook('sell') : (m.askUsd != null ? m.askUsd : old.askUsd),
+      bids: open.length ? open.filter((o) => o.side === 'buy').length : m.bids,
+      asks: open.length ? open.filter((o) => o.side === 'sell').length : m.asks,
     });
   }
   return [...by.values()];
@@ -525,7 +532,11 @@ function card(b){
 function boardHtml(rows){
   return (rows||[]).map(function(b){
     const cells=(b.markets||[]).map(function(m){
-      const work=Number(m.bidUsd||0)+Number(m.askUsd||0);
+      const open=(m.orders||[]).filter(function(o){return o.status==='open';});
+      const from=function(side){return open.filter(function(o){return o.side===side;}).reduce(function(s,o){return s+Number(o.usd!=null?o.usd:Number(o.size)*Number(o.price)||0);},0);};
+      const bidU=open.length?from('buy'):Number(m.bidUsd||0);
+      const askU=open.length?from('sell'):Number(m.askUsd||0);
+      const work=bidU+askU;
       const vol=Number(m.buyUsd||0)+Number(m.sellUsd||0);
       return {m,work,vol,w:weightOf(m)};
     }).sort(function(a,c){return c.w-a.w||c.work-a.work;});

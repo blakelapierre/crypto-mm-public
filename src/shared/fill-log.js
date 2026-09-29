@@ -66,8 +66,22 @@ export function logEvent(kind, extra = {}) {
   try { writeBoth(packRow(kind, extra)); } catch { /* ignore */ }
 }
 
+function rotateFile(dest) {
+  if (!dest || !fs.existsSync(dest)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const arch = dest.replace(/\.jsonl$/i, '') + '-' + stamp + '.jsonl';
+  try {
+    fs.renameSync(dest, arch);
+    console.log('rotated ' + dest + ' -> ' + arch);
+  } catch (e) { console.warn('log rotate', e.message); }
+}
+
 export function logSession(extra = {}) {
   try {
+    rotateFile(filePath());
+    rotateFile(debugPath());
+    fillDest.v = null;
+    debugDest.v = null;
     writeBoth(['shapes', SHAPE_LIST]);
     writeBoth(packRow('session', extra));
   } catch (e) { console.warn('fill log session', e.message); }
