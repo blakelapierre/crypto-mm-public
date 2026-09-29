@@ -135,7 +135,7 @@ export function sizeWeightForSymbol(sym) {
 export function volStatsForSymbol(sym) {
   return lastMeta.get(String(sym || '').toUpperCase()) || null;
 }
-export function topMovers(n = 8) {
+function scanRows() {
   const rows = [];
   for (const [symbol, m] of lastMeta) {
     const hist = lastHistory.get(symbol) || [];
@@ -144,8 +144,13 @@ export function topMovers(n = 8) {
     const ret = a > 0 ? (b - a) / a : 0;
     rows.push({ symbol, rangePct: Number(m.rangePct || 0), last: b, ret });
   }
-  rows.sort((a, b) => Math.abs(b.ret) - Math.abs(a.ret) || b.rangePct - a.rangePct);
-  return rows.slice(0, n);
+  return rows;
+}
+export function topMovers(n = 8) {
+  return scanRows().sort((a, b) => Math.abs(b.ret) - Math.abs(a.ret) || b.rangePct - a.rangePct).slice(0, n);
+}
+export function topVolatiles(n = 8) {
+  return scanRows().sort((a, b) => b.rangePct - a.rangePct).slice(0, n);
 }
 export function midHistory(sym) {
   return lastHistory.get(String(sym || '').toUpperCase()) || [];

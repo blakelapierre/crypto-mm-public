@@ -222,6 +222,9 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
   if (!openB && !buyGate && !(cap > 0 && held >= cap)) await place('buy', formatPrice((book && (book.bid || book.mid)) || 0, a.pairDecimals));
 }
 
+let livePairState = null;
+export function setLivePairState(m) { livePairState = m; }
+
 export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = null, prefer = null) {
   const gap = Number(process.env.ORDER_STAGGER_MS || 40);
   const buys = ladder.buys || [];
@@ -229,6 +232,10 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   const legs = prefer === 'buy' ? [...buys, ...sells] : [...sells, ...buys];
   await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
     if (o.status === 'open' && o.orderId) return;
+    if (o.side === 'buy' && Number(o.level) > 1 && livePairState && siblingHasBareBids(livePairState, pair)) {
+      o.status = 'pending';
+      return;
+    }
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
@@ -300,6 +307,7 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
 }
 
 export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive = null) {
+  setLivePairState(pairState);
   let book = null;
   try { book = await ex.getBook(a.pair); } catch { book = null; }
   const st0 = pairState.get(a.pair);
@@ -434,31 +442,42 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }
 
+export function siblingHasBareBids(pairState, selfPair) {
+  for (const [p, st] of pairState) {
+    if (p === selfPair) continue;
+    const n = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
+    if (n === 0) return true;
+  }
+  return false;
+}
+
 export async function harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive) {
   if (!mmAlloc || mmAlloc.length < 2) return;
-  let live = null;
-  try { live = await getLive(); } catch { return; }
-  const cash = Number(live && live.freeQuote || 0);
-  const need = Math.max(cfg.minOrderUsd || 1, 1) * 1.15;
   const rows = mmAlloc.map((a) => {
     const st = pairState.get(a.pair);
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
     return { a, w, buys, ret: midReturn(a.symbol) };
-  }).sort((x, y) => x.w - y.w);
-  const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
-  if (!heavy) return;
-  const hungry = heavy.buys.length < 1 || (heavy.ret > 0.004 && cash < need);
-  if (!hungry) return;
-  const floor = heavy.w * Number(process.env.HARVEST_W_RATIO || 0.55);
-  for (const row of rows) {
-    if (row.a.pair === heavy.a.pair) continue;
-    if (row.w >= floor && cash >= need) continue;
-    if (!row.buys.length) continue;
-    const victim = [...row.buys].sort((p, q) => Number(p.price) - Number(q.price))[0];
-    console.log('  HARVEST ' + row.a.symbol + ' w=' + row.w.toFixed(2) + ' buy L' + victim.level + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2));
+  });
+  const bare = rows.filter((r) => r.buys.length === 0).sort((x, y) => y.w - x.w);
+  const fat = rows.filter((r) => r.buys.length > 1).sort((x, y) => x.w - y.w || y.buys.length - x.buys.length);
+  if (!bare.length || !fat.length) {
+    const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
+    if (!heavy || heavy.buys.length) return;
+    const donor = [...rows].filter((r) => r.buys.length && r.w < heavy.w * 0.7).sort((x, y) => x.w - y.w)[0];
+    if (!donor) return;
+    const victim = [...donor.buys].sort((p, q) => Number(q.level) - Number(p.level) || Number(p.price) - Number(q.price))[0];
+    console.log('  HARVEST ' + donor.a.symbol + ' w=' + donor.w.toFixed(2) + ' buy L' + victim.level + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2));
     try { await ex.cancelOrder(victim.orderId); } catch { /* ignore */ }
     victim.status = 'cancelled';
     return;
   }
+  const hungry = bare[0];
+  const donor = fat.find((r) => r.a.pair !== hungry.a.pair) || fat[0];
+  if (!donor || donor.a.pair === hungry.a.pair) return;
+  const extras = donor.buys.filter((o) => Number(o.level) > 1);
+  const victim = (extras.length ? extras : donor.buys).sort((p, q) => Number(q.level) - Number(p.level) || Number(p.price) - Number(q.price))[0];
+  console.log('  HARVEST ' + donor.a.symbol + ' w=' + donor.w.toFixed(2) + ' n=' + donor.buys.length + ' L' + victim.level + ' -> ' + hungry.a.symbol + ' w=' + hungry.w.toFixed(2));
+  try { await ex.cancelOrder(victim.orderId); } catch { /* ignore */ }
+  victim.status = 'cancelled';
 }

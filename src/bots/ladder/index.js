@@ -12,7 +12,7 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids,
 } from '../../shared/portfolio.js';
 import { processPair, harvestLowWeightBids } from './strategy.js';
-import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers } from '../../shared/vol-scan.js';
+import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
@@ -280,7 +280,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        movers: topMovers(Number(process.env.MOVER_N || 10)),
+        movers: [...topVolatiles(Number(process.env.MOVER_N || 12)), ...topMovers(Number(process.env.MOVER_N || 12))],
       });
     } finally { emitStatus.busy = false; }
   }

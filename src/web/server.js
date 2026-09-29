@@ -554,13 +554,18 @@ function moversHtml(rows){
       }
       items.sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);});
     } else {
-      (b.markets||[]).forEach(function(m){
-        const pts=m.spark||[];
-        if(pts.length<2) return;
-        const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
-        if(!(a>0&&z>0)) return;
-        items.push({symbol:m.symbol,ret:(z-a)/a,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+      (b.movers||[]).forEach(function(m){
+        items.push({symbol:m.symbol,ret:Number(m.ret||0),rangePct:Number(m.rangePct||0)});
       });
+      if(!items.length){
+        (b.markets||[]).forEach(function(m){
+          const pts=m.spark||[];
+          if(pts.length<2) return;
+          const a=Number(pts[0].p||pts[0]), z=Number(pts[pts.length-1].p||pts[pts.length-1]);
+          if(!(a>0&&z>0)) return;
+          items.push({symbol:m.symbol,ret:(z-a)/a,spark:pts,sparkFills:m.sparkFills,orders:m.orders});
+        });
+      }
       items.sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);});
     }
     return items.slice(0,8);
