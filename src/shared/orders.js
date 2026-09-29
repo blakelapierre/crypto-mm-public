@@ -1,4 +1,4 @@
-import { logFill } from './fill-log.js';
+import { logFill, logFeeUpdate } from './fill-log.js';
 import { assumedMakerFeeBps } from './fee-spread.js';
 import { postFill } from './status-client.js';
 
@@ -20,15 +20,20 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
     if (rec.status !== 'filled') {
       rec.status = 'filled';
       const notional = Number(rec.filledValue || 0) || (Number(rec.price || 0) * Number(rec.size || 0));
-      if (!(Number(rec.fee) > 0) && notional > 0) rec.fee = notional * (assumedMakerFeeBps() / 10000);
-      console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + ' fee=' + Number(rec.fee || 0).toFixed(4));
+      const venueFee = Number(rec.fee) || 0;
+      if (!(venueFee > 0) && notional > 0) rec.fee = notional * (assumedMakerFeeBps() / 10000);
+      console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + ' fee=' + Number(rec.fee || 0).toFixed(4) + (venueFee > 0 ? '' : ' est'));
       if (pnl) pnl.recordFill(rec);
-      logFill(rec, { orderId });
+      logFill(rec, { orderId, venueFee, feeSource: venueFee > 0 ? 'venue' : 'pending' });
       rec.pnlRecorded = true;
-      rec.needFee = false;
+      rec.needFee = !(venueFee > 0);
     } else if (rec.needFee && rec.fee > 0 && pnl && pnl.adjustFee) {
       pnl.adjustFee(rec, rec.fee);
       rec.needFee = false;
+      logFeeUpdate(orderId, rec.fee, {
+        pair: rec.pair,
+        notional: rec.filledValue || (Number(rec.price || 0) * Number(rec.size || 0)),
+      });
       postFill({
         orderId, pair: rec.pair, symbol: rec.symbol, side: rec.side, level: rec.level,
         price: rec.price, size: rec.size, fee: rec.fee, filledValue: rec.filledValue,

@@ -15,15 +15,54 @@ function filePath() {
   return path.resolve(process.cwd(), rel);
 }
 
+function appendLine(row) {
+  const dest = filePath();
+  if (!dest) return;
+  if (!resolved) {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    resolved = dest;
+    console.log('fill log -> ' + dest);
+  }
+  fs.appendFileSync(dest, JSON.stringify(row) + '\n');
+}
+
+export function logSession(extra = {}) {
+  try {
+    appendLine({
+      kind: 'session',
+      ts: new Date().toISOString(),
+      bot: process.env.BOT || 'ladder',
+      ...extra,
+    });
+  } catch (e) { console.warn('fill log session', e.message); }
+}
+
+export function logFeeUpdate(orderId, fee, extra = {}) {
+  try {
+    const row = {
+      kind: 'fee',
+      ts: new Date().toISOString(),
+      orderId,
+      fee: Number(fee) || 0,
+      pair: extra.pair || null,
+      notional: extra.notional != null ? Number(extra.notional) : null,
+    };
+    appendLine(row);
+    if (row.notional) noteFeeFill(row.fee, row.notional, row.pair);
+  } catch (e) { console.warn('fill log fee', e.message); }
+}
+
 export function logFill(rec, extra = {}) {
   try {
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
-    if (!(Number(rec.fee) > 0) && notional) rec.fee = notional * (assumedMakerFeeBps() / 10000);
-    if (notional) noteFeeFill(rec.fee, notional, rec.pair);
+    const venueFee = Number(rec.venueFee != null ? rec.venueFee : (extra.venueFee != null ? extra.venueFee : (rec.feeSource === 'pending' ? 0 : rec.fee))) || 0;
+    const pnlFee = Number(rec.fee) || 0;
+    if (pnlFee > 0 && notional) noteFeeFill(pnlFee, notional, rec.pair);
     noteTapeFill(rec.pair, rec.side, rec.price, rec.size);
     invalidateLiveCache();
     const row = {
-      ts: new Date().toISOString(),
+      kind: 'fill',
+      ts: extra.ts || new Date().toISOString(),
       orderId: rec.orderId || rec.id || extra.orderId || null,
       venue: rec.venue || extra.venue || null,
       pair: rec.pair || null,
@@ -32,20 +71,14 @@ export function logFill(rec, extra = {}) {
       level: rec.level == null ? null : rec.level,
       price: Number(rec.price) || null,
       size: Number(rec.size) || null,
-      fee: Number(rec.fee) || 0,
+      fee: venueFee,
+      feeSource: venueFee > 0 ? 'venue' : 'pending',
       mid: rec.mid != null ? Number(rec.mid) : null,
       filledValue: rec.filledValue != null ? Number(rec.filledValue) : null,
       notional,
     };
-    postFill(row);
-    const dest = filePath();
-    if (!dest) return;
-    if (!resolved) {
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      resolved = dest;
-      console.log('fill log -> ' + dest);
-    }
-    fs.appendFileSync(dest, JSON.stringify(row) + '\n');
+    postFill({ ...row, fee: pnlFee || venueFee });
+    appendLine(row);
   } catch (e) {
     console.warn('fill log', e.message);
   }
