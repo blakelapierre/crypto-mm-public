@@ -42,6 +42,10 @@ export function midReturn(symbol, windowMs = WINDOW) {
   return (b - a) / a;
 }
 
+export function shortRun(symbol) {
+  return midReturn(symbol, Number(process.env.SHORT_RUN_MS || 180000));
+}
+
 const trendEma = new Map();
 export function trendMult(symbol) {
   const ret = midReturn(symbol);

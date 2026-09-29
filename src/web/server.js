@@ -126,7 +126,8 @@ function collect() {
       vol: kpiSeries(b.bot, 'vol'),
       bank: kpiSeries(b.bot, 'bank'),
     },
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)) })),
+    edgeBps: b.edgeBps,
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
   }));
 }
 

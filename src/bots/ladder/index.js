@@ -19,7 +19,7 @@ import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
-import { noteMid, midReturn, trendMult } from '../../shared/mid-ring.js';
+import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -93,6 +93,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     })();
     (async () => {
       const enteredAt = new Map();
+      const watch = new Map();
       for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
       const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
@@ -118,7 +119,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const meta = volStatsForSymbol(a.symbol);
             const range = meta ? Number(meta.rangePct || 0) : 0;
             const age = now - (enteredAt.get(a.pair) || now);
-            const weak = range < exitPct;
+            const rip = shortRun(a.symbol);
+            const weak = range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008);
             if (weak && age >= rotateMin) leaving.push(a);
             else keep.push(a);
           }
@@ -134,7 +136,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           for (const r of scored) {
             if (have.has(r.pair)) continue;
             if (keep.length + additions.length >= hardMax) break;
-            if (Number(r.rangePct || 0) < enterPct) continue;
+            const rip = shortRun(r.symbol);
+            const watched = watch.has(r.pair);
+            if (Number(r.rangePct || 0) < enterPct && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (!(r.pair && r.symbol)) continue;
             const need = costOf(r);
             if (budget < need) continue;
@@ -147,9 +151,13 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const leavePairs = new Set(leaving.map((a) => a.pair));
             const leaveSyms = leaving.map((a) => a.symbol);
             for (const a of leaving) {
+              watch.set(a.pair, { ...a, leftAt: now });
               try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
               pairState.delete(a.pair);
               enteredAt.delete(a.pair);
+            }
+            for (const [pair, w] of watch) {
+              if (now - (w.leftAt || 0) > Number(process.env.WATCH_MS || 30 * 60 * 1000)) watch.delete(pair);
             }
             mmAlloc.length = 0;
             const next = [...keep, ...additions];

@@ -51,8 +51,10 @@ export function printApiTally() {
 }
 
 export function startApiTally(ms = 10000) {
-  printApiTally();
-  const id = setInterval(() => { try { printApiTally(); } catch { /* ignore */ } }, ms);
-  if (id.unref) id.unref();
-  return id;
+  if (process.env.API_TALLY_CONSOLE === '1') {
+    printApiTally();
+    const id = setInterval(() => { try { printApiTally(); } catch { /* ignore */ } }, ms);
+    if (id.unref) id.unref();
+    return id;
+  }
 }
