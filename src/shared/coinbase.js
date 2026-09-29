@@ -58,7 +58,7 @@ function shortPath(p) {
 
 export function readCoinbaseSecretRaw(cfg) {
   let secret = cfg.coinbaseApiSecret;
-  const file = process.env.COINBASE_API_SECRET_FILE;
+  const file = cfg.coinbaseSecretFile || process.env.COINBASE_API_SECRET_FILE;
   if (file) {
     const full = path.resolve(process.cwd(), file);
     if (!fs.existsSync(full)) throw new Error('Missing ' + full);

@@ -1,5 +1,16 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { coinbaseRequest } from './coinbase.js';
+
+export function bankAuthCfg(cfg) {
+  const key = process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY || '';
+  if (!key) return cfg;
+  return {
+    ...cfg,
+    coinbaseApiKey: key,
+    coinbaseApiSecret: process.env.BANK_COINBASE_API_SECRET || process.env.BANK_API_SECRET || '',
+    coinbaseSecretFile: process.env.BANK_COINBASE_API_SECRET_FILE || process.env.BANK_API_SECRET_FILE || '',
+  };
+}
 import { formatVolume, calculateVolume, safeQuoteSize, safeSpend } from './sizing.js';
 
 function bankName() {
@@ -72,7 +83,12 @@ export async function refreshBankHoldings(cfg, bankUuid) {
   const uuid = bankUuid || lastBankUuid;
   if (!uuid || cfg.exchange !== 'coinbase') return lastBankHoldings;
   lastBankUuid = uuid;
-  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios/' + uuid);
+  const auth = bankAuthCfg(cfg);
+  if (auth === cfg && !(process.env.BANK_COINBASE_API_KEY || process.env.BANK_API_KEY)) {
+    console.warn('bank refresh skipped: set BANK_COINBASE_API_KEY (+ SECRET or SECRET_FILE) for the bank portfolio key');
+    return lastBankHoldings;
+  }
+  const data = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/portfolios/' + uuid);
   const p = data.portfolio || data;
   const spots = p.spot_positions || [];
   lastBankHoldings = spots.map((s) => ({
