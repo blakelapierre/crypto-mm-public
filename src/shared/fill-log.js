@@ -14,10 +14,10 @@ function botName() {
 
 const SHAPE_LIST = [
   ['session', 'ts', 'bot', 'exchange', 'quote'],
-  ['place', 'ts', 'bot', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
-  ['cancel', 'ts', 'bot', 'id', 'side', 'level', 'price', 'why', 'offBps'],
-  ['fill', 'ts', 'bot', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
-  ['fee', 'ts', 'bot', 'id', 'pair', 'fee', 'notional'],
+  ['place', 'ts', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id'],
+  ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps'],
+  ['fill', 'ts', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
+  ['fee', 'ts', 'id', 'pair', 'fee', 'notional'],
 ];
 const SHAPE_ID = Object.fromEntries(SHAPE_LIST.map((s, i) => [s[0], i]));
 
