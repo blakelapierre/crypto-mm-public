@@ -366,6 +366,13 @@ async function main() {
     console.log('startup sell non-MM: ' + dump.join(','));
     await liquidateSymbols(cfg, ex, live, dump, productMap);
     live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
+    const leftover = dump.filter((s) => live.positions[s] && live.positions[s].amount > 0);
+    if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
+      console.log('bank leftover orphans ' + leftover.join(','));
+      try { await skimToBank(cfg, live, 1, leftover, 'startup'); }
+      catch (e) { console.warn('orphan bank', e.message); }
+      live = await fetchLivePortfolio(cfg, ex, productMap);
+    }
     lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);

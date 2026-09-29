@@ -135,7 +135,8 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     if (filter && !filter.has(sym)) continue;
     const qty = (pos.amount || 0) * pct;
     if (!(qty > 0)) continue;
-    const send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
+    let send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
+    if (!(Number(send) > 0)) send = String(qty);
     if (!(Number(send) > 0)) continue;
     try {
       if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, pos.currency || sym, send)) {
