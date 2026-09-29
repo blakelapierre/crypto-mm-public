@@ -49,7 +49,7 @@ function inventoryUsd(live, symbol) {
 }
 function inventoryCapUsd(live) {
   const eq = Number((live && live.totalEquity) || 0);
-  const frac = Number(process.env.INV_CAP_FRAC || 0.12);
+  const frac = Number(process.env.INV_CAP_FRAC || 0.10);
   return Math.max(0, eq * frac);
 }
 function inventorySkew(live, symbol) {
@@ -94,11 +94,13 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     console.log('  SKEW inv ' + symbol + ' ' + sk.toFixed(2) + ' bidOff=' + (bidOff * 10000).toFixed(1) + 'bps askOff=' + (askOff * 10000).toFixed(1) + 'bps');
   }
   const buys = []; const sells = [];
+  const ret = midReturn(symbol);
+  const buyLevels = ret < -0.005 ? 1 : levels;
   for (let i = 1; i <= levels; i++) {
     const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
     const buyPx = i === 1 ? bid1 : bid1 * (1 - (i - 1) * step);
     const sellPx = i === 1 ? ask1 : ask1 * (1 + (i - 1) * step);
-    buys.push({ level: i, side: 'buy', price: formatPrice(buyPx, pairDecimals), size, orderId: null, status: 'pending' });
+    if (i <= buyLevels) buys.push({ level: i, side: 'buy', price: formatPrice(buyPx, pairDecimals), size, orderId: null, status: 'pending' });
     sells.push({ level: i, side: 'sell', price: formatPrice(sellPx, pairDecimals), size, orderId: null, status: 'pending' });
   }
   return { buys, sells, mid };

@@ -316,9 +316,16 @@ function sparkSvg(points, fills, orders){
     return '<line x1="'+(w-9)+'" y1="'+y+'" x2="'+w+'" y2="'+y+'" stroke="'+col+'" stroke-width="1.6"/>';
   }).join('');
   const d=sparkDigits(vals);
+  function spanLabel(ms){
+    const s=Math.max(0,Number(ms)||0);
+    if(s>=86400000) return (s/86400000).toFixed(2)+'d';
+    if(s>=3600000) return (s/3600000).toFixed(1)+'h';
+    return Math.max(1,Math.round(s/60000))+'m';
+  }
   return '<div class="spark-wrap"><div class="spark-hl hi">H '+hi.toFixed(d)+'</div>'+
     '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+ticks+'</svg>'+
-    '<div class="spark-hl lo">L '+lo.toFixed(d)+'</div></div>';
+    '<div class="spark-hl lo">L '+lo.toFixed(d)+'</div>'+
+    '<div class="spark-hl">'+spanLabel(spanT)+'</div></div>';
 }
 function apiBlock(b){
   const a=b.api||{};
