@@ -41,8 +41,9 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
       if (cur === quote) { freeQuote += avail; quoteHold += hold; continue; }
       if (STABLECOINS.has(cur) && cur !== quote) continue;
       const sym = normalizeAsset(cur);
-      if (!positions[sym]) positions[sym] = { amount: 0, valueQuote: 0, mid: 0 };
-      positions[sym].amount += amt;
+      if (!positions[sym]) positions[sym] = { amount: 0, hold: 0, valueQuote: 0, mid: 0 };
+      positions[sym].amount += avail;
+      positions[sym].hold = (positions[sym].hold || 0) + hold;
     }
   } else if (venue === 'kraken') {
     const bal = await krakenPrivate(cfg, 'Balance');

@@ -163,7 +163,7 @@ export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null
       console.log('  skip liq ' + sym + ' amt=' + amt + ' pair=' + (pair || 'none'));
       continue;
     }
-    const sellAmt = formatVolume(amt * 0.99, lot);
+    const sellAmt = formatVolume(amt * 0.95, lot);
     if (sellAmt < min * (cfg.volumeSafetyMargin || 1.05)) {
       console.log('  skip liq ' + sym + ' below min amt=' + sellAmt);
       continue;

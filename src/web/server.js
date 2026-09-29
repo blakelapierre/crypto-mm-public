@@ -199,7 +199,10 @@ const PAGE = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
-#pin{position:sticky;top:0;z-index:20;background:#0e1116;padding:10px 14px 8px;border-bottom:1px solid #30363d;max-height:40vh;overflow:hidden;display:flex;flex-direction:column}
+#shell{display:flex;align-items:flex-start;gap:12px;padding:10px 14px 8px}
+#col{flex:1;min-width:0;max-height:40vh;overflow-y:auto}
+#pin{background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d}
+#bank.bank-card{position:sticky;top:10px;flex:0 0 240px;max-height:40vh;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
 h2{font-size:13px;margin:0 0 8px}
@@ -265,8 +268,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .botg .bn{width:100%;text-align:center;font-size:10px;color:#8b98a5}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
 #top-row{display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:stretch;gap:12px;width:100%;flex:1;min-height:0;overflow:hidden}
-#board.board{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:100%}
-#bank.bank-card{flex:0 0 240px;max-height:100%;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
+#board.board{flex:1 1 auto;min-width:0}
 #bank .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
 #bank table{width:100%;border-collapse:collapse}
 #bank td{padding:1px 4px}
@@ -275,16 +277,20 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </style>
 </head>
 <body>
+<div id="shell">
+<div id="col">
 <div id="pin">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
-<div id="movers" class="movers"></div>
 <div id="top-row">
 <div id="board" class="board"></div>
+</div>
+</div>
+<div id="movers" class="movers"></div>
+<div id="root"></div>
+</div>
 <div id="bank" class="bank-card"></div>
 </div>
-</div>
-<div id="root"></div>
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Number(n);return (x>=0?'+':'')+x.toFixed(4);}
@@ -546,7 +552,7 @@ function boardHtml(rows){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
       const rng=c.m.vol&&String(c.m.vol).indexOf('%')>=0?c.m.vol:(c.m.rangePct!=null?Number(c.m.rangePct).toFixed(2)+'%':'');
       const maker=Number(c.m.makerPnl||0), fees=Number(c.m.fees||0), price=Number(c.m.pricePnl||0);
-      const net=maker-fees+price;
+      const net=maker+price+(-Math.abs(fees));
       const netCls=net>0?'up':(net<0?'dn':'');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+

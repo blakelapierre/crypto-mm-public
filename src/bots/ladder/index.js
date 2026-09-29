@@ -9,7 +9,7 @@ import { markOrderFromExchange, pollOpenOrders } from '../../shared/orders.js';
 import { createPnl } from '../../shared/pnl.js';
 import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
-  rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids,
+  rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
 import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles } from '../../shared/vol-scan.js';
@@ -41,6 +41,7 @@ function sortAllocByWeight(arr) {
 
 async function runMm(mmAlloc, orderSizeUsd, productMap) {
   console.log('\nladder MM');
+  invalidateLiveCache();
   sortAllocByWeight(mmAlloc);
   setLiveMmAlloc(mmAlloc);
   setSizeUniverse(mmAlloc.map((a) => a.symbol));
