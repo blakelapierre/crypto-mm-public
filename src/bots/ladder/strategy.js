@@ -80,9 +80,9 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const sk = inventorySkew(live, symbol);
   const bidOff = step * (1 + sk);
   const askOff = step * (1 - sk);
-  const useBook = joinTouchForPair(cfg, pair) && book && book.bid && book.ask;
-  let bid1 = useBook ? book.bid : mid * (1 - Math.max(tick / mid, bidOff));
-  let ask1 = useBook ? book.ask : mid * (1 + Math.max(tick / mid, askOff));
+  const useBook = false;
+  let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
+  let ask1 = mid * (1 + Math.max(tick / mid, askOff, l1HalfFrac(cfg, pair)));
   if (useBook && sk) {
     if (sk > 0) bid1 = Math.min(bid1, mid * (1 - bidOff));
     if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
@@ -224,18 +224,31 @@ async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
   return true;
 }
 
+const pinAt = new Map();
 export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
   const half = l1HalfFrac(cfg, a.pair);
   const bidT = formatPrice(mid * (1 - half), a.pairDecimals);
   const askT = formatPrice(mid * (1 + half), a.pairDecimals);
-  const tol = Number(process.env.L1_REPIN_BPS || 8) / 10000;
+  const cool = Number(process.env.L1_PIN_MS || 20000);
+  function stillGood(side, px) {
+    const p = Number(px);
+    if (!(p > 0)) return false;
+    if (side === 'sell') {
+      const off = (p - mid) / mid;
+      return off >= half * 0.8 && off <= half * 2.2 && p > mid;
+    }
+    const off = (mid - p) / mid;
+    return off >= half * 0.8 && off <= half * 2.2 && p < mid;
+  }
   async function pin(side, target) {
+    const key = a.pair + ':' + side;
+    if (Date.now() - (pinAt.get(key) || 0) < cool) return;
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
     const l1 = open.filter((o) => Number(o.level) === 1);
-    const good = l1.find((o) => Math.abs(Number(o.price) / target - 1) <= tol);
+    const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target));
     if (good) return;
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
@@ -249,6 +262,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
     if (!(r && r.order_id)) return;
+    pinAt.set(key, Date.now());
     for (const o of l1) {
       try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
       o.status = 'cancelled';
