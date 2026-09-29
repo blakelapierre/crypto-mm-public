@@ -260,7 +260,10 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
         size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
       }
     }
-    if (!size) return;
+    if (!size) {
+      console.log('  PIN skip ' + side + ' ' + a.symbol + ' @ ' + target + ' (no size)');
+      return;
+    }
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
     if (!(r && r.order_id)) return;
@@ -485,7 +488,12 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const needRungs = hint && hint.touches >= 3 && hintKey && hintKey !== (state.rungKey || '') && rungAge > Number(process.env.RUNG_REQUOTE_MS || 60000) && born > 120000;
   if (needRungs) console.log('  RUNGS ' + a.symbol + ' ' + (state.rungKey || '-') + ' -> ' + hintKey + ' touches=' + hint.touches);
   const grace = ageMs < Number(process.env.START_REQUOTE_GRACE_MS || 45000);
-  const needRequote = !grace && (move >= (cfg.requoteMoveBps || 8) / 10000 || staleEmpty || needResize || needRungs);
+  const needRequote = !grace && (move >= (cfg.requoteMoveBps || 8) / 10000 || needResize || needRungs);
+  if (!anyOpen) {
+    await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
+    publishOrders(a, ladder, book.mid);
+    return;
+  }
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if (!openSell || !openBuy) {
     const prefer = !openSell ? 'sell' : 'buy';

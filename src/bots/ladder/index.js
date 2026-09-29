@@ -320,22 +320,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       catch (e) { console.error(a.symbol, e.message); }
     }
   }
-  let lastDump = 0;
   while (true) {
     sortAllocByWeight(mmAlloc);
     setLiveMmAlloc(mmAlloc);
-    if (Date.now() - lastDump > Number(process.env.ORPHAN_DUMP_MS || 60000)) {
-      lastDump = Date.now();
-      try {
-        const live = await getLive();
-        const keep = new Set(mmAlloc.map((a) => a.symbol));
-        const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
-        if (dump.length) {
-          console.log('dump non-MM ' + dump.join(','));
-          await liquidateSymbols(cfg, ex, live, dump, productMap);
-        }
-      } catch (e) { console.warn('orphan dump', e.message); }
-    }
     try { await harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
     await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 40)).then(() =>
       processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))

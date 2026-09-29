@@ -14,25 +14,36 @@ function krakenSign(reqPath, postData, secret) {
   return hmac.digest('base64');
 }
 
+let nonceSeq = 0;
+let privateChain = Promise.resolve();
+function nextNonce() {
+  const n = Date.now() * 1000 + (nonceSeq = (nonceSeq + 1) % 1000);
+  return n;
+}
 export async function krakenPrivate(cfg, endpoint, params = {}) {
-  const t0 = Date.now();
-  try {
-    const reqPath = '/0/private/' + endpoint;
-    const nonce = Date.now() * 1000;
-    const body = { nonce, ...params };
-    const res = await fetch(KRAKEN_BASE + reqPath, {
-      method: 'POST',
-      headers: { 'API-Key': cfg.krakenApiKey, 'API-Sign': krakenSign(reqPath, body, cfg.krakenApiSecret), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: qs.stringify(body),
-    });
-    const data = await res.json();
-    noteApi('kraken', endpoint, Date.now() - t0, !(data.error && data.error.length));
-    if (data.error && data.error.length) throw new Error(data.error.join(' | '));
-    return data.result;
-  } catch (e) {
-    noteApi('kraken', endpoint, Date.now() - t0, false);
-    throw e;
-  }
+  const run = async () => {
+    const t0 = Date.now();
+    try {
+      const reqPath = '/0/private/' + endpoint;
+      const nonce = nextNonce();
+      const body = { nonce: String(nonce), ...params };
+      const res = await fetch(KRAKEN_BASE + reqPath, {
+        method: 'POST',
+        headers: { 'API-Key': cfg.krakenApiKey, 'API-Sign': krakenSign(reqPath, body, cfg.krakenApiSecret), 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: qs.stringify(body),
+      });
+      const data = await res.json();
+      noteApi('kraken', endpoint, Date.now() - t0, !(data.error && data.error.length));
+      if (data.error && data.error.length) throw new Error(data.error.join(' | '));
+      return data.result;
+    } catch (e) {
+      noteApi('kraken', endpoint, Date.now() - t0, false);
+      throw e;
+    }
+  };
+  const queued = privateChain.then(run, run);
+  privateChain = queued.catch(() => {});
+  return queued;
 }
 
 export function startKrakenUserWs(cfg, onStatus) {
