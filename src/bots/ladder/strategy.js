@@ -140,29 +140,37 @@ function resizeLeg(cfg, a, o, live) {
   if (!live) return o.size;
   const hair = cfg.orderSizeHaircut || 0.9;
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
+  const isL1 = Number(o.level || 1) === 1;
   if (o.side === 'buy') {
     const cap = inventoryCapUsd(live);
     const held = inventoryUsd(live, a.symbol);
     const ret = midReturn(a.symbol);
     const hard = Number(process.env.INV_CAP_HARD || 1.4);
-    if (cap > 0 && held >= cap * hard) return 0;
-    if (cap > 0 && held >= cap && ret <= 0) return 0;
+    if (!isL1 && cap > 0 && held >= cap * hard) return 0;
+    if (!isL1 && cap > 0 && held >= cap && ret <= 0) return 0;
     const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     const cashShare = (live.freeQuote * (cfg.capitalSafetyMargin || 0.92) * hair * w) / pairs;
     const room = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
-    let useUsd = Math.min(o.price * o.size, cashShare || cashShare, room || cashShare);
+    const wantUsd = Number(o.size) > 0 && o.price > 0 ? o.price * o.size : cashShare;
+    let useUsd = Math.min(wantUsd || cashShare, cashShare || wantUsd, isL1 ? (live.freeQuote * hair) : (room || cashShare));
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
-    if (useUsd < minUsd && live.freeQuote >= minUsd * 1.05 && !(cap > 0 && held >= cap * hard)) useUsd = minUsd;
+    if (useUsd < minUsd && live.freeQuote * hair >= minUsd) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
     if (size + 1e-12 < minV) return minV * o.price <= live.freeQuote * hair ? formatVolume(minV, a.lotDecimals) : 0;
     return formatVolume(size, a.lotDecimals);
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
-  const nSell = Math.max(1, ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
-  let size = Math.min(o.size, (held * hair) / nSell);
-  if (size + 1e-12 < minV) return held >= minV ? formatVolume(Math.min(held * hair, o.size), a.lotDecimals) : 0;
+  const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
+  const budget = (held * hair) / nSell;
+  let size = Number(o.size) > 0 ? Math.min(o.size, budget) : budget;
+  if (size + 1e-12 < minV) {
+    const floor = a.ordermin || 0;
+    if (held >= minV) return formatVolume(Math.min(held * hair, size || held * hair), a.lotDecimals);
+    if (isL1 && held >= floor && floor > 0) return formatVolume(held * hair, a.lotDecimals);
+    return 0;
+  }
   return formatVolume(size, a.lotDecimals);
 }
 
@@ -261,7 +269,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       }
     }
     if (!size) {
-      console.log('  PIN skip ' + side + ' ' + a.symbol + ' @ ' + target + ' (no size)');
+      pinAt.set(key, Date.now());
       return;
     }
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
