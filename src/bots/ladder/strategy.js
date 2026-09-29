@@ -1,12 +1,13 @@
 import { setTimeout as sleep } from 'timers/promises';
 import { formatPrice, calculateVolume, formatVolume } from '../../shared/sizing.js';
-import { applySpreadFromFees, joinTouchForPair } from '../../shared/fee-spread.js';
+import { applySpreadFromFees, joinTouchForPair, assumedMakerFeeBps, realizedFeeBps } from '../../shared/fee-spread.js';
 import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { tapeSizeMult, tapeEdgeBps, markRipSell, inRipCooldown } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
-import { realizedFeeBps } from '../../shared/fee-spread.js';
+
+
 
 function publishOrders(a, ladder, mid) {
   if (!a || !ladder) return;
@@ -195,6 +196,73 @@ async function cancelSide(ex, legs) {
   }
 }
 
+function l1HalfFrac(cfg, pair) {
+  const fee = realizedFeeBps(pair);
+  const feeBps = fee != null ? fee : assumedMakerFeeBps(cfg);
+  const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
+  return Math.max(feeBps + edge, Number(process.env.MIN_HALF_SPREAD_BPS || 55)) / 10000;
+}
+
+async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
+  if (!pairState) return false;
+  const rows = [];
+  for (const [p, st] of pairState) {
+    const lad = st && st.ladder;
+    if (!lad) continue;
+    for (const o of [...(lad.buys || []), ...(lad.sells || [])]) {
+      if (o.status !== 'open' || !o.orderId) continue;
+      if (p === keepPair && o.side === keepSide && Number(o.level) === 1) continue;
+      rows.push({ p, o });
+    }
+  }
+  rows.sort((x, y) => Number(y.o.level) - Number(x.o.level) || (x.p === keepPair ? 1 : -1));
+  if (!rows.length) return false;
+  const row = rows[0];
+  console.log('  FREE L' + row.o.level + ' ' + row.o.side + ' ' + row.p + ' @ ' + row.o.price);
+  try { await ex.cancelOrder(row.o.orderId); } catch { /* ignore */ }
+  row.o.status = 'cancelled';
+  return true;
+}
+
+export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
+  const mid = Number(book && book.mid);
+  if (!(mid > 0)) return;
+  const half = l1HalfFrac(cfg, a.pair);
+  const bidT = formatPrice(mid * (1 - half), a.pairDecimals);
+  const askT = formatPrice(mid * (1 + half), a.pairDecimals);
+  const tol = Number(process.env.L1_REPIN_BPS || 8) / 10000;
+  async function pin(side, target) {
+    const legs = side === 'buy' ? ladder.buys : ladder.sells;
+    const open = legs.filter((o) => o.status === 'open' && o.orderId);
+    const l1 = open.filter((o) => Number(o.level) === 1);
+    const good = l1.find((o) => Math.abs(Number(o.price) / target - 1) <= tol);
+    if (good) return;
+    for (const o of l1) {
+      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+      o.status = 'cancelled';
+    }
+    let live = getLive ? await getLive() : null;
+    let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
+    if (!size) {
+      if (await cancelHighestToFree(ex, pairState || livePairState, a.pair, side)) {
+        live = getLive ? await getLive() : live;
+        size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
+      }
+    }
+    if (!size) return;
+    console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
+    const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
+    legs.push({
+      level: 1, side, price: target, size,
+      orderId: r && r.order_id || null,
+      status: r && r.order_id ? 'open' : 'failed',
+    });
+    if (a) publishOrders(a, ladder, mid);
+  }
+  await pin('sell', askT);
+  await pin('buy', bidT);
+}
+
 async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state = null, forceSell = false) {
   const now = Date.now();
   const isOpen = (o) => o.status === 'open' && o.orderId;
@@ -361,7 +429,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (filledNow) state.lastEnsureAt = 0;
   const pulled = await cancelCrossed(ex, ladder, book.mid, tick);
   if (pulled) pruneDone(ladder);
-  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state);
+  await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
   const lastMid = state.lastMid || book.mid;
   const move = Math.abs(book.mid - lastMid) / (lastMid || book.mid);
   const openBuy = ladder.buys.some((o) => o.status === 'open');
@@ -383,7 +451,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (!filledNow && openBuy && openSell && !needRequote && !pulled) return;
   if (!openSell || !openBuy) {
     const prefer = !openSell ? 'sell' : 'buy';
-    await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
+    await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
     publishOrders(a, ladder, book.mid);
   }
   if ((needRequote && !filledNow) || pulled) {
@@ -429,7 +497,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   for (const leg of newlyFilled) {
-    if (leg.side === 'buy') await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
+    if (leg.side === 'buy') await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
     publishOrders(a, ladder, book && book.mid);
     await slideSameSide(cfg, ex, a, ladder, leg, book);
     await skewOtherSide(cfg, ex, a, ladder, leg);
@@ -438,7 +506,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   pruneDone(ladder);
   publishOrders(a, ladder, book && book.mid);
   state.lastEnsureAt = 0;
-  await ensureBothSides(cfg, ex, a, ladder, book, getLive, state, true);
+  await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
 }
 
