@@ -9,6 +9,7 @@ const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
 const sparks = new Map();
+const volSparks = new Map();
 const sparkFills = new Map();
 const SPARK_MS = Number(process.env.SPARK_WINDOW_MS || 15 * 60 * 1000);
 const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 1000);
@@ -68,6 +69,22 @@ function holdAllSparks() {
   pruneSparks();
 }
 setInterval(holdAllSparks, SPARK_GAP);
+
+function noteVolSparks(bot, markets) {
+  const now = Date.now();
+  for (const m of markets || []) {
+    if (!m.symbol) continue;
+    const vol = Number(m.buyUsd || 0) + Number(m.sellUsd || 0);
+    const k = bot + ':' + m.symbol;
+    const arr = volSparks.get(k) || [];
+    const last = arr[arr.length - 1];
+    if (!last || now - last.t >= SPARK_GAP) arr.push({ t: now, p: vol });
+    else last.p = vol;
+    while (arr.length && now - arr[0].t > SPARK_MS) arr.shift();
+    volSparks.set(k, arr);
+  }
+}
+
 function downsample(points, maxPts) {
   const arr = points || [];
   if (arr.length <= maxPts) return arr;
@@ -147,7 +164,7 @@ function collect() {
       bank: kpiSeries(b.bot, 'bank'),
     },
     edgeBps: b.edgeBps,
-    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
+    markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), volSpark: volSparks.get(b.bot + ':' + m.symbol) || [], sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
   }));
 }
 
@@ -192,16 +209,16 @@ th{color:#8b98a5;font-weight:500}
 tr.sell,tr.sell td{color:#f85149}
 tr.buy,tr.buy td{color:#3fb950}
 tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
-.spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-hl{font-size:8px;opacity:.75;line-height:1.15;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
+.spark{vertical-align:middle;display:block}.spark-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0}.spark-row{display:flex;flex-direction:row;align-items:center;gap:2px}.spark-time{font-size:7px;opacity:.75;writing-mode:vertical-rl;transform:rotate(180deg);line-height:1;letter-spacing:.02em;flex:0 0 auto}.spark-hl{font-size:7px;opacity:.75;line-height:1.1;font-variant-numeric:tabular-nums}.spark-hl.hi{color:#3fb950}.spark-hl.lo{color:#f85149}
 .book-wrap{display:flex;gap:12px;align-items:flex-start}
 .book-wrap .mfills{font-size:11px;min-width:160px}.book-wrap .mpnl{font-size:11px;min-width:110px;font-variant-numeric:tabular-nums}
 .book-wrap .mfills .buy{color:#3fb950}.book-wrap .mfills .sell{color:#f85149}
 .fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 #board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
-#board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 12px;margin:0;box-sizing:border-box}
-.board-card h2{margin:0 0 8px}
-.hdr-stats{display:flex;gap:16px;margin:0 0 8px;font-size:11px}
+#board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px;margin:0;box-sizing:border-box}
+.board-card h2{margin:0 0 6px;text-align:center}
+.hdr-stats{display:flex;gap:12px;margin:0 0 6px;font-size:11px;justify-content:center;flex-wrap:wrap}
 .hdr-stats .col{display:flex;flex-direction:column;gap:1px}
 .hdr-stats label{color:#8b98a5;font-size:10px}
 .hdr-stats b{font-size:13px}
@@ -210,10 +227,10 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .kpi span.pw{font-size:10px;opacity:.85}.kpi span.pm{font-size:9px;opacity:.75}
 .kpi span.py{font-size:8px;opacity:.65}
 .hdr-stats .pw{font-size:10px}.hdr-stats .pm{font-size:9px}.hdr-stats .py{font-size:8px;opacity:.7}
-.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;gap:8px;line-height:normal}
-.board-card .cell{flex:0 0 auto;width:124px;min-height:118px;display:flex;flex-direction:column;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
-.board-card .cell .sym{font-size:12px;font-weight:600}
-.board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.25;min-height:2.5em;margin-top:auto}
+.board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:4px;line-height:normal;width:100%}
+.board-card .cell{flex:0 0 auto;width:56px;min-height:64px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:6px;padding:3px 3px;box-sizing:border-box}
+.board-card .cell .sym{font-size:9px;font-weight:600}
+.board-card .cell .sz{font-size:7px;color:#8b98a5;line-height:1.15;min-height:1.8em;margin-top:auto}
 .movers{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
 .movers .mv{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:5px 8px;min-width:88px}
 .movers .mv .s{font-weight:600;font-size:12px}
@@ -310,10 +327,10 @@ function sparkDigits(vals){
   if(span>=0.01) return 5;
   return 6;
 }
-function sparkSvg(points, fills, orders){
+function sparkSvg(points, fills, orders, opt){
   const ptsIn=(!points||!points.length)?[]:points[0].p!=null?points:points.map(function(p){return {t:0,p:p};});
   if(ptsIn.length<2) return '';
-  const w=88,h=28;
+  const w=(opt&&opt.w)||88,h=(opt&&opt.h)||28;
   const t0=ptsIn[0].t, t1=ptsIn[ptsIn.length-1].t || t0+1;
   const spanT=Math.max(1,t1-t0);
   const marks=(fills||[]).map(function(f){
@@ -355,9 +372,9 @@ function sparkSvg(points, fills, orders){
     return Math.max(1,Math.round(s/60000))+'m';
   }
   return '<div class="spark-wrap"><div class="spark-hl hi">H '+hi.toFixed(d)+'</div>'+
-    '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+ticks+'</svg>'+
-    '<div class="spark-hl lo">L '+lo.toFixed(d)+'</div>'+
-    '<div class="spark-hl">'+spanLabel(spanT)+'</div></div>';
+    '<div class="spark-row"><div class="spark-time">'+spanLabel(spanT)+'</div>'+
+    '<svg class="spark" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+(up?'#3fb950':'#f85149')+'" stroke-width="1.2" points="'+line+'"/>'+dots+ticks+'</svg></div>'+
+    '<div class="spark-hl lo">L '+lo.toFixed(d)+'</div></div>';
 }
 function apiBlock(b){
   const a=b.api||{};
@@ -485,8 +502,9 @@ function boardHtml(rows){
     const inner=cells.map(function(c){
       const e=c.m.edgeBps==null?'':((Number(c.m.edgeBps)>=0?'+':'')+Number(c.m.edgeBps).toFixed(0)+'e');
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
-        sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders)+
-        '<div class="sz">$'+fmtN(c.work)+' · v $'+fmtN(c.vol)+'<br>w '+esc(c.m.w||'')+(e?' · '+e:'')+'</div></div>';
+        sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:40,h:14})+
+        sparkSvg(c.m.volSpark,null,null,{w:40,h:10})+
+        '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+'</div></div>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
@@ -495,9 +513,9 @@ function boardHtml(rows){
     const edge=b.edgeBps;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
       '<div class="hdr-stats">'+
-        '<div class="col"><label>wallet $</label><b>$'+fmtN(eq)+'</b><span>'+fmt(wal)+'</span></div>'+
+        '<div class="col"><label>wallet $</label><b>$'+fmtN(eq)+'</b><span>'+fmt(wal)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+
-        '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b><span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
+        '<div class="col"><label>vol</label><b>$'+fmtN(volNow)+'</b>'+sparkSvg((b.kpiSpark||{}).vol,null,null,{w:56,h:18})+'<span>/h $'+fmtN(q.vol)+'</span><span>/d $'+fmtN(q.vol*24)+'</span><span class="pw">/7d $'+fmtN(q.vol*24*7)+'</span><span class="pm">/30d $'+fmtN(q.vol*24*30)+'</span><span class="py">/365d $'+fmtN(q.vol*24*365)+'</span></div>'+
         '<div class="col"><label>pnl</label><b>'+fmt(wal)+'</b><span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
@@ -605,6 +623,7 @@ const server = http.createServer(async (req, res) => {
       const prev = bots.get(id) || {};
       bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
+      noteVolSparks(id, msg.markets || prev.markets);
       const pnl = msg.pnl || prev.pnl || {};
       const vol = (msg.markets || prev.markets || []).reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
       noteKpiSpark(id, {
