@@ -125,13 +125,10 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
   try { ports = await resolvePortfolios(cfg); } catch (e) { console.warn('bank list', e.message); return; }
   if (!ports) return;
   const filter = onlySymbols ? new Set(onlySymbols.map((s) => String(s).toUpperCase())) : null;
+  const jobs = [];
   if (!filter) {
     const cash = (live.freeQuote || 0) * pct;
-    if (cash >= 0.01) {
-      try {
-        if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, cfg.quote, cash.toFixed(8))) noteBankedUsd(cash, kind);
-      } catch (e) { console.warn('bank move ' + cfg.quote, e.message); }
-    }
+    if (cash >= 0.01) jobs.push({ cur: cfg.quote, send: cash.toFixed(8), usd: cash });
   }
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (filter && !filter.has(sym)) continue;
@@ -140,13 +137,14 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     let send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
     if (!(Number(send) > 0)) send = String(qty);
     if (!(Number(send) > 0)) continue;
-    try {
-      if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, pos.currency || sym, send)) {
-        noteBankedUsd(Number(send) * (pos.mid || 0), kind);
-      }
-    } catch (e) { console.warn('bank move ' + sym, e.message); }
-    await sleep(cfg.rateLimitMs || 200);
+    jobs.push({ cur: pos.currency || sym, send, usd: Number(send) * (pos.mid || 0) });
   }
+  const gap = Number(process.env.BANK_STAGGER_MS || 40);
+  await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
+    try {
+      if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, j.cur, j.send)) noteBankedUsd(j.usd, kind);
+    } catch (e) { console.warn('bank move ' + j.cur, e.message); }
+  })));
   try { await refreshBankHoldings(cfg, ports.bank.uuid); } catch (e) { console.warn('bank holdings', e.message); }
 }
 
@@ -182,19 +180,26 @@ export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null
 export async function seedNewInventory(cfg, ex, mmAlloc, live) {
   let budget = safeSpend(cfg, live.freeQuote);
   const each = mmAlloc.length ? budget / mmAlloc.length : 0;
+  const jobs = [];
   for (const a of mmAlloc) {
     const held = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.invTargetQuote || each * (cfg.mmInventoryFraction || 0.5);
-    const gap = target - held;
-    if (gap < cfg.minOrderUsd || budget < cfg.minOrderUsd) continue;
-    const spend = Math.min(gap, budget * 0.98);
-    const book = await ex.getBook(a.pair);
-    if (!book) continue;
-    const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spend), a.ordermin, a.lotDecimals);
-    console.log('  seed ' + a.symbol + ' buy ~' + spend.toFixed(2));
-    try { if (await ex.marketBuy(a.pair, vol, spend)) budget -= spend; } catch (e) { console.warn('  seed ' + a.symbol, e.message); }
-    await sleep(cfg.rateLimitMs || 200);
+    const need = target - held;
+    if (need < cfg.minOrderUsd || budget < cfg.minOrderUsd) continue;
+    const spend = Math.min(need, budget * 0.98);
+    budget -= spend;
+    jobs.push({ a, spend });
   }
+  const gap = Number(process.env.SELL_STAGGER_MS || 40);
+  await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
+    try {
+      const book = await ex.getBook(j.a.pair);
+      if (!book) return;
+      const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, j.spend), j.a.ordermin, j.a.lotDecimals);
+      console.log('  seed ' + j.a.symbol + ' buy ~' + j.spend.toFixed(2));
+      await ex.marketBuy(j.a.pair, vol, j.spend);
+    } catch (e) { console.warn('  seed ' + j.a.symbol, e.message); }
+  })));
 }
 
 export async function dumpBankToTrade(cfg, fraction) {
@@ -226,7 +231,7 @@ export async function dumpBankToTrade(cfg, fraction) {
   console.log('dump ' + (pct * 100) + '%  ' + bank.name + ' (' + bank.uuid + ') -> ' + trade.name + ' (' + trade.uuid + ')');
   const accts = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/accounts?limit=250');
   const rows = accts.accounts || [];
-  let moved = 0;
+  const jobs = [];
   for (const a of rows) {
     const cur = String(a.currency || (a.available_balance && a.available_balance.currency) || '').toUpperCase();
     const avail = parseFloat((a.available_balance && (a.available_balance.value || a.available_balance.amount)) || a.available || 0) || 0;
@@ -234,14 +239,14 @@ export async function dumpBankToTrade(cfg, fraction) {
     if (!cur || !(qty > 0)) continue;
     const send = qty >= 1 ? qty.toFixed(8) : String(qty);
     if (!(Number(send) > 0)) continue;
-    try {
-      await moveFunds(auth, bank.uuid, trade.uuid, cur, send);
-      moved += 1;
-    } catch (e) {
-      console.warn('dump skip ' + cur, e.message);
-    }
-    await sleep(200);
+    jobs.push({ cur, send });
   }
+  const gap = Number(process.env.BANK_STAGGER_MS || 40);
+  const results = await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
+    try { await moveFunds(auth, bank.uuid, trade.uuid, j.cur, j.send); return 1; }
+    catch (e) { console.warn('dump skip ' + j.cur, e.message); return 0; }
+  })));
+  const moved = results.reduce((s, n) => s + n, 0);
   console.log('dump done moves=' + moved);
   return moved;
 }

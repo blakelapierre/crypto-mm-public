@@ -234,7 +234,7 @@ export function getMmOrderSizeUsd(cfg, mmCapital) {
 export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
   console.log('\nCombined rebalance');
   const wanted = new Set(combinedTargets.map((a) => a.symbol));
-  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 200);
+  const gap = Number(process.env.SELL_STAGGER_MS || 40);
   console.log('wallet:');
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     console.log('  ' + sym + ' amt=' + pos.amount + ' val=' + (pos.valueQuote || 0).toFixed(2) + ' ' + (wanted.has(sym) ? 'MM' : 'ORPHAN'));
@@ -274,6 +274,7 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     try { await ex.marketSell(pos.pair, sellAmt); } catch (e) { console.warn('  sell ' + sym + ' skip: ' + e.message); }
   }, gap);
   let budget = safeSpend(cfg, live.freeQuote);
+  const buyJobs = [];
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.combinedTarget;
@@ -281,33 +282,43 @@ export async function rebalanceCombined(cfg, ex, combinedTargets, live) {
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
     if (gapBuy <= tol || budget < cfg.minOrderUsd) continue;
     const spendPlan = Math.min(gapBuy, budget * 0.98);
-    const book = await ex.getBook(a.pair);
-    if (!book) continue;
-    const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
-    try {
-      if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
-    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
-    await sleep(cfg.rateLimitMs);
+    budget -= spendPlan;
+    buyJobs.push({ a, spendPlan });
   }
+  await staggerMap(buyJobs, async ({ a, spendPlan }) => {
+    try {
+      const book = await ex.getBook(a.pair);
+      if (!book) return;
+      const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
+      console.log('  MARKET BUY ' + a.symbol + ' ~' + spendPlan.toFixed(2));
+      await ex.marketBuy(a.pair, vol, spendPlan);
+    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
+  }, gap);
 }
 
 export async function rebalanceBuysAfterSettle(cfg, ex, combinedTargets, live) {
   let budget = safeSpend(cfg, live.freeQuote);
+  const gap = Number(process.env.SELL_STAGGER_MS || cfg.rateLimitMs || 40);
+  const buyJobs = [];
   for (const a of combinedTargets) {
     const heldVal = (live.positions[a.symbol] && live.positions[a.symbol].valueQuote) || 0;
     const target = a.combinedTarget;
-    const gap = target - heldVal;
+    const need = target - heldVal;
     const tol = Math.max(target * cfg.rebalanceTolerancePct, cfg.minOrderUsd);
-    if (gap <= tol || budget < cfg.minOrderUsd) continue;
-    const spendPlan = Math.min(gap, budget * 0.98);
-    const book = await ex.getBook(a.pair);
-    if (!book) continue;
-    const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
-    try {
-      if (await ex.marketBuy(a.pair, vol, spendPlan)) budget -= spendPlan;
-    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
-    await sleep(cfg.rateLimitMs);
+    if (need <= tol || budget < cfg.minOrderUsd) continue;
+    const spendPlan = Math.min(need, budget * 0.98);
+    budget -= spendPlan;
+    buyJobs.push({ a, spendPlan });
   }
+  await staggerMap(buyJobs, async ({ a, spendPlan }) => {
+    try {
+      const book = await ex.getBook(a.pair);
+      if (!book) return;
+      const vol = calculateVolume(cfg, book.mid, safeQuoteSize(cfg, spendPlan), a.ordermin, a.lotDecimals);
+      console.log('  MARKET BUY ' + a.symbol + ' ~' + spendPlan.toFixed(2));
+      await ex.marketBuy(a.pair, vol, spendPlan);
+    } catch (e) { console.warn('  buy ' + a.symbol + ' skip: ' + e.message); }
+  }, gap);
 }
 
 export async function ensureQuoteForBids(cfg, ex, mmAlloc, live) {
@@ -323,18 +334,21 @@ export async function ensureQuoteForBids(cfg, ex, mmAlloc, live) {
     return { a, held: Number(pos.valueQuote || 0), amt: Number(pos.amount || 0) };
   }).sort((x, y) => y.held - x.held);
   console.log('free quote for bids: sell $' + deficit.toFixed(2) + ' from heavy names');
+  const jobs = [];
   for (const row of ranked) {
     if (deficit <= 0) break;
     if (row.held < (cfg.minOrderUsd || 1) * 2 || row.amt <= 0) continue;
     const take = Math.min(deficit, row.held * 0.35);
-    const book = await ex.getBook(row.a.pair).catch(() => null);
-    const mid = (book && book.mid) || (row.amt ? row.held / row.amt : 0);
+    const mid = row.amt ? row.held / row.amt : 0;
     if (!(mid > 0)) continue;
     const sellAmt = formatVolume(take / mid, row.a.lotDecimals);
     if (sellAmt < (row.a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05)) continue;
-    console.log('  MARKET SELL ' + sellAmt + ' ' + row.a.symbol + ' to fund bids ~$' + take.toFixed(2));
-    try { await ex.marketSell(row.a.pair, sellAmt); deficit -= take; } catch (e) { console.warn('  fund-bid sell', e.message); }
-    await sleep(cfg.rateLimitMs || 200);
+    deficit -= take;
+    jobs.push({ row, sellAmt, take });
   }
+  await staggerMap(jobs, async ({ row, sellAmt, take }) => {
+    console.log('  MARKET SELL ' + sellAmt + ' ' + row.a.symbol + ' to fund bids ~$' + take.toFixed(2));
+    try { await ex.marketSell(row.a.pair, sellAmt); } catch (e) { console.warn('  fund-bid sell', e.message); }
+  }, Number(process.env.SELL_STAGGER_MS || 40));
   return live;
 }
