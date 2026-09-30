@@ -115,7 +115,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
       const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
-      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || 24);
+      const maxPairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_MAX_PAIRS || cfg.mmMaxPairs || 4));
+      const hardMax = maxPairs;
       const levels = Math.max(1, cfg.mmLevels || 1);
       await sleep(Number(process.env.VOL_ENTER_WAIT_MS || 0));
       while (true) {
@@ -143,12 +144,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             else keep.push(a);
           }
           keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
-          while (keep.length > hardMax) {
-            const weak = keep[keep.length - 1];
-            const wr = Number((volStatsForSymbol(weak.symbol) || {}).rangePct || 0);
-            if (wr >= enterPct) break;
-            leaving.push(keep.pop());
-          }
+          while (keep.length > hardMax) leaving.push(keep.pop());
           const have = new Set(keep.map((a) => a.pair));
           const additions = [];
           const scored = ranked.map((r) => {
@@ -163,7 +159,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const watched = watch.has(r.pair);
             const hot = Number(r.rangePct || 0) >= enterPct;
             if (!hot && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
-            if (!hot && keep.length + additions.length >= hardMax) continue;
+            if (keep.length + additions.length >= hardMax) continue;
             if (!(r.pair && r.symbol)) continue;
             additions.push(r);
           }
