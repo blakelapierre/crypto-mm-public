@@ -4,7 +4,7 @@ import { applySpreadFromFees, joinTouchForPair, assumedMakerFeeBps, realizedFeeB
 import { sizeWeightForSymbol, volStatsForSymbol } from '../../shared/vol-scan.js';
 import { tapeSizeMult, tapeEdgeBps, markRipSell, inRipCooldown } from '../../shared/pair-tape.js';
 import { backtestRungs } from '../../shared/rungs.js';
-import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
+import { midRing, noteMid, midReturn, midRangePct } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
 import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
@@ -24,12 +24,20 @@ function rangeFrac(symbol) {
   const vs = volStatsForSymbol(symbol);
   return vs && vs.rangePct > 0 ? vs.rangePct / 100 : 0;
 }
+function liveRangeFrac(symbol) {
+  const pct = midRangePct(symbol, Number(process.env.LIVE_WEIGHT_MS || 60000));
+  return pct > 0 ? pct / 100 : 0;
+}
+function deadTape(symbol) {
+  return liveRangeFrac(symbol) < Number(process.env.DEAD_RANGE_PCT || 0.0035);
+}
 function rungHint(pair, symbol) {
   if (String(process.env.RUNG_BACKTEST || '1') === '0') return null;
   return backtestRungs(midRing(symbol), realizedFeeBps(pair));
 }
-function ladderLevelCount(cfg, range, hint = null) {
-  if (hint && hint.levels) return hint.levels;
+function ladderLevelCount(cfg, range, hint = null, symbol = null) {
+  if (symbol && deadTape(symbol)) return 1;
+  if (hint && hint.levels && !(symbol && deadTape(symbol))) return hint.levels;
   let n = cfg.mmLevels || 1;
   if (range >= Number(process.env.MM_VOL_RANGE_MIN || 0.02)) n = Math.max(n, Number(process.env.MM_VOL_LEVELS || 3));
   return n;
@@ -39,7 +47,7 @@ function gridStep(cfg, pair, symbol) {
   const feeStep = applySpreadFromFees(cfg, pair) / 10000;
   if (hint && hint.stepBps) return Math.max(feeStep, hint.stepBps / 10000);
   const range = rangeFrac(symbol);
-  const levels = ladderLevelCount(cfg, range, hint);
+  const levels = ladderLevelCount(cfg, range, hint, symbol);
   const widen = Number(process.env.MM_RANGE_WIDEN || 0.5);
   let step = feeStep * (1 + range * widen / Math.max(feeStep, 1e-6) * 0.01);
   step = Math.max(feeStep, step);
@@ -77,7 +85,7 @@ function exitStep(cfg, pair, symbol) {
 export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null, symbol = null, live = null) {
   const hint = rungHint(pair, symbol);
   const step = gridStep(cfg, pair, symbol);
-  const levels = ladderLevelCount(cfg, rangeFrac(symbol), hint);
+  const levels = ladderLevelCount(cfg, rangeFrac(symbol), hint, symbol);
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
   const sk = inventorySkew(live, symbol);
   const bidOff = step * (1 + sk);
@@ -194,9 +202,9 @@ function resizeLeg(cfg, a, o, live) {
     return formatVolume(size, a.lotDecimals);
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
-  const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
+  const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
-  const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 10000)) < 0;
+  const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
   const riseHold = rising && !dropping30 ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
   const key = String(a.symbol || '').toUpperCase();
   const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
@@ -206,7 +214,7 @@ function resizeLeg(cfg, a, o, live) {
     if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
     else prev.usd = heldUsd * riseHold;
   } else if (dropping30 && holdStart.has(key)) {
-    console.log('  HOLD EXIT ' + a.symbol + ' ' + (Number(process.env.HOLD_EXIT_MS || 10000) / 1000) + 's down — sell reserved at touch');
+    console.log('  HOLD EXIT ' + a.symbol + ' fade — sell reserved at touch');
     holdStart.delete(key);
   }
   const budget = (held * hair * (1 - riseHold)) / nSell;
@@ -584,7 +592,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const state = pairState.get(a.pair);
   const ladder = state.ladder;
-  const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol));
+  const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol);
   const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
   const tooNew = Date.now() - (state.bornAt || 0) < 120000;
   if (wantLv > haveLv && !tooNew) {
@@ -596,6 +604,17 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
       ladder.buys.push(...extraB);
       ladder.sells.push(...extraS);
       await placeLadder(cfg, ex, a.pair, { buys: extraB, sells: extraS }, a, getLive);
+    }
+  }
+  if (wantLv < haveLv) {
+    const drop = [...ladder.buys, ...ladder.sells].filter((o) => o.status === 'open' && Number(o.level) > wantLv);
+    if (drop.length) {
+      console.log('  COLLAPSE ' + a.symbol + ' L' + haveLv + ' -> L' + wantLv);
+      await Promise.all(drop.map(async (o) => {
+        try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+        o.status = 'cancelled';
+        logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why: 'dead-tape', mid: book.mid });
+      }));
     }
   }
   const before = new Map([...ladder.buys, ...ladder.sells].filter((o) => o.orderId).map((o) => [o.orderId, o.status]));
@@ -655,7 +674,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     const tickN = Number(tick) || 0;
     const stepNow = gridStep(cfg, a.pair, a.symbol);
-    const band = Math.max(tickN / (book.mid || 1), stepNow * (ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)) + 0.25));
+    const band = Math.max(tickN / (book.mid || 1), stepNow * (ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol) + 0.25));
     const keepBuy = new Set(ladder.buys.filter((o) => {
       if (!(o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN)) return false;
       return (book.mid - Number(o.price)) / book.mid <= band;
@@ -721,7 +740,7 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
-  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 10000)) < 0;
+  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
   const half = l1HalfFrac(cfg, a.pair);
   const px = (dropping && Number(book.ask) > 0)
     ? formatPrice(book.ask, a.pairDecimals)
