@@ -63,7 +63,7 @@ async function main() {
   const gap = Number(cfg.updateIntervalMs || 2000);
   while (true) {
     try {
-      if (process.env.USE_USER_WEBSOCKET !== '1') await pollOpenOrders(cfg, ex, orderRegistry, pnl);
+      try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
       live = await getLive();
       pnl.mark(live);
       for (const a of mmAlloc) {
