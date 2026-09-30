@@ -354,6 +354,12 @@ let livePairState = null;
 let liveMmAlloc = [];
 export function setLivePairState(m) { livePairState = m; }
 export function setLiveMmAlloc(arr) { liveMmAlloc = arr || []; }
+function isTopWeight(selfPair, n = 2) {
+  if (!liveMmAlloc.length) return true;
+  const ranked = [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
+  return ranked.slice(0, n).some((a) => a.pair === selfPair);
+}
+
 function heavierBare(selfPair) {
   if (!liveMmAlloc.length || !livePairState) return false;
   const self = liveMmAlloc.find((x) => x.pair === selfPair);
@@ -380,7 +386,7 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
       o.status = 'pending';
       return;
     }
-    if (Number(o.level) > 1 && heavierBare(pair)) {
+    if (Number(o.level) > 1 && (heavierBare(pair) || !isTopWeight(pair, 2))) {
       o.status = 'pending';
       return;
     }
@@ -623,20 +629,30 @@ export async function harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive)
   const rows = mmAlloc.map((a) => {
     const st = pairState.get(a.pair);
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
+    const mid = Number((st && st.lastMid) || 0);
     const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
     const sells = ((st && st.ladder && st.ladder.sells) || []).filter((o) => o.status === 'open' && o.orderId);
-    return { a, w, buys, sells, st };
+    const bidUsd = buys.reduce((s, o) => s + Number(o.price) * Number(o.size), 0);
+    return { a, w, buys, sells, st, mid, bidUsd };
   });
-  const heavy = [...rows].sort((x, y) => y.w - x.w)[0];
+  const ranked = [...rows].sort((x, y) => y.w - x.w);
+  const heavy = ranked[0];
+  const top2 = new Set(ranked.slice(0, 2).map((r) => r.a.pair));
   if (!heavy) return;
-  if (heavy.buys.length && heavy.sells.length) return;
-  const donors = rows.filter((r) => r.a.pair !== heavy.a.pair && r.w < heavy.w * 0.6 && r.buys.length);
   const jobs = [];
-  for (const d of donors) {
-    for (const o of d.buys) jobs.push({ d, o });
+  for (const r of rows) {
+    if (top2.has(r.a.pair)) continue;
+    for (const o of r.buys) {
+      const far = r.mid > 0 && (r.mid - Number(o.price)) / r.mid > 0.012;
+      if (Number(o.level) > 1 || far || !heavy.buys.length) jobs.push({ r, o, why: far ? 'far' : 'light' });
+    }
+  }
+  if (!jobs.length && !heavy.buys.length) {
+    const donor = ranked.slice(1).find((r) => r.buys.length);
+    if (donor) jobs.push({ r: donor, o: donor.buys[donor.buys.length - 1], why: 'feed-top' });
   }
   if (!jobs.length) return;
-  console.log('  HARVEST ' + jobs.length + ' bids from ' + donors.map((d) => d.a.symbol).join(',') + ' -> ' + heavy.a.symbol);
+  console.log('  HARVEST n=' + jobs.length + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2) + ' bids=' + heavy.buys.length);
   await Promise.all(jobs.map(async ({ o }) => {
     try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
     o.status = 'cancelled';
