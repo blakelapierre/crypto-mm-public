@@ -107,7 +107,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
       const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || cfg.mmMaxPairs || 8);
       const levels = Math.max(1, cfg.mmLevels || 1);
-      await sleep(Math.max(cfg.volScanMs || 60000, 30000));
+      await sleep(Number(process.env.VOL_ENTER_WAIT_MS || 15000));
       while (true) {
         try {
           const ranked = volScan.ranking();
@@ -119,7 +119,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const mid = Number(row.last || 0);
             const minV = (row.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
             const minUsd = Math.max(cfg.minOrderUsd || 1, mid > 0 ? minV * mid : cfg.minOrderUsd || 1);
-            return minUsd * levels * 2;
+            return minUsd * 2;
           }
           const keep = [];
           const leaving = [];
@@ -150,7 +150,28 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             if (Number(r.rangePct || 0) < enterPct && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (!(r.pair && r.symbol)) continue;
             const need = costOf(r);
-            if (budget < need) continue;
+            if (budget < need) {
+              const donor = [...keep].sort((x, y) => sizeWeightForSymbol(x.symbol) - sizeWeightForSymbol(y.symbol))[0];
+              if (donor && donor.pair !== r.pair) {
+                const st = pairState.get(donor.pair);
+                const bids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
+                if (bids.length) {
+                  console.log('  ENTER harvest ' + bids.length + ' bids ' + donor.symbol + ' -> ' + r.symbol);
+                  for (const o of bids) {
+                    try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+                    o.status = 'cancelled';
+                    budget += Number(o.price) * Number(o.size) || 0;
+                  }
+                  try { live = await getLive(); budget = Number(live.freeQuote || 0) * Number(process.env.VOL_ENTER_CASH_FRAC || 0.95); } catch { /* keep */ }
+                }
+              }
+            }
+            if (budget < need) {
+              if (additions.length === 0 && Number(r.rangePct || 0) >= enterPct) {
+                console.log('  ENTER skip ' + r.symbol + ' need=$' + need.toFixed(2) + ' cash=$' + budget.toFixed(2) + ' rng=' + Number(r.rangePct).toFixed(2) + '%');
+              }
+              continue;
+            }
             additions.push(r);
             budget -= need;
           }
