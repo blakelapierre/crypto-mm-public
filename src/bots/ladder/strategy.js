@@ -196,7 +196,7 @@ function resizeLeg(cfg, a, o, live) {
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
   const rising = midReturn(a.symbol) > 0;
-  const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 30000)) < 0;
+  const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 10000)) < 0;
   const riseHold = rising && !dropping30 ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
   const key = String(a.symbol || '').toUpperCase();
   const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
@@ -206,7 +206,7 @@ function resizeLeg(cfg, a, o, live) {
     if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
     else prev.usd = heldUsd * riseHold;
   } else if (dropping30 && holdStart.has(key)) {
-    console.log('  HOLD EXIT ' + a.symbol + ' 30s down — sell reserved into quote');
+    console.log('  HOLD EXIT ' + a.symbol + ' ' + (Number(process.env.HOLD_EXIT_MS || 10000) / 1000) + 's down — sell reserved at touch');
     holdStart.delete(key);
   }
   const budget = (held * hair * (1 - riseHold)) / nSell;
@@ -721,8 +721,11 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
+  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 10000)) < 0;
   const half = l1HalfFrac(cfg, a.pair);
-  const px = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
+  const px = (dropping && Number(book.ask) > 0)
+    ? formatPrice(book.ask, a.pairDecimals)
+    : clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const size = formatVolume(need * 0.95, a.lotDecimals);
   if (!(Number(size) >= minV)) return;
   console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' held=' + held.toFixed(4) + ' open=' + openQty.toFixed(4));
