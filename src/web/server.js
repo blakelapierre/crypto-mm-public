@@ -509,6 +509,16 @@ function fillsTable(b){
   const hist=h.n?('realized '+(h.bps!=null?Number(h.bps).toFixed(1):'n/a')+'bps on '+h.n+' fills · fee '+fmtN(h.fee)+' / '+fmtN(h.notional)):'';
   return '<div class="fills"><h2>Fills</h2><p class="age">'+hist+'</p><table><thead><tr><th>Time</th><th></th><th>Mkt</th><th>Price</th><th>Size</th><th>$</th><th>Fee</th><th>bps</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
+function botRank(b){const n=String(b.bot||'').toLowerCase();if(n==='ladder')return 0;if(n==='comp')return 2;return 1;}
+function sessAge(b){
+  const t0=(b.pnl&&b.pnl.startedAt)||b.startedAt||b.ts;
+  if(!t0) return '';
+  const s=Math.max(0,Math.floor((Date.now()-Number(t0))/1000));
+  if(s<90) return s+'s';
+  if(s<3600) return (s/60).toFixed(0)+'m';
+  if(s<86400) return (s/3600).toFixed(1)+'h';
+  return (s/86400).toFixed(2)+'d';
+}
 function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
@@ -523,7 +533,7 @@ function card(b){
   const q=projectOf(b);
   const t0=(b.pnl&&b.pnl.startedAt)||b.ts||Date.now();
   return '<section class="card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+
-    '</small> <span class="age">'+age+'</span></h2><div class="kpi">'+
+    ' · '+sessAge(b)+'</small> <span class="age">'+age+'</span></h2><div class="kpi">'+
     '<div><label>Wallet</label><b>'+fmt(p.walletGain)+'</b><span>'+fmtN(p.lastEquity)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet)+projLines(q,'wallet',(b.kpiSpark||{}).wallet,t0,true)+'</div>'+
     '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+projLines(q,'price',(b.kpiSpark||{}).price,t0,true)+'</div>'+
     '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+projLines(q,'maker',(b.kpiSpark||{}).maker,t0,true)+'</div>'+
@@ -536,6 +546,7 @@ function card(b){
     '<div><label>Book</label><b>$'+fmtN(Number(w.bids||0)+Number(w.asks||0))+'</b></div>'+
     '<div><label>Inventory</label><b>$'+fmtN(w.inventory)+'</b></div>'+
     '<div><label>Hold</label><b>$'+fmtN(w.holdUsd)+'</b><span>'+fmt(w.holdGain)+'</span></div>'+
+    '<div><label>Hold x</label><b>'+fmt(w.holdRealized)+'</b></div>'+
     '<div><label>Cash '+esc(b.quote||'')+'</label><b>$'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Cash on bids</label><b>$'+fmtN(w.cashHold)+'</b></div>'+
     '<div><label>Equity</label><b>$'+fmtN(w.equity||p.lastEquity)+'</b></div>'+
@@ -570,6 +581,7 @@ function boardHtml(rows){
       return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+
         sparkSvg(c.m.volSpark,null,null,{w:88,h:16})+
+        sparkSvg(c.m.rangeSpark,null,null,{w:88,h:16})+
         '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+(rng?' · '+esc(rng):'')+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+
         '<br><span class="'+netCls+'">net '+fmt(net)+'</span></div></div>';
     }).join('');
@@ -578,7 +590,7 @@ function boardHtml(rows){
     const wal=b.pnl&&b.pnl.walletGain;
     const eq=b.pnl&&b.pnl.lastEquity;
     const edge=b.edgeBps;
-    return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+'</small></h2>'+
+    return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+' · '+sessAge(b)+'</small></h2>'+
       '<div class="hdr-stats">'+
         '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>$'+fmtN(eq)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+
@@ -592,6 +604,7 @@ function boardHtml(rows){
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
         '<div class="col"><label>hold</label><b>$'+fmtN((b.working||{}).holdUsd)+'</b><span>gain '+fmt((b.working||{}).holdGain)+'</span></div>'+
         '<div class="col"><label>hold x</label><b>'+fmt((b.working||{}).holdRealized)+'</b></div>'+
+        (b.feeTier?'<div class="col"><label>tier</label><b>'+esc(b.feeTier.tier||'')+'</b><span>$'+fmtN(b.feeTier.volume)+' / $'+fmtN(b.feeTier.volTo)+'</span><span>'+(b.tierEtaH!=null?(Number(b.tierEtaH).toFixed(1)+'h to next'):'')+'</span></div>':'')+
       '</div>'+
       '<div class="hold-card">'+((b.markets||[]).filter(function(m){return Number(m.heldUsd||0)>0;}).map(function(m){
         return '<div class="hr"><b>'+esc(m.symbol)+'</b> $'+fmtN(m.heldUsd)+' <span class="'+(Number(m.heldGain)>=0?'up':'dn')+'">'+fmt(m.heldGain)+'</span></div>';
@@ -674,7 +687,7 @@ function holdHtml(rows){
   }).join('')+'</table></div>';
 }
 function render(data){
-  const rows=data.bots||[];
+  const rows=(data.bots||[]).slice().sort(function(a,c){return botRank(a)-botRank(c);});
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
   const mv=document.getElementById('movers');
   if(mv) mv.innerHTML=moversHtml(rows);
@@ -750,6 +763,9 @@ const server = http.createServer(async (req, res) => {
       noteSparks(id, msg.markets || prev.markets);
       noteVolSparks(id, msg.markets || prev.markets);
       noteRangeSparks(id, msg.movers || []);
+      noteRangeSparks(id, (msg.markets || prev.markets || []).map(function(m){
+        return { symbol: m.symbol, rangePct: parseFloat(m.vol) || m.rangePct || 0 };
+      }));
       const pnl = msg.pnl || prev.pnl || {};
       const vol = (msg.markets || prev.markets || []).reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
       noteKpiSpark(id, {

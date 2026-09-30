@@ -16,8 +16,9 @@ export function noteHoldExit(symbol, mid, usd) {
   pending.set(key, { mid: prev.qty > 0 ? (prev.mid * prev.qty + m * qty) / (prev.qty + qty) : m, qty: prev.qty + qty });
 }
 
-export function consumeHoldSale(symbol, price, size, fee) {
-  const key = String(symbol || '').toUpperCase();
+export function consumeHoldSale(symbol, price, size, fee, pair) {
+  let key = String(symbol || '').toUpperCase();
+  if (!key && pair) key = String(pair).split(/[-/]/)[0].toUpperCase();
   const lot = pending.get(key);
   if (!lot || !(lot.qty > 0)) return 0;
   const px = Number(price), qty = Number(size), f = Number(fee || 0);

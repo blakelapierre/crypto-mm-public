@@ -21,6 +21,7 @@ import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
 import { holdRealizedUsd } from '../../shared/hold-pnl.js';
+import { refreshFeeTier, feeTierSnap, etaNextTierHours } from '../../shared/fee-tier.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -321,6 +322,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd)).toFixed(2) +
         '  fills=' + fillCount);
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
+      try { await refreshFeeTier(cfg); } catch {}
       saveMmSet(mmAlloc);
       const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
       const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
@@ -345,6 +347,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),
+        feeTier: feeTierSnap(),
+        tierEtaH: etaNextTierHours((marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0)) / Math.max((snap.elapsedMs || 1) / 3600000, 1 / 60)),
         moversVol: topVolatiles(12).map((r) => ({
           symbol: r.symbol, rangePct: r.rangePct, ret: r.ret,
           spark: (midHistory(r.symbol) || []).map((x) => ({ t: x.t, p: x.mid })),
