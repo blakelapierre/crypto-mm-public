@@ -189,7 +189,8 @@ function resizeLeg(cfg, a, o, live) {
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
-  const budget = (held * hair) / nSell;
+  const riseHold = midReturn(a.symbol) > 0 ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
+  const budget = (held * hair * (1 - riseHold)) / nSell;
   let size = Number(o.size) > 0 ? Math.min(o.size, budget) : budget;
   if (size + 1e-12 < minV) {
     const floor = a.ordermin || 0;
@@ -276,6 +277,7 @@ async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
 }
 
 const pinAt = new Map();
+const pinMid = new Map();
 export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
@@ -300,9 +302,18 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
     const l1 = open.filter((o) => Number(o.level) === 1);
-    if (open.length) {
+    const move = Number(process.env.L1_REQUOTE_BPS || cfg.requoteMoveBps || 8) / 10000;
+    const lastM = pinMid.get(key);
+    const midMoved = lastM > 0 && Math.abs(mid - lastM) / lastM >= move;
+    if (open.length && !midMoved) {
       const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target));
       if (good || l1.length) return;
+    }
+    if (midMoved && l1.length) {
+      for (const o of l1) {
+        try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+        o.status = 'cancelled';
+      }
     }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
@@ -330,6 +341,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     }
     logEvent('place', { pair: a.pair, symbol: a.symbol, side, level: 1, price: target, size, orderId: r.order_id, mid });
     pinAt.set(key, Date.now());
+    pinMid.set(key, mid);
     for (const o of l1) {
       try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
       o.status = 'cancelled';

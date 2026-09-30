@@ -12,7 +12,7 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
 import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState } from './strategy.js';
-import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles } from '../../shared/vol-scan.js';
+import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles, midHistory } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
@@ -297,20 +297,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),
-        movers: (() => {
-          const map = new Map();
-          for (const r of [...topVolatiles(12), ...topMovers(12)]) {
-            const k = String(r.symbol || '').toUpperCase();
-            if (!k) continue;
-            const prev = map.get(k);
-            if (!prev) map.set(k, { ...r, symbol: k });
-            else {
-              if (Number(r.rangePct || 0) > Number(prev.rangePct || 0)) prev.rangePct = r.rangePct;
-              if (Math.abs(Number(r.ret || 0)) > Math.abs(Number(prev.ret || 0))) prev.ret = r.ret;
-            }
-          }
-          return [...map.values()];
-        })(),
+        moversVol: topVolatiles(12).map((r) => ({
+          symbol: r.symbol, rangePct: r.rangePct, ret: r.ret,
+          spark: (midHistory(r.symbol) || []).map((x) => ({ t: x.t, p: x.mid })),
+        })),
+        moversPrice: topMovers(12).map((r) => ({
+          symbol: r.symbol, rangePct: r.rangePct, ret: r.ret,
+          spark: (midHistory(r.symbol) || []).map((x) => ({ t: x.t, p: x.mid })),
+        })),
       });
     } finally { emitStatus.busy = false; }
   }

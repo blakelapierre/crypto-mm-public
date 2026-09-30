@@ -14,14 +14,26 @@ function botName() {
 
 const SHAPE_LIST = [
   ['session', 'ts', 'bot', 'exchange', 'quote'],
-  ['place', 'ts', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'id', 'mid'],
+  ['place', 'ts', 'symbol', 'side', 'level', 'price', 'size', 'id', 'mid'],
   ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps', 'mid'],
   ['fill', 'ts', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
   ['fee', 'ts', 'id', 'pair', 'fee', 'notional'],
   ['kpi', 'ts', 'wallet', 'price', 'maker', 'fees', 'taker', 'gap', 'bank', 'equity', 'cash', 'inv', 'fills'],
+  ['day', 'date'],
 ];
 const SHAPE_ID = Object.fromEntries(SHAPE_LIST.map((s, i) => [s[0], i]));
 
+let dayKey = null;
+function packTs(iso) {
+  const d = new Date(iso);
+  const key = d.toISOString().slice(0, 10);
+  const start = Date.parse(key + 'T00:00:00.000Z');
+  if (dayKey !== key) {
+    dayKey = key;
+    try { writeBoth([SHAPE_ID.day, key]); } catch { /* ignore */ }
+  }
+  return d.getTime() - start;
+}
 function packRow(kind, obj) {
   const id = SHAPE_ID[kind];
   const spec = id == null ? null : SHAPE_LIST[id];
@@ -29,7 +41,9 @@ function packRow(kind, obj) {
   if (row.id == null && row.orderId) row.id = row.orderId;
   if (row.feeSrc == null && row.feeSource) row.feeSrc = row.feeSource;
   if (!spec) return [kind, row];
-  return [id, ...spec.slice(1).map((k) => (row[k] == null ? null : row[k]))];
+  const vals = spec.slice(1).map((k) => (row[k] == null ? null : row[k]));
+  if (spec[1] === 'ts') vals[0] = packTs(row.ts);
+  return [id, ...vals];
 }
 
 function filePath() {
