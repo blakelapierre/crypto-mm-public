@@ -46,6 +46,16 @@ export function shortRun(symbol) {
   return midReturn(symbol, Number(process.env.SHORT_RUN_MS || 180000));
 }
 
+export function midRangePct(symbol, windowMs = Number(process.env.LIVE_WEIGHT_MS || 60000)) {
+  const arr = midRing(symbol);
+  const cut = Date.now() - windowMs;
+  const pts = arr.filter((x) => x.t >= cut && Number(x.p) > 0);
+  if (pts.length < 3) return 0;
+  const mids = pts.map((x) => Number(x.p));
+  const lo = Math.min(...mids), hi = Math.max(...mids), last = mids[mids.length - 1];
+  return last > 0 ? ((hi - lo) / last) * 100 : 0;
+}
+
 const trendEma = new Map();
 export function trendMult(symbol) {
   const ret = midReturn(symbol);

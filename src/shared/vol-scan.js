@@ -1,4 +1,4 @@
-import { trendMult } from './mid-ring.js';
+import { trendMult, midReturn, midRangePct } from './mid-ring.js';
 import fs from 'fs';
 import path from 'path';
 import { setTimeout as sleep } from 'timers/promises';
@@ -140,16 +140,24 @@ export function setSizeUniverse(symbols) {
 }
 
 export function sizeWeightForSymbol(sym) {
-  if (!lastScore.size) return 1;
   const key = String(sym || '').toUpperCase();
+  const win = Number(process.env.LIVE_WEIGHT_MS || 60000);
   const names = universe.length ? universe : [...lastScore.keys()];
-  const scores = names.map((s) => Math.max(1e-9, lastScore.get(s) || 0));
+  const list = names.length ? names : [key];
+  const kTrend = Number(process.env.LIVE_TREND_GAIN || 40);
+  function score(s) {
+    const rng = midRangePct(s, win);
+    const ret = midReturn(s, win);
+    const rise = Math.max(0.15, 1 + ret * kTrend);
+    const scan = lastScore.get(String(s).toUpperCase()) || 0;
+    return Math.max(1e-9, (rng > 0 ? rng : scan * 0.05) * rise);
+  }
+  const scores = list.map(score);
   const sum = scores.reduce((a, b) => a + b, 0);
   if (!(sum > 0)) return 1;
-  const mine = Math.max(1e-9, lastScore.get(key) || sum / names.length);
-  const n = Math.max(1, names.length);
-  const raw = Math.min(3, Math.max(0.35, (mine / sum) * n));
-  return raw * trendMult(key);
+  const mine = score(key);
+  const n = Math.max(1, list.length);
+  return Math.min(4, Math.max(0.12, (mine / sum) * n));
 }
 
 export function volStatsForSymbol(sym) {
