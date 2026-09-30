@@ -248,6 +248,11 @@ function clampAwayFromMid(mid, px, side, half, decimals) {
   while (side === 'sell' && mid > 0 && (p - mid) / mid + 1e-12 < half && guard++ < 20) p = Number(formatPrice(p + inc, decimals));
   return formatPrice(p, decimals);
 }
+function quoteClear(mid, px, side, half) {
+  const p = Number(px);
+  if (!(mid > 0) || !(p > 0) || !(half > 0)) return false;
+  return side === 'sell' ? (p - mid) / mid >= half * 0.98 : (mid - p) / mid >= half * 0.98;
+}
 
 async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
   if (!pairState) return false;
@@ -361,10 +366,12 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
     if (!(r && r.order_id) && state) state.lastEnsureAt = Date.now();
     await sleep(cfg.rateLimitMs);
   }
-  if (!openS) await place('sell', formatPrice((book && (book.ask || book.mid)) || 0, a.pairDecimals));
+  const mid = Number((book && book.mid) || 0);
+  const half = l1HalfFrac(cfg, a.pair);
+  if (!openS && mid > 0) await place('sell', clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals));
   const cap = live ? inventoryCapUsd(live) : 0;
   const held = live ? inventoryUsd(live, a.symbol) : 0;
-  if (!openB && !buyGate && !(cap > 0 && held >= cap)) await place('buy', formatPrice((book && (book.bid || book.mid)) || 0, a.pairDecimals));
+  if (!openB && !buyGate && !(cap > 0 && held >= cap) && mid > 0) await place('buy', clampAwayFromMid(mid, mid * (1 - half), 'buy', half, a.pairDecimals));
 }
 
 let livePairState = null;
@@ -417,6 +424,11 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
       if (!resized) { o.status = 'failed'; return; }
       if (resized !== o.size) { o.size = resized; }
     }
+    if (Number(o.price) * Number(o.size) < 0.4) { o.status = 'pending'; return; }
+    const midNow = Number((livePairState && livePairState.get(pair) && livePairState.get(pair).lastMid) || o.price);
+    const halfNow = l1HalfFrac(cfg, pair);
+    o.price = clampAwayFromMid(midNow, o.price, o.side, halfNow, a ? a.pairDecimals : 6);
+    if (!quoteClear(midNow, o.price, o.side, halfNow)) { o.status = 'pending'; return; }
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r && r.order_id) {
       o.orderId = r.order_id; o.status = 'open';
@@ -444,7 +456,11 @@ async function slideSameSide(cfg, ex, a, ladder, filledLeg, book = null) {
   const sideLegs = filledLeg.side === 'buy' ? ladder.buys : ladder.sells;
   const working = sideLegs.filter((o) => o.status === 'open');
   if (working.length >= cfg.slideMaxLegsPerSide) return;
-  const price = nextSlidePrice(cfg, filledLeg, a.pairDecimals, a.pair, a.symbol);
+  const mid = Number((book && book.mid) || filledLeg.price);
+  const half = l1HalfFrac(cfg, a.pair);
+  const raw = nextSlidePrice(cfg, filledLeg, a.pairDecimals, a.pair, a.symbol);
+  const price = clampAwayFromMid(mid, raw, filledLeg.side, half, a.pairDecimals);
+  if (!quoteClear(mid, price, filledLeg.side, half)) return;
   const maxLevel = sideLegs.reduce((m, o) => Math.max(m, o.level || 0), 0);
   const neu = { level: maxLevel + 1, side: filledLeg.side, price, size: filledLeg.size, orderId: null, status: 'pending' };
   console.log('  SLIDE ' + neu.side.toUpperCase() + ' ' + a.symbol + ' ' + neu.size + ' @ ' + neu.price);
@@ -460,10 +476,14 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
   const others = otherSide === 'sell' ? ladder.sells : ladder.buys;
   const open = others.filter((o) => o.status === 'open' && o.orderId);
   const step = exitStep(cfg, a.pair, a.symbol);
+  const mid = Number((livePairState && livePairState.get(a.pair) && livePairState.get(a.pair).lastMid) || filledLeg.price);
+  const half = l1HalfFrac(cfg, a.pair);
   if (!open.length) {
-    const price = filledLeg.side === 'buy'
-      ? formatPrice(filledLeg.price * (1 + step), a.pairDecimals)
-      : formatPrice(filledLeg.price * (1 - step), a.pairDecimals);
+    const raw = filledLeg.side === 'buy'
+      ? filledLeg.price * (1 + Math.max(step, half * 2))
+      : filledLeg.price * (1 - Math.max(step, half * 2));
+    const price = clampAwayFromMid(mid, raw, otherSide, half, a.pairDecimals);
+    if (!quoteClear(mid, price, otherSide, half)) return;
     const neu = { level: 1, side: otherSide, price, size: filledLeg.size, orderId: null, status: 'pending' };
     const r = await ex.limitOrder(a.pair, neu.side, neu.price, neu.size, { level: neu.level });
     if (r && r.order_id) { neu.orderId = r.order_id; neu.status = 'open'; } else neu.status = 'failed';
@@ -473,10 +493,11 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
   const best = otherSide === 'sell'
     ? open.reduce((b, o) => (o.price < b.price ? o : b))
     : open.reduce((b, o) => (o.price > b.price ? o : b));
-  const newPx = otherSide === 'sell'
-    ? formatPrice(best.price * (1 - step), a.pairDecimals)
-    : formatPrice(best.price * (1 + step), a.pairDecimals);
-  if (newPx === best.price) return;
+  const rawPx = otherSide === 'sell'
+    ? best.price * (1 - step)
+    : best.price * (1 + step);
+  const newPx = clampAwayFromMid(mid, rawPx, otherSide, half, a.pairDecimals);
+  if (newPx === best.price || !quoteClear(mid, newPx, otherSide, half)) return;
   await ex.cancelOrder(best.orderId);
   best.status = 'cancelled';
   const r = await ex.limitOrder(a.pair, otherSide, newPx, best.size, { level: best.level });
