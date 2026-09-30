@@ -199,8 +199,9 @@ const PAGE = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
-#shell{display:flex;align-items:flex-start;gap:12px;padding:10px 14px 0}
-#pin{flex:1;min-width:0;max-height:40vh;overflow-y:auto;background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:20}
+#chrome{position:sticky;top:0;z-index:30;background:#0e1116;padding:10px 14px 6px}
+#shell{display:flex;align-items:flex-start;gap:12px;padding:0 14px 0}
+#pin{flex:1;min-width:0;max-height:40vh;overflow-y:auto;background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d}
 #bank.bank-card{position:sticky;top:10px;flex:0 0 240px;max-height:40vh;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
@@ -276,10 +277,12 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </style>
 </head>
 <body>
-<div id="shell">
-<div id="pin">
+<div id="chrome">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
+</div>
+<div id="shell">
+<div id="pin">
 <div id="movers" class="movers"></div>
 <div id="top-row">
 <div id="board" class="board"></div>

@@ -81,7 +81,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     const book = books.get(info.pair) || null;
     if (!book) continue;
     pos.mid = book.mid;
-    pos.valueQuote = pos.amount * book.mid;
+    pos.valueQuote = (Number(pos.amount || 0) + Number(pos.hold || 0)) * book.mid;
     Object.assign(pos, info);
     if (pos.valueQuote < cfg.dustUsd) continue;
     positionsValue += pos.valueQuote;
