@@ -66,7 +66,7 @@ function finish(cur, sessions) {
   });
 }
 
-export function summarizeSessions({ limit = 24 } = {}) {
+export function summarizeSessions({ limit = 24 } = {}) { // per bot
   const root = logsRoot();
   const files = listLogFiles(root);
   const sessions = [];
@@ -141,8 +141,19 @@ export function summarizeSessions({ limit = 24 } = {}) {
     }
   }
   finish(cur, sessions);
-  sessions.sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
-  return sessions.slice(0, limit);
+  const by = new Map();
+  for (const s of sessions) {
+    const k = String(s.bot || 'bot');
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(s);
+  }
+  const out = [];
+  for (const list of by.values()) {
+    list.sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
+    out.push(...list.slice(0, limit));
+  }
+  out.sort((a, b) => String(a.bot || '').localeCompare(String(b.bot || '')) || String(b.start || '').localeCompare(String(a.start || '')));
+  return out;
 }
 
 let cache = { at: 0, rows: [] };

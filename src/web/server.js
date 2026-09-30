@@ -301,6 +301,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <div id="bank" class="bank-card"></div>
 </div>
 <div id="root"></div>
+<div id="sessions"></div>
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Number(n);return (x>=0?'+':'')+x.toFixed(4);}
@@ -531,12 +532,16 @@ function sessAge(b){
 }
 function sessionsHtml(rows){
   if(!rows||!rows.length) return '';
-  const body=rows.slice(0,20).map(function(s){
-    const when=(s.start||'').replace('T',' ').slice(5,16);
-    const mins=s.mins!=null?s.mins.toFixed(0)+'m':'';
-    return '<tr><td>'+esc(when)+'</td><td>'+esc(s.bot)+'</td><td>'+mins+'</td><td>'+fmt(s.wallet)+'</td><td>'+fmt(s.price)+'</td><td>'+fmt(s.maker)+'</td><td>'+fmt(s.fees!=null?-s.fees:null)+'</td><td>'+fmt(s.net)+'</td><td>'+fmtN(s.vol)+'</td><td>'+(s.fills||0)+'</td><td>'+(s.parks||0)+'</td><td>'+esc((s.top||[]).join(', '))+'</td></tr>';
+  const groups={};
+  rows.forEach(function(s){const k=s.bot||'bot';(groups[k]=groups[k]||[]).push(s);});
+  return Object.keys(groups).sort().map(function(bot){
+    const body=groups[bot].slice(0,24).map(function(s){
+      const when=(s.start||'').replace('T',' ').slice(5,16);
+      const mins=s.mins!=null?s.mins.toFixed(0)+'m':'';
+      return '<tr><td>'+esc(when)+'</td><td>'+mins+'</td><td>'+fmt(s.wallet)+'</td><td>'+fmt(s.price)+'</td><td>'+fmt(s.maker)+'</td><td>'+fmt(s.fees!=null?-s.fees:null)+'</td><td>'+fmt(s.net)+'</td><td>'+fmtN(s.vol)+'</td><td>'+(s.fills||0)+'</td><td>'+(s.parks||0)+'</td><td>'+esc((s.top||[]).join(', '))+'</td></tr>';
+    }).join('');
+    return '<div class="sess"><h2>'+esc(bot)+' sessions</h2><table><thead><tr><th>start</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
   }).join('');
-  return '<div class="sess"><h2>Sessions</h2><table><thead><tr><th>start</th><th>bot</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function liveCfgForm(b){
   const rows=b.liveConfig||[];
@@ -729,7 +734,9 @@ function render(data){
   const mv=document.getElementById('movers');
   if(mv) mv.innerHTML=moversHtml(rows);
   const board=document.getElementById('board');
-  if(board) board.innerHTML=boardHtml(rows)+(data.sessions?sessionsHtml(data.sessions):'');
+  if(board) board.innerHTML=boardHtml(rows);
+  const sess=document.getElementById('sessions');
+  if(sess) sess.innerHTML=data.sessions?sessionsHtml(data.sessions):'';
   const bank=document.getElementById('bank');
   if(bank){
     const snap=JSON.stringify((rows||[]).map(function(b){return b.bankHoldings||[];}));
