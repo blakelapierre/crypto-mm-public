@@ -18,7 +18,7 @@ import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
 import { postStatus, postMids } from '../../shared/status-client.js';
-import { logSession } from '../../shared/fill-log.js';
+import { logSession, logKpi } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
@@ -196,7 +196,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     saveMmSet(mmAlloc);
     const mids = {};
     for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
-    pnl.print(mids, 'MM gain on stop');
+    const snap = pnl.print(mids, 'MM gain on stop');
+    const fills = (snap && snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
+    try { logKpi(snap || {}, { fills }); } catch {}
     ws.close(); process.exit(0);
   });
   async function emitStatus() {
@@ -243,7 +245,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           fee: fee != null ? fee.toFixed(1) + 'bps' : 'n/a',
           w: w.toFixed(2) + 'x', wNum: w, orders,
           pricePnl: book.price || 0, makerPnl: book.maker || 0, fees: book.fees || 0,
+          fills: book.fills || 0,
           edgeBps: tapeEdgeBps(a.pair),
+          invUsd: Number((liveSnap && liveSnap.positions && liveSnap.positions[a.symbol] && liveSnap.positions[a.symbol].valueQuote) || 0),
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
@@ -260,19 +264,23 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
       const quoteHold = liveSnap ? Number(liveSnap.quoteHold || 0) : 0;
+      const fillCount = (snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
       const wallet = [];
       const qAmt = cashUsd + quoteHold;
       wallet.push({ asset: cfg.quote, amount: qAmt, mid: 1, value: qAmt });
       const pos = (liveSnap && liveSnap.positions) || {};
       for (const [sym, p0] of Object.entries(pos)) {
-        const amt = Number(p0.amount || 0);
+        const amt = Number(p0.amount || 0) + Number(p0.hold || 0);
         const mid = Number(p0.mid || mids[sym] || 0);
         const value = Number(p0.valueQuote != null ? p0.valueQuote : amt * mid);
         wallet.push({ asset: sym, amount: amt, mid, value });
       }
       wallet.sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
-        '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2));
+        '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
+        '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd)).toFixed(2) +
+        '  fills=' + fillCount);
+      try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
       saveMmSet(mmAlloc);
       const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
       const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
@@ -287,7 +295,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       postStatus({
         bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
         pnl: snap, markets: marketRows, wallet, proj,
-        working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd },
+        working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold, equity: Number((liveSnap && liveSnap.totalEquity) || 0), fills: fillCount },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),

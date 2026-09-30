@@ -506,7 +506,7 @@ function card(b){
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
     '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+(m.edgeBps==null?'':((Number(m.edgeBps)>=0?'+':'')+Number(m.edgeBps).toFixed(0)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
-    '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
+    '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.invUsd)+'</td><td>'+fmtN(m.fills)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
     '<tr class="orders"><td></td><td colspan="11">'+orderBook(m)+'</td></tr>'
   ).join('');
@@ -525,15 +525,18 @@ function card(b){
     '<div><label>Buy orders</label><b>$'+fmtN(w.bids)+'</b></div>'+
     '<div><label>Sell orders</label><b>$'+fmtN(w.asks)+'</b></div>'+
     '<div><label>Book</label><b>$'+fmtN(Number(w.bids||0)+Number(w.asks||0))+'</b></div>'+
-    '<div><label>Inventory</label><b>'+fmtN(w.inventory)+'</b></div>'+
-    '<div><label>Cash</label><b>'+fmtN(w.cash)+'</b></div>'+
+    '<div><label>Inventory</label><b>$'+fmtN(w.inventory)+'</b></div>'+
+    '<div><label>Cash '+esc(b.quote||'')+'</label><b>$'+fmtN(w.cash)+'</b></div>'+
+    '<div><label>Cash on bids</label><b>$'+fmtN(w.cashHold)+'</b></div>'+
+    '<div><label>Equity</label><b>$'+fmtN(w.equity||p.lastEquity)+'</b></div>'+
+    '<div><label>Fills</label><b>'+(w.fills!=null?String(w.fills):String((b.fills||[]).length))+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+
     '<div><label>Vol</label><b>'+fmtN(sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd'))+'</b>'+sparkSvg((b.kpiSpark||{}).vol)+projLines(q,'vol',(b.kpiSpark||{}).vol,t0,false)+'</div>'+
     '<div><label>Bank run</label><b>'+fmt(b.bankedRun)+'</b>'+sparkSvg((b.kpiSpark||{}).bank)+projLines(q,'bank',(b.kpiSpark||{}).bank,t0,true)+'</div>'+
     '<div><label>Edge 1h</label><b>'+(b.edgeBps==null?'n/a':(Number(b.edgeBps)>=0?'+':'')+Number(b.edgeBps).toFixed(0)+'bps')+'</b></div></div>'+
     
-    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>edge</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
+    '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>edge</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>inv$</th><th>fills</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
     (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+fillsTable(b)+apiBlock(b)+'</section>';
 }
 function boardHtml(rows){
@@ -573,6 +576,9 @@ function boardHtml(rows){
         '<div class="col"><label>buys</label><b>$'+fmtN((b.working||{}).bids)+'</b></div>'+
         '<div class="col"><label>sells</label><b>$'+fmtN((b.working||{}).asks)+'</b></div>'+
         '<div class="col"><label>book</label><b>$'+fmtN(Number((b.working||{}).bids||0)+Number((b.working||{}).asks||0))+'</b></div>'+
+        '<div class="col"><label>cash</label><b>$'+fmtN((b.working||{}).cash)+'</b></div>'+
+        '<div class="col"><label>inv</label><b>$'+fmtN((b.working||{}).inventory)+'</b></div>'+
+        '<div class="col"><label>fills</label><b>'+((b.working&&b.working.fills)!=null?String(b.working.fills):'0')+'</b></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
       '</div>'+
       '<div class="sparks">'+inner+'</div></section>';

@@ -30,7 +30,9 @@ export function noteBankedUsd(n, kind = 'run') {
   if (kind === 'startup') bankedStartUsd += v;
 }
 
+let cachedPorts = null;
 export async function resolvePortfolios(cfg) {
+  if (cachedPorts && cachedPorts.source && cachedPorts.bank) return cachedPorts;
   let perms = {};
   try {
     perms = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/key_permissions');
@@ -60,7 +62,8 @@ export async function resolvePortfolios(cfg) {
   }
   console.log('bank source=' + source.name + ' (' + source.uuid + ') -> ' + bank.name + ' (' + bank.uuid + ') transfer=' + perms.can_transfer);
   lastBankUuid = bank.uuid;
-  return { source, bank };
+  cachedPorts = { source, bank };
+  return cachedPorts;
 }
 
 async function moveFunds(cfg, sourceUuid, targetUuid, currency, value) {

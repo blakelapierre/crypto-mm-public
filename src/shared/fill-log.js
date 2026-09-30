@@ -18,6 +18,7 @@ const SHAPE_LIST = [
   ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps', 'mid'],
   ['fill', 'ts', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
   ['fee', 'ts', 'id', 'pair', 'fee', 'notional'],
+  ['kpi', 'ts', 'wallet', 'price', 'maker', 'fees', 'taker', 'gap', 'bank', 'equity', 'cash', 'inv', 'fills'],
 ];
 const SHAPE_ID = Object.fromEntries(SHAPE_LIST.map((s, i) => [s[0], i]));
 
@@ -130,4 +131,22 @@ export function logFill(rec, extra = {}) {
   } catch (e) {
     console.warn('fill log', e.message);
   }
+}
+
+export function logKpi(snap = {}, extra = {}) {
+  try {
+    writeBoth(packRow('kpi', {
+      wallet: snap.walletGain,
+      price: snap.pricePnl,
+      maker: snap.makerPnl,
+      fees: snap.fees,
+      taker: snap.takerFees,
+      gap: snap.otherPnl,
+      bank: extra.bank,
+      equity: snap.lastEquity,
+      cash: extra.cash,
+      inv: extra.inv,
+      fills: extra.fills,
+    }));
+  } catch (e) { console.warn('kpi log', e.message); }
 }
