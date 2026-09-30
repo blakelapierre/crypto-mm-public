@@ -31,6 +31,19 @@ function liveRangeFrac(symbol) {
 function deadTape(symbol) {
   return liveRangeFrac(symbol) < Number(process.env.DEAD_RANGE_PCT || 0.0035);
 }
+function riseStrength(symbol) {
+  const r1 = midReturn(symbol, Number(process.env.LIVE_WEIGHT_MS || 60000));
+  const r15 = midReturn(symbol);
+  if (r1 <= 0 && r15 <= 0) return 0;
+  return Math.max(0, r1, r15 * 0.25);
+}
+function riseHoldFrac(symbol) {
+  const s = riseStrength(symbol);
+  if (!(s > 0) || deadTape(symbol)) return 0;
+  const base = Number(process.env.RISE_INV_HOLD || 0.08);
+  const extra = Math.min(0.17, s * 10);
+  return Math.min(Number(process.env.RISE_INV_HOLD_MAX || 0.25), base + extra);
+}
 function rungHint(pair, symbol) {
   if (String(process.env.RUNG_BACKTEST || '1') === '0') return null;
   return backtestRungs(midRing(symbol), realizedFeeBps(pair));
@@ -91,7 +104,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const bidOff = step * (1 + sk);
   const askOff = step * (1 - sk);
   const rising = symbol && midReturn(symbol) > 0;
-  const sellHalf = rising ? riseSellHalf(cfg, pair) : l1HalfFrac(cfg, pair);
+  const sellHalf = rising ? riseSellHalf(cfg, pair, symbol) : l1HalfFrac(cfg, pair);
   const inv0 = Number((live && live.positions && live.positions[symbol] && (Number(live.positions[symbol].amount || 0) + Number(live.positions[symbol].hold || 0))) || 0);
   const useBook = false;
   let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
@@ -205,7 +218,7 @@ function resizeLeg(cfg, a, o, live) {
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
   const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
-  const riseHold = rising && !dropping30 ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
+  const riseHold = rising && !dropping30 ? riseHoldFrac(a.symbol) : 0;
   const key = String(a.symbol || '').toUpperCase();
   const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
   const heldUsd = held * (midPx || Number(o.price) || 0);
@@ -265,10 +278,12 @@ function l1HalfFrac(cfg, pair) {
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
   return (feeBps + edge) / 10000;
 }
-function riseSellHalf(cfg, pair) {
+function riseSellHalf(cfg, pair, symbol) {
   const feeBps = Number(realizedFeeBps(pair) != null ? realizedFeeBps(pair) : assumedMakerFeeBps(cfg));
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
-  return (feeBps * 2 + edge) / 10000;
+  const s = riseStrength(symbol);
+  const extra = Math.min(Number(process.env.RISE_SELL_EXTRA_BPS || 40), s * 2500);
+  return (feeBps * 2 + edge + extra) / 10000;
 }
 const holdStart = new Map();
 export function holdInfo(symbol, mid) {
@@ -322,7 +337,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
   const rising = midReturn(a.symbol) > 0;
-  const half = rising ? riseSellHalf(cfg, a.pair) : l1HalfFrac(cfg, a.pair);
+  const half = rising ? riseSellHalf(cfg, a.pair, a.symbol) : l1HalfFrac(cfg, a.pair);
   let inv0 = 0;
   if (getLive) {
     try {
