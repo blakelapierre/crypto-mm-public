@@ -756,6 +756,14 @@ function connect(){
 }
 const TOKEN_Q=${JSON.stringify(TOKEN ? '?token=' + TOKEN : '')};
 fetch('/api/status').then(r=>r.json()).then(render).catch(()=>{});
+window.__saveCfg=function(ev){
+  ev.preventDefault();
+  const f=ev.target;
+  const values={};
+  f.querySelectorAll('input[data-k]').forEach(function(i){values[i.getAttribute('data-k')]=i.value;});
+  fetch('/live-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot:f.getAttribute('data-bot'),values:values})}).then(function(){f.querySelector('button').textContent='Queued';});
+  return false;
+};
 connect();
 </script>
 </body></html>`;
