@@ -2,6 +2,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { loadProjectEnv } from '../shared/env.js';
 import { backtestRungs } from '../shared/rungs.js';
+import { cachedSessionSummaries } from '../shared/session-summary.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
 
@@ -244,7 +245,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .book-wrap{display:flex;gap:12px;align-items:flex-start}
 .book-wrap .mfills{font-size:11px;min-width:160px}.book-wrap .mpnl{font-size:11px;min-width:110px;font-variant-numeric:tabular-nums}
 .book-wrap .mfills .buy{color:#3fb950}.book-wrap .mfills .sell{color:#f85149}
-.live-cfg{margin:10px 0;padding:8px;background:#111827;border-radius:8px}.live-cfg form{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}.live-cfg label{font-size:10px;color:#9ca3af;display:flex;flex-direction:column}.live-cfg input{background:#0b1220;border:1px solid #1f2937;color:#e5e7eb;padding:3px 5px;font-size:11px}.live-cfg button{grid-column:1/-1;padding:6px}.fills{margin-top:12px;font-size:12px}
+.sess{margin:8px 0;font-size:11px;overflow:auto}.sess table{width:100%;border-collapse:collapse}.sess td,.sess th{padding:2px 6px;text-align:left}.live-cfg{margin:10px 0;padding:8px;background:#111827;border-radius:8px}.live-cfg form{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}.live-cfg label{font-size:10px;color:#9ca3af;display:flex;flex-direction:column}.live-cfg input{background:#0b1220;border:1px solid #1f2937;color:#e5e7eb;padding:3px 5px;font-size:11px}.live-cfg button{grid-column:1/-1;padding:6px}.fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 #board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
 #board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px;margin:0;box-sizing:border-box}
@@ -528,6 +529,15 @@ function sessAge(b){
   if(s<86400) return (s/3600).toFixed(1)+'h';
   return (s/86400).toFixed(2)+'d';
 }
+function sessionsHtml(rows){
+  if(!rows||!rows.length) return '';
+  const body=rows.slice(0,20).map(function(s){
+    const when=(s.start||'').replace('T',' ').slice(5,16);
+    const mins=s.mins!=null?s.mins.toFixed(0)+'m':'';
+    return '<tr><td>'+esc(when)+'</td><td>'+esc(s.bot)+'</td><td>'+mins+'</td><td>'+fmt(s.wallet)+'</td><td>'+fmt(s.price)+'</td><td>'+fmt(s.maker)+'</td><td>'+fmt(s.fees!=null?-s.fees:null)+'</td><td>'+fmt(s.net)+'</td><td>'+fmtN(s.vol)+'</td><td>'+(s.fills||0)+'</td><td>'+(s.parks||0)+'</td><td>'+esc((s.top||[]).join(', '))+'</td></tr>';
+  }).join('');
+  return '<div class="sess"><h2>Sessions</h2><table><thead><tr><th>start</th><th>bot</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+}
 function liveCfgForm(b){
   const rows=b.liveConfig||[];
   if(!rows.length) return '';
@@ -719,7 +729,7 @@ function render(data){
   const mv=document.getElementById('movers');
   if(mv) mv.innerHTML=moversHtml(rows);
   const board=document.getElementById('board');
-  if(board) board.innerHTML=boardHtml(rows);
+  if(board) board.innerHTML=boardHtml(rows)+(data.sessions?sessionsHtml(data.sessions):'');
   const bank=document.getElementById('bank');
   if(bank){
     const snap=JSON.stringify((rows||[]).map(function(b){return b.bankHoldings||[];}));
@@ -769,7 +779,7 @@ connect();
 </body></html>`;
 
 function payload() {
-  return JSON.stringify({ bots: collect() });
+  return JSON.stringify({ bots: collect(), sessions: cachedSessionSummaries() });
 }
 
 const server = http.createServer(async (req, res) => {
