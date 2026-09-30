@@ -148,16 +148,16 @@ export function sizeWeightForSymbol(sym) {
   function score(s) {
     const rng = midRangePct(s, win);
     const ret = midReturn(s, win);
-    const rise = Math.max(0.15, 1 + ret * kTrend);
-    const scan = lastScore.get(String(s).toUpperCase()) || 0;
-    return Math.max(1e-9, (rng > 0 ? rng : scan * 0.05) * rise);
+    if (!(rng >= 0.08) && !(ret > 0.002)) return 0.04;
+    const rise = Math.max(0.25, 1 + Math.max(0, ret) * kTrend);
+    return Math.max(0.04, rng * rise);
   }
   const scores = list.map(score);
   const sum = scores.reduce((a, b) => a + b, 0);
   if (!(sum > 0)) return 1;
   const mine = score(key);
   const n = Math.max(1, list.length);
-  return Math.min(4, Math.max(0.12, (mine / sum) * n));
+  return Math.min(2.2, Math.max(0.15, (mine / sum) * n));
 }
 
 export function volStatsForSymbol(sym) {

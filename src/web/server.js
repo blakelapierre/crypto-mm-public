@@ -591,6 +591,7 @@ function boardHtml(rows){
         '<div class="col"><label>fills</label><b>'+((b.working&&b.working.fills)!=null?String(b.working.fills):'0')+'</b></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
         '<div class="col"><label>hold</label><b>$'+fmtN((b.working||{}).holdUsd)+'</b><span>gain '+fmt((b.working||{}).holdGain)+'</span></div>'+
+        '<div class="col"><label>hold x</label><b>'+fmt((b.working||{}).holdRealized)+'</b></div>'+
       '</div>'+
       '<div class="hold-card">'+((b.markets||[]).filter(function(m){return Number(m.heldUsd||0)>0;}).map(function(m){
         return '<div class="hr"><b>'+esc(m.symbol)+'</b> $'+fmtN(m.heldUsd)+' <span class="'+(Number(m.heldGain)>=0?'up':'dn')+'">'+fmt(m.heldGain)+'</span></div>';

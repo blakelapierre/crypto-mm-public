@@ -8,6 +8,7 @@ import { midRing, noteMid, midReturn, midRangePct } from '../../shared/mid-ring.
 import { postOrders } from '../../shared/status-client.js';
 import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
+import { noteHoldExit } from '../../shared/hold-pnl.js';
 
 
 
@@ -227,7 +228,9 @@ function resizeLeg(cfg, a, o, live) {
     if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
     else prev.usd = heldUsd * riseHold;
   } else if (dropping30 && holdStart.has(key)) {
+    const h = holdStart.get(key);
     console.log('  HOLD EXIT ' + a.symbol + ' fade — sell reserved at touch');
+    try { noteHoldExit(a.symbol, h.mid, h.usd); } catch { /* ignore */ }
     holdStart.delete(key);
   }
   const budget = (held * hair * (1 - riseHold)) / nSell;

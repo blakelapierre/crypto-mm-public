@@ -20,6 +20,7 @@ import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBa
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
+import { holdRealizedUsd } from '../../shared/hold-pnl.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -339,6 +340,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           equity: Number((liveSnap && liveSnap.totalEquity) || 0), fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
+          holdRealized: holdRealizedUsd(),
         },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),

@@ -13,7 +13,8 @@
     "kalshi": "node src/bots/kalshi/index.js",
     "web": "node src/web/server.js",
     "bank-dump": "node src/bots/bank-dump.js",
-    "dump": "node src/bots/bank-dump.js"
+    "dump": "node src/bots/bank-dump.js",
+    "bank-cash": "node src/bots/bank-cash.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

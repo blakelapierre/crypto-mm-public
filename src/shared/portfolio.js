@@ -6,6 +6,7 @@ import { krakenPrivate } from './kraken.js';
 import { getMarketCapRanking } from './coingecko.js';
 import { loadMmSet } from './mm-set.js';
 import { savedRangePct } from './vol-scan.js';
+import { midRing } from './mid-ring.js';
 
 async function staggerMap(items, fn, gapMs) {
   await Promise.all(items.map((item, i) => sleep(i * Math.max(0, gapMs)).then(() => fn(item))));
@@ -79,11 +80,13 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   const books = ex.getBooks ? await ex.getBooks(pairList, venue) : new Map();
   for (const [sym, pos, info] of want) {
     const book = books.get(info.pair) || null;
-    if (!book) continue;
-    pos.mid = book.mid;
-    pos.valueQuote = (Number(pos.amount || 0) + Number(pos.hold || 0)) * book.mid;
+    const ring = midRing(sym);
+    const ringMid = ring.length ? Number(ring[ring.length - 1].p) : 0;
+    const mid = Number((book && book.mid) || ringMid || pos.mid || 0);
+    if (!(mid > 0)) continue;
+    pos.mid = mid;
+    pos.valueQuote = (Number(pos.amount || 0) + Number(pos.hold || 0)) * mid;
     Object.assign(pos, info);
-    if (pos.valueQuote < cfg.dustUsd) continue;
     positionsValue += pos.valueQuote;
   }
   let totalEquity = freeQuote + quoteHold + positionsValue;

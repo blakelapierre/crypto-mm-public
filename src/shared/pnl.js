@@ -1,4 +1,5 @@
 import { bankedTotalUsd, bankedRunUsd } from './bank.js';
+import { holdRealizedUsd } from './hold-pnl.js';
 
 export function createPnl() {
   const startedAt = Date.now();
@@ -129,6 +130,7 @@ export function createPnl() {
     if (s.otherPnl != null) console.log('  GAP    ' + fmt(s.otherPnl) + '   residual so WALLET+BANK=PRICE+MAKER-FEES+GAP');
     const b = bankedTotalUsd();
     if (b > 0) console.log('  BANK   ' + fmt(b) + '   moved to trade-bot-bank  wallet+bank=' + ((s.walletGain || 0) + b).toFixed(4));
+    console.log('  HOLDX  ' + fmt(holdRealizedUsd()) + '   realized from rise-hold exits');
     for (const r of s.rows) {
       console.log('  ' + r.symbol.padEnd(6) + ' price=' + fmt(r.price) + '  maker=' + fmt(r.maker) + '  fills=' + r.fills + ' buy=$' + (r.buyUsd || 0).toFixed(2) + ' sell=$' + (r.sellUsd || 0).toFixed(2) + ' fees=' + r.fees.toFixed(4));
     }
