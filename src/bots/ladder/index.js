@@ -180,7 +180,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             if (cfg.exchange === 'coinbase' && (leaveSyms.length || additions.length)) {
               try {
                 if (leaveSyms.length) {
-                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms);
+                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms, 'run', getLive);
                   await liquidateSymbols(cfg, ex, await getLive(), leaveSyms);
                 }
                 if (additions.length) await seedNewInventory(cfg, ex, additions.map((a) => mmAlloc.find((x) => x.pair === a.pair)).filter(Boolean), await getLive());
@@ -352,7 +352,7 @@ async function main() {
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
     console.log('bank skim 0.5% -> trade bot bank');
     try {
-      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005), null, 'startup');
+      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005), null, 'startup', () => fetchLivePortfolio(cfg, ex, productMap));
       live = await waitForSettlement(cfg, ex, productMap, 'after startup bank skim');
     } catch (e) { console.warn('startup bank skim', e.message); }
   }
@@ -363,10 +363,12 @@ async function main() {
     console.log('startup sell non-MM: ' + dump.join(','));
     await liquidateSymbols(cfg, ex, live, dump, productMap);
     live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
+    invalidateLiveCache();
+    live = await fetchLivePortfolio(cfg, ex, productMap);
     const leftover = dump.filter((s) => live.positions[s] && live.positions[s].amount > 0);
     if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
       console.log('bank leftover orphans ' + leftover.join(','));
-      try { await skimToBank(cfg, live, 1, leftover, 'startup'); }
+      try { await skimToBank(cfg, live, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap)); }
       catch (e) { console.warn('orphan bank', e.message); }
       live = await waitForSettlement(cfg, ex, productMap, 'after orphan bank');
     }

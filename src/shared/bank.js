@@ -117,10 +117,14 @@ export async function refreshBankHoldings(cfg, bankUuid) {
   return lastBankHoldings;
 }
 
-export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind = 'run') {
+export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind = 'run', getLive = null) {
   if (cfg.exchange !== 'coinbase' || cfg.dryRun) return;
   const pct = Number(fraction);
   if (!(pct > 0)) return;
+  invalidateLiveCache();
+  if (typeof getLive === 'function') {
+    try { live = await getLive(); } catch (e) { console.warn('bank refresh live', e.message); }
+  }
   let ports;
   try { ports = await resolvePortfolios(cfg); } catch (e) { console.warn('bank list', e.message); return; }
   if (!ports) return;
@@ -132,9 +136,11 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
   }
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (filter && !filter.has(sym)) continue;
-    const qty = (pos.amount || 0) * pct;
+    const avail = Number(pos.amount || 0);
+    const qty = avail * pct * 0.98;
     if (!(qty > 0)) continue;
     let send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
+    if (Number(send) > avail) send = String((avail * 0.97).toFixed(8));
     if (!(Number(send) > 0)) send = String(qty);
     if (!(Number(send) > 0)) continue;
     jobs.push({ cur: pos.currency || sym, send, usd: Number(send) * (pos.mid || 0) });
@@ -143,7 +149,18 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
   await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
     try {
       if (await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, j.cur, j.send)) noteBankedUsd(j.usd, kind);
-    } catch (e) { console.warn('bank move ' + j.cur, e.message); }
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (/INSUFFICIENT|insufficient/i.test(msg) && Number(j.send) > 0) {
+        const retry = String((Number(j.send) * 0.5).toFixed(8));
+        console.warn('bank retry ' + j.cur + ' ' + j.send + ' -> ' + retry);
+        try {
+          if (Number(retry) > 0 && await moveFunds(cfg, ports.source.uuid, ports.bank.uuid, j.cur, retry)) {
+            noteBankedUsd(Number(retry) * (j.usd / Number(j.send) || 0), kind);
+          }
+        } catch (e2) { console.warn('bank move ' + j.cur, e2.message); }
+      } else console.warn('bank move ' + j.cur, msg);
+    }
   })));
   try { await refreshBankHoldings(cfg, ports.bank.uuid); } catch (e) { console.warn('bank holdings', e.message); }
 }
