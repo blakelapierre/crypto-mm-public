@@ -140,7 +140,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const scored = ranked.map((r) => {
             const ret = midReturn(r.symbol);
             const tr = trendMult(r.symbol);
-            return { ...r, ret15: ret, trend: tr, pick: Number(r.rangePct || 0) * tr };
+            const rise = ret > 0 ? 1.6 : (ret < -0.01 ? 0.45 : 0.8);
+            return { ...r, ret15: ret, trend: tr, pick: Number(r.rangePct || 0) * Math.max(tr, 1) * rise };
           }).sort((a, b) => b.pick - a.pick);
           for (const r of scored) {
             if (have.has(r.pair)) continue;
@@ -149,31 +150,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const watched = watch.has(r.pair);
             if (Number(r.rangePct || 0) < enterPct && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (!(r.pair && r.symbol)) continue;
-            const need = costOf(r);
-            if (budget < need) {
-              const donor = [...keep].sort((x, y) => sizeWeightForSymbol(x.symbol) - sizeWeightForSymbol(y.symbol))[0];
-              if (donor && donor.pair !== r.pair) {
-                const st = pairState.get(donor.pair);
-                const bids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
-                if (bids.length) {
-                  console.log('  ENTER harvest ' + bids.length + ' bids ' + donor.symbol + ' -> ' + r.symbol);
-                  for (const o of bids) {
-                    try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-                    o.status = 'cancelled';
-                    budget += Number(o.price) * Number(o.size) || 0;
-                  }
-                  try { live = await getLive(); budget = Number(live.freeQuote || 0) * Number(process.env.VOL_ENTER_CASH_FRAC || 0.95); } catch { /* keep */ }
-                }
-              }
-            }
-            if (budget < need) {
-              if (additions.length === 0 && Number(r.rangePct || 0) >= enterPct) {
-                console.log('  ENTER skip ' + r.symbol + ' need=$' + need.toFixed(2) + ' cash=$' + budget.toFixed(2) + ' rng=' + Number(r.rangePct).toFixed(2) + '%');
-              }
-              continue;
-            }
             additions.push(r);
-            budget -= need;
           }
           if (leaving.length || additions.length) {
             if (leaving.length) console.log('MM exit ' + leaving.map((a) => a.symbol).join(',') + ' (>=' + (rotateMin / 60000) + 'm)');

@@ -89,7 +89,7 @@ export function createPnl() {
     for (const [raw, p] of Object.entries(live.positions || {})) {
       const sym = key(raw);
       const mid = Number(p.mid) || 0;
-      const qty = Number(p.amount) || 0;
+      const qty = Number(p.amount || 0) + Number(p.hold || 0);
       if (!primed) {
         inv.set(sym, qty);
         if (mid > 0) lastMid.set(sym, mid);
@@ -135,13 +135,15 @@ export function createPnl() {
     if (!s.rows.length) console.log('  no inventory/fills yet');
     return s;
   }
-  function adjustFee(rec, fee) {
+  function adjustFee(rec, fee, already = 0) {
     const n = Number(fee);
     if (!(n > 0)) return;
-    feesPaid += n;
-    if (isTaker(rec)) takerFees += n;
+    const delta = n - Number(already || 0);
+    if (!delta) return;
+    feesPaid += delta;
+    if (isTaker(rec)) takerFees += delta;
     const bk = books.get(symbolOf(rec));
-    if (bk) bk.fees += n;
+    if (bk) bk.fees += delta;
   }
   return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee };
 }

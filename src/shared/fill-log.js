@@ -70,15 +70,34 @@ export function logEvent(kind, extra = {}) {
 function rotateFile(dest) {
   if (!dest || !fs.existsSync(dest)) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const arch = dest.replace(/\.jsonl$/i, '') + '-' + stamp + '.jsonl';
+  const dir = path.join(path.dirname(dest), 'archives');
+  fs.mkdirSync(dir, { recursive: true });
+  const arch = path.join(dir, path.basename(dest).replace(/\.jsonl$/i, '') + '-' + stamp + '.jsonl');
   try {
     fs.renameSync(dest, arch);
     console.log('rotated ' + dest + ' -> ' + arch);
   } catch (e) { console.warn('log rotate', e.message); }
 }
+function archiveLooseLogs(dir) {
+  try {
+    if (!fs.existsSync(dir)) return;
+    const dest = path.join(dir, 'archives');
+    fs.mkdirSync(dest, { recursive: true });
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.(jsonl|json)$/i.test(name)) continue;
+      if (name.startsWith('fills-') && !name.includes('20')) continue;
+      if (name.startsWith('debug-') && !name.includes('20')) continue;
+      if (name.startsWith('vol-scan-') && name.endsWith('.json') && !name.includes('20')) continue;
+      if (/20\d{2}-/.test(name)) {
+        try { fs.renameSync(path.join(dir, name), path.join(dest, name)); } catch {}
+      }
+    }
+  } catch (e) { console.warn('log archive', e.message); }
+}
 
 export function logSession(extra = {}) {
   try {
+    archiveLooseLogs(path.dirname(filePath() || debugPath() || path.resolve(process.cwd(), 'logs/x')));
     rotateFile(filePath());
     rotateFile(debugPath());
     fillDest.v = null;
@@ -98,7 +117,6 @@ export function logFeeUpdate(orderId, fee, extra = {}) {
       notional: extra.notional != null ? Number(extra.notional) : null,
     };
     writeBoth(packRow('fee', { ...row, id: orderId }));
-    if (row.notional) noteFeeFill(row.fee, row.notional, row.pair);
   } catch (e) { console.warn('fill log fee', e.message); }
 }
 

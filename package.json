@@ -8,6 +8,7 @@
     "inventory": "node src/bots/inventory/index.js",
     "xex": "node src/bots/xex/index.js",
     "comp": "node src/bots/comp/index.js",
+    "margin": "node src/bots/margin/index.js",
     "grid": "node src/bots/grid/index.js",
     "kalshi": "node src/bots/kalshi/index.js",
     "web": "node src/web/server.js",

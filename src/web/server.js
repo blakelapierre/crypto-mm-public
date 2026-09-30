@@ -472,7 +472,8 @@ function orderBook(m){
     return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
   }).join('')||'<div class="age">no fills</div>';
   const rg=m.rungs; const rtxt=rg?('L'+rg.levels+' @ '+rg.stepBps+'bps · '+rg.touches+' x · edge '+Number(rg.edgePct).toFixed(2)+'%'):'rungs n/a';
-  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div class="age">'+rtxt+'</div></div>';
+  const net=Number(m.makerPnl||0)+Number(m.pricePnl||0)-Math.abs(Number(m.fees||0));
+  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div>net '+fmt(net)+'</div><div class="age">'+rtxt+'</div></div>';
   return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>vs mid</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
@@ -621,7 +622,8 @@ function moversHtml(rows){
       items.sort(function(a,c){return (c.rangePct||0)-(a.rangePct||0);});
     } else {
       (b.movers||[]).forEach(function(m){
-        add({symbol:m.symbol,ret:Number(m.ret||0),rangePct:Number(m.rangePct||0)});
+        const mk=(b.markets||[]).find(function(x){return String(x.symbol).toUpperCase()===String(m.symbol).toUpperCase();})||{};
+        add({symbol:m.symbol,ret:Number(m.ret||0),rangePct:Number(m.rangePct||0),spark:m.spark||mk.spark,sparkFills:m.sparkFills||mk.sparkFills,orders:mk.orders});
       });
       if(!items.length){
         (b.markets||[]).forEach(function(m){
