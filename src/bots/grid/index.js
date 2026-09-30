@@ -28,7 +28,7 @@ const ex = createExchange(cfg, orderRegistry);
 async function main() {
   logSession({ exchange: cfg.exchange, quote: cfg.quote });
   startApiTally();
-  const productMap = await ex.loadProducts();
+  const productMap = await ex.getProducts();
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
   let live = await fetchLivePortfolio(cfg, ex, productMap);
   let lists = await buildLists(cfg, productMap, live.totalEquity, live);
