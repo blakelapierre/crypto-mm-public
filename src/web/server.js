@@ -199,9 +199,8 @@ const PAGE = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7ecf3;margin:0;font-size:13px}
-#shell{display:flex;align-items:flex-start;gap:12px;padding:10px 14px 8px}
-#col{flex:1;min-width:0;max-height:40vh;overflow-y:auto}
-#pin{background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d}
+#shell{display:flex;align-items:flex-start;gap:12px;padding:10px 14px 0}
+#pin{flex:1;min-width:0;max-height:40vh;overflow-y:auto;background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d;position:sticky;top:0;z-index:20}
 #bank.bank-card{position:sticky;top:10px;flex:0 0 240px;max-height:40vh;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
@@ -278,19 +277,17 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </head>
 <body>
 <div id="shell">
-<div id="col">
 <div id="pin">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
+<div id="movers" class="movers"></div>
 <div id="top-row">
 <div id="board" class="board"></div>
 </div>
 </div>
-<div id="movers" class="movers"></div>
-<div id="root"></div>
-</div>
 <div id="bank" class="bank-card"></div>
 </div>
+<div id="root"></div>
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Number(n);return (x>=0?'+':'')+x.toFixed(4);}
