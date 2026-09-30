@@ -17,15 +17,17 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { postStatus, postMids } from '../../shared/status-client.js';
+import { postStatus, postMids, pullLiveConfig } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
 import { holdRealizedUsd, holdFills } from '../../shared/hold-pnl.js';
+import { bindLiveConfig, liveConfigSnap, applyLiveConfig, persistLiveConfig } from '../../shared/live-config.js';
 import { refreshFeeTier, feeTierSnap, etaNextTierHours, feeTierNextAt } from '../../shared/fee-tier.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
+bindLiveConfig(cfg);
 {
   const raw = process.env.SYMBOLS || (cfg.symbols || []).join(',');
   cfg.symbols = String(raw).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -203,7 +205,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
     })();
   }
-  process.on('SIGINT', () => {
+  const stop = () => {
+    try { persistLiveConfig(process.env.BOT_CONFIG || 'configs/ladder.env'); } catch (e) { console.warn('persist env', e.message); }
     saveMmSet(mmAlloc);
     const mids = {};
     for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
@@ -211,11 +214,17 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     const fills = (snap && snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
     try { logKpi(snap || {}, { fills }); } catch {}
     ws.close(); process.exit(0);
-  });
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
   async function emitStatus() {
     if (emitStatus.busy) return;
     emitStatus.busy = true;
     try {
+      try {
+        const pending = await pullLiveConfig(process.env.BOT || 'ladder');
+        if (pending && pending.values) applyLiveConfig(pending.values);
+      } catch { /* ignore */ }
       let liveSnap = null;
       try { liveSnap = await getLive(); pnl.markHoldings(liveSnap); } catch { /* ignore */ }
       const mids = {};
@@ -348,6 +357,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),
+        liveConfig: liveConfigSnap(),
         feeTier: feeTierSnap(),
         tierNextAt: feeTierNextAt(),
         tierEtaH: etaNextTierHours((marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0)) / Math.max((snap.elapsedMs || 1) / 3600000, 1 / 60)),

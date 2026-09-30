@@ -55,6 +55,16 @@ export function postMids(rows) {
   }, Number(process.env.MID_POST_MS || 400));
 }
 
+export async function pullLiveConfig(bot) {
+  const dest = url();
+  if (!dest) return null;
+  try {
+    const r = await fetch(base() + '/live-config?bot=' + encodeURIComponent(bot || process.env.BOT || 'ladder'), { headers: headers() });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
 export function postOrders(symbol, orders, extra = {}) {
   const dest = url();
   if (!dest || !symbol) return;
