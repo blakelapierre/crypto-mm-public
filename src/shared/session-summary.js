@@ -23,7 +23,7 @@ function listLogFiles(root) {
       let st;
       try { st = fs.statSync(p); } catch { continue; }
       if (st.isDirectory()) walk(p);
-      else if (/\.(jsonl)$/i.test(name) && /debug-|fills-/.test(name)) out.push(p);
+      else if (/\.(jsonl)$/i.test(name) && name.indexOf('debug-') >= 0) out.push(p);
     }
   }
   walk(root);
@@ -141,8 +141,14 @@ export function summarizeSessions({ limit = 24 } = {}) { // per bot
     }
   }
   finish(cur, sessions);
-  const by = new Map();
+  const uniq = new Map();
   for (const s of sessions) {
+    const key = (s.bot || '') + '|' + String(s.start || '').slice(0, 16);
+    const prev = uniq.get(key);
+    if (!prev || Number(s.fills || 0) >= Number(prev.fills || 0)) uniq.set(key, s);
+  }
+  const by = new Map();
+  for (const s of uniq.values()) {
     const k = String(s.bot || 'bot');
     if (!by.has(k)) by.set(k, []);
     by.get(k).push(s);

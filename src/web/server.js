@@ -540,7 +540,11 @@ function sessionsHtml(rows){
       const mins=s.mins!=null?s.mins.toFixed(0)+'m':'';
       return '<tr><td>'+esc(when)+'</td><td>'+mins+'</td><td>'+fmt(s.wallet)+'</td><td>'+fmt(s.price)+'</td><td>'+fmt(s.maker)+'</td><td>'+fmt(s.fees!=null?-s.fees:null)+'</td><td>'+fmt(s.net)+'</td><td>'+fmtN(s.vol)+'</td><td>'+(s.fills||0)+'</td><td>'+(s.parks||0)+'</td><td>'+esc((s.top||[]).join(', '))+'</td></tr>';
     }).join('');
-    return '<div class="sess"><h2>'+esc(bot)+' sessions</h2><table><thead><tr><th>start</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+    const list=groups[bot];
+    const n=list.length||1;
+    const sum=function(k){return list.reduce(function(s,r){return s+Number(r[k]||0);},0);};
+    const roll='<p class="age">n='+list.length+'  wallet '+fmt(sum('wallet'))+'  price '+fmt(sum('price'))+'  maker '+fmt(sum('maker'))+'  fees '+fmt(-Math.abs(sum('fees')))+'  net '+fmt(sum('net'))+'  vol $'+fmtN(sum('vol'))+'  fills '+sum('fills')+'  avg wallet '+fmt(sum('wallet')/n)+'</p>';
+    return '<div class="sess"><h2>'+esc(bot)+' sessions</h2>'+roll+'<table><thead><tr><th>start</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
   }).join('');
 }
 function liveCfgForm(b){
