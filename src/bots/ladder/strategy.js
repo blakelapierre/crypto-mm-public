@@ -99,7 +99,10 @@ function exitStep(cfg, pair, symbol) {
 export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null, symbol = null, live = null) {
   const hint = rungHint(pair, symbol);
   const step = gridStep(cfg, pair, symbol);
-  const levels = ladderLevelCount(cfg, rangeFrac(symbol), hint, symbol);
+  const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
+  const levels = (pair && isTopWeight(pair, focusN))
+    ? ladderLevelCount(cfg, rangeFrac(symbol), hint, symbol)
+    : 1;
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
   const sk = inventorySkew(live, symbol);
   const bidOff = step * (1 + sk);
@@ -458,9 +461,17 @@ let livePairState = null;
 let liveMmAlloc = [];
 export function setLivePairState(m) { livePairState = m; }
 export function setLiveMmAlloc(arr) { liveMmAlloc = arr || []; }
+function liveTapeReady(symbol) {
+  const win = Number(process.env.LIVE_WEIGHT_MS || 60000);
+  if (midRangePct(symbol, win) >= 0.05) return true;
+  const cut = Date.now() - win;
+  return midRing(symbol).filter((x) => x.t >= cut).length >= 8;
+}
 function isTopWeight(selfPair, n = 2) {
-  if (!liveMmAlloc.length) return true;
-  const ranked = [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
+  if (!liveMmAlloc.length) return false;
+  const ready = liveMmAlloc.filter((a) => liveTapeReady(a.symbol));
+  if (!ready.length) return false;
+  const ranked = [...ready].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
   return ranked.slice(0, n).some((a) => a.pair === selfPair);
 }
 
@@ -612,6 +623,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   if (!focused) return;
+  if (!liveTapeReady(a.symbol)) return;
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
