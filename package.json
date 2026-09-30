@@ -15,7 +15,8 @@
     "bank-dump": "node src/bots/bank-dump.js",
     "dump": "node src/bots/bank-dump.js",
     "bank-cash": "node src/bots/bank-cash.js",
-    "train-nn": "node src/ml/train.js"
+    "train-nn": "node src/ml/train.js",
+    "train-quote-nn": "node src/ml/train-quote.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

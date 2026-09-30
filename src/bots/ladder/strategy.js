@@ -6,6 +6,7 @@ import { tapeSizeMult, tapeEdgeBps, markRipSell, inRipCooldown } from '../../sha
 import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid, midReturn, midRangePct } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
+import { nnQuote } from '../../ml/infer-quote.js';
 import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
 import { noteHoldExit, holdBasis } from '../../shared/hold-pnl.js';
@@ -105,8 +106,10 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     : 1;
   const tick = Number((10 ** -pairDecimals).toFixed(pairDecimals));
   const sk = inventorySkew(live, symbol);
-  const bidOff = step * (1 + sk);
-  const askOff = step * (1 - sk);
+  const qq = nnQuote({ symbol, buy: 0.5, level: 1, sizeUsd });
+  sizeUsd = Number(sizeUsd) * qq.sizeMult;
+  const bidOff = step * (1 + sk) + (qq.bidAddBps || 0) / 10000;
+  const askOff = step * (1 - sk) + (qq.askAddBps || 0) / 10000;
   const rising = symbol && midReturn(symbol) > 0;
   const sellHalf = rising ? riseSellHalf(cfg, pair, symbol) : l1HalfFrac(cfg, pair);
   const inv0 = Number((live && live.positions && live.positions[symbol] && (Number(live.positions[symbol].amount || 0) + Number(live.positions[symbol].hold || 0))) || 0);

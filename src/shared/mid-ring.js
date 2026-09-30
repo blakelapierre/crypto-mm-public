@@ -1,3 +1,5 @@
+import { logPx } from './px-log.js';
+
 const rings = new Map();
 const WINDOW = Number(process.env.RUNG_WINDOW_MS || 15 * 60 * 1000);
 const GAP = Number(process.env.RUNG_SAMPLE_MS || 1000);
@@ -15,6 +17,7 @@ export function noteMid(symbol, mid, t = Date.now()) {
   const cap = Math.ceil(WINDOW / Math.max(GAP, 500)) + 4;
   if (arr.length > cap) arr.splice(0, arr.length - cap);
   rings.set(key, arr);
+  logPx(key, px, t);
 }
 
 let lastSweep = 0;

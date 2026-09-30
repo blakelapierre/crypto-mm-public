@@ -4,6 +4,7 @@ import { noteFeeFill } from './fee-spread.js';
 import { noteTapeFill } from './pair-tape.js';
 import { invalidateLiveCache } from './portfolio.js';
 import { postFill } from './status-client.js';
+import { rotatePxLog } from './px-log.js';
 
 let resolved = null;
 let debugResolved = null;
@@ -101,6 +102,7 @@ function archiveLooseLogs(dir) {
       if (!/\.(jsonl|json)$/i.test(name)) continue;
       if (name.startsWith('fills-') && !name.includes('20')) continue;
       if (name.startsWith('debug-') && !name.includes('20')) continue;
+      if (name.startsWith('px-') && !name.includes('20')) continue;
       if (name.startsWith('vol-scan-') && name.endsWith('.json') && !name.includes('20')) continue;
       if (/20\d{2}-/.test(name)) {
         try { fs.renameSync(path.join(dir, name), path.join(dest, name)); } catch {}
@@ -114,6 +116,7 @@ export function logSession(extra = {}) {
     archiveLooseLogs(path.dirname(filePath() || debugPath() || path.resolve(process.cwd(), 'logs/x')));
     rotateFile(filePath());
     rotateFile(debugPath());
+    rotatePxLog();
     fillDest.v = null;
     debugDest.v = null;
     writeBoth(['shapes', SHAPE_LIST]);
