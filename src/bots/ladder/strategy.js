@@ -82,9 +82,12 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const sk = inventorySkew(live, symbol);
   const bidOff = step * (1 + sk);
   const askOff = step * (1 - sk);
+  const rising = symbol && midReturn(symbol) > 0;
+  const sellHalf = rising ? riseSellHalf(cfg, pair) : l1HalfFrac(cfg, pair);
   const useBook = false;
   let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
-  let ask1 = mid * (1 + Math.max(tick / mid, askOff, l1HalfFrac(cfg, pair)));
+  let ask1 = mid * (1 + Math.max(tick / mid, askOff, sellHalf));
+  if (rising && book && Number(book.bid) > 0) bid1 = Number(book.bid);
   if (useBook && sk) {
     if (sk > 0) bid1 = Math.min(bid1, mid * (1 - bidOff));
     if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
@@ -93,8 +96,9 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     bid1 = mid * (1 - l1HalfFrac(cfg, pair));
     ask1 = mid * (1 + l1HalfFrac(cfg, pair));
   }
-  bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
-  ask1 = Number(clampAwayFromMid(mid, ask1, 'sell', l1HalfFrac(cfg, pair), pairDecimals));
+  if (!rising) bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
+  else bid1 = Number(formatPrice(bid1, pairDecimals));
+  ask1 = Number(clampAwayFromMid(mid, ask1, 'sell', sellHalf, pairDecimals));
   const skewKey = String(symbol || '');
   const nowSk = Date.now();
   if (sk && nowSk - (generateLadder._started || (generateLadder._started = nowSk)) > 180000 && nowSk - (generateLadder._skewAt && generateLadder._skewAt[skewKey] || 0) > 120000) {
@@ -190,7 +194,19 @@ function resizeLeg(cfg, a, o, live) {
   }
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol)));
-  const riseHold = midReturn(a.symbol) > 0 ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
+  const rising = midReturn(a.symbol) > 0;
+  const riseHold = rising ? Number(process.env.RISE_INV_HOLD || 0.05) : 0;
+  const key = String(a.symbol || '').toUpperCase();
+  const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
+  const heldUsd = held * (midPx || Number(o.price) || 0);
+  if (rising && heldUsd > 0) {
+    const prev = holdStart.get(key);
+    if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
+    else prev.usd = heldUsd * riseHold;
+  } else if (!rising && holdStart.has(key)) {
+    console.log('  HOLD EXIT ' + a.symbol + ' sell reserved into quote');
+    holdStart.delete(key);
+  }
   const budget = (held * hair * (1 - riseHold)) / nSell;
   let size = Number(o.size) > 0 ? Math.min(o.size, budget) : budget;
   if (size + 1e-12 < minV) {
@@ -239,6 +255,19 @@ function l1HalfFrac(cfg, pair) {
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
   return (feeBps + edge) / 10000;
 }
+function riseSellHalf(cfg, pair) {
+  const feeBps = Number(realizedFeeBps(pair) != null ? realizedFeeBps(pair) : assumedMakerFeeBps(cfg));
+  const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
+  return (feeBps * 2 + edge) / 10000;
+}
+const holdStart = new Map();
+export function holdInfo(symbol, mid) {
+  const h = holdStart.get(String(symbol || '').toUpperCase());
+  if (!h) return { usd: 0, gain: 0 };
+  const m = Number(mid || h.mid);
+  const gain = h.mid > 0 ? h.usd * ((m - h.mid) / h.mid) : 0;
+  return { usd: h.usd, gain };
+}
 function clampAwayFromMid(mid, px, side, half, decimals) {
   const inc = Number((10 ** -decimals).toFixed(decimals));
   let p = Number(formatPrice(px, decimals));
@@ -282,8 +311,11 @@ const pinMid = new Map();
 export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
-  const half = l1HalfFrac(cfg, a.pair);
-  const bidT = clampAwayFromMid(mid, mid * (1 - half), 'buy', half, a.pairDecimals);
+  const rising = midReturn(a.symbol) > 0;
+  const half = rising ? riseSellHalf(cfg, a.pair) : l1HalfFrac(cfg, a.pair);
+  const bidT = rising && book.bid > 0
+    ? formatPrice(book.bid, a.pairDecimals)
+    : clampAwayFromMid(mid, mid * (1 - l1HalfFrac(cfg, a.pair)), 'buy', l1HalfFrac(cfg, a.pair), a.pairDecimals);
   const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
   function stillGood(side, px) {

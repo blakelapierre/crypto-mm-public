@@ -11,7 +11,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
-import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState } from './strategy.js';
+import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo } from './strategy.js';
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles, midHistory } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
@@ -86,7 +86,13 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   })();
   const liveVol = !(cfg.symbols && cfg.symbols.length) && String(cfg.mmSelect || process.env.MM_SELECT || 'vol').toLowerCase() === 'vol';
   {
-    const volScan = createVolScan(cfg, productMap);
+    const scanMap = (cfg.symbols && cfg.symbols.length)
+      ? Object.fromEntries(Object.entries(productMap).filter(([sym, info]) => {
+          const want = new Set(cfg.symbols.map((s) => String(s).toUpperCase()));
+          return want.has(String(sym).toUpperCase());
+        }))
+      : productMap;
+    const volScan = createVolScan(cfg, Object.keys(scanMap).length ? scanMap : productMap);
     const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 900000);
     console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm rotateMin=' + (rotateMin / 1000) + 's');
     (async () => {
@@ -246,7 +252,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           fills: book.fills || 0,
           edgeBps: tapeEdgeBps(a.pair),
           invUsd: Number((liveSnap && liveSnap.positions && liveSnap.positions[a.symbol] && liveSnap.positions[a.symbol].valueQuote) || 0),
-          heldUsd: (midReturn(a.symbol) > 0 ? 0.05 : 0) * Number((liveSnap && liveSnap.positions && liveSnap.positions[a.symbol] && liveSnap.positions[a.symbol].valueQuote) || 0),
+          heldUsd: holdInfo(a.symbol, Number(mid) || 0).usd,
+          heldGain: holdInfo(a.symbol, Number(mid) || 0).gain,
           rising: midReturn(a.symbol) > 0,
         });
       }

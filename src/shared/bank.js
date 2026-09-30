@@ -140,7 +140,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (filter && !filter.has(sym)) continue;
     const avail = Number(pos.amount || 0);
-    const qty = avail * (pct >= 0.99 ? 0.999 : pct * 0.98);
+    const qty = avail * pct;
     if (!(qty > 0)) continue;
     let send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
     if (Number(send) > avail) send = String((avail * 0.97).toFixed(8));
@@ -268,5 +268,35 @@ export async function dumpBankToTrade(cfg, fraction) {
   })));
   const moved = results.reduce((s, n) => s + n, 0);
   console.log('dump done moves=' + moved);
+  return moved;
+}
+
+export async function dumpTradeToBank(cfg, fraction) {
+  const pct = Number(fraction);
+  if (!(pct > 0 && pct <= 1)) throw new Error('fraction must be 0-1, got ' + fraction);
+  const ports = await resolvePortfolios(cfg);
+  if (!ports) throw new Error('Need bank + trade portfolios (trade API key)');
+  const { source: trade, bank } = ports;
+  console.log('dump ' + (pct * 100) + '%  ' + trade.name + ' (' + trade.uuid + ') -> ' + bank.name + ' (' + bank.uuid + ')');
+  invalidateLiveCache();
+  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/accounts?limit=250');
+  const jobs = [];
+  for (const a of data.accounts || []) {
+    const cur = String(a.currency || (a.available_balance && a.available_balance.currency) || '').toUpperCase();
+    const avail = parseFloat((a.available_balance && (a.available_balance.value || a.available_balance.amount)) || a.available || 0) || 0;
+    const qty = avail * pct;
+    if (!cur || !(qty > 0)) continue;
+    const send = qty >= 1 ? qty.toFixed(8) : String(qty);
+    if (!(Number(send) > 0)) continue;
+    jobs.push({ cur, send });
+  }
+  const gap = Number(process.env.BANK_STAGGER_MS || 250);
+  const results = await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {
+    try { await moveFunds(cfg, trade.uuid, bank.uuid, j.cur, j.send); return 1; }
+    catch (e) { console.warn('dump skip ' + j.cur, e.message); return 0; }
+  })));
+  const moved = results.reduce((s, n) => s + n, 0);
+  console.log('dump done moves=' + moved);
+  try { await refreshBankHoldings(cfg, bank.uuid); } catch { /* ignore */ }
   return moved;
 }

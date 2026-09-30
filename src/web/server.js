@@ -477,7 +477,7 @@ function orderBook(m){
   }).join('')||'<div class="age">no fills</div>';
   const rg=m.rungs; const rtxt=rg?('L'+rg.levels+' @ '+rg.stepBps+'bps · '+rg.touches+' x · edge '+Number(rg.edgePct).toFixed(2)+'%'):'rungs n/a';
   const net=Number(m.makerPnl||0)+Number(m.pricePnl||0)-Math.abs(Number(m.fees||0));
-  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div>net '+fmt(net)+'</div><div>held $'+fmtN(m.heldUsd)+(m.rising?' rise':'')+'</div><div class="age">'+rtxt+'</div></div>';
+  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div>net '+fmt(net)+'</div><div>hold $'+fmtN(m.heldUsd)+' gain '+fmt(m.heldGain)+'</div><div class="age">'+rtxt+'</div></div>';
   return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>vs mid</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
