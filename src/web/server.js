@@ -245,7 +245,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .book-wrap{display:flex;gap:12px;align-items:flex-start}
 .book-wrap .mfills{font-size:11px;min-width:160px}.book-wrap .mpnl{font-size:11px;min-width:110px;font-variant-numeric:tabular-nums}
 .book-wrap .mfills .buy{color:#3fb950}.book-wrap .mfills .sell{color:#f85149}
-.sess{margin:8px 0;font-size:11px;overflow:auto}.sess table{width:100%;border-collapse:collapse}.sess td,.sess th{padding:2px 6px;text-align:left}.live-cfg{margin:10px 0;padding:8px;background:#111827;border-radius:8px}.live-cfg form{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}.live-cfg label{font-size:10px;color:#9ca3af;display:flex;flex-direction:column}.live-cfg input{background:#0b1220;border:1px solid #1f2937;color:#e5e7eb;padding:3px 5px;font-size:11px}.live-cfg button{grid-column:1/-1;padding:6px}.fills{margin-top:12px;font-size:12px}
+.sess{margin:10px 0;font-size:11px;overflow:auto}.sess table{width:100%;border-collapse:collapse}.sess td,.sess th{padding:2px 6px;text-align:left}.sess tfoot td,.sess tr.sum td{font-weight:600;border-top:1px solid #30363d;background:#0d1117}.live-cfg{margin:10px 0;padding:8px;background:#111827;border-radius:8px}.live-cfg form{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}.live-cfg label{font-size:10px;color:#9ca3af;display:flex;flex-direction:column}.live-cfg input{background:#0b1220;border:1px solid #1f2937;color:#e5e7eb;padding:3px 5px;font-size:11px}.live-cfg button{grid-column:1/-1;padding:6px}.fills{margin-top:12px;font-size:12px}
 .fills td{font-family:ui-monospace,monospace}
 #board.board{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:12px;margin:8px 0 14px;width:100%}
 #board .board-card{flex:0 1 auto;width:auto;max-width:100%;display:inline-flex;flex-direction:column;align-items:center;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px;margin:0;box-sizing:border-box}
@@ -544,7 +544,8 @@ function sessionsHtml(rows){
     const n=list.length||1;
     const sum=function(k){return list.reduce(function(s,r){return s+Number(r[k]||0);},0);};
     const roll='<p class="age">n='+list.length+'  wallet '+fmt(sum('wallet'))+'  price '+fmt(sum('price'))+'  maker '+fmt(sum('maker'))+'  fees '+fmt(-Math.abs(sum('fees')))+'  net '+fmt(sum('net'))+'  vol $'+fmtN(sum('vol'))+'  fills '+sum('fills')+'  avg wallet '+fmt(sum('wallet')/n)+'</p>';
-    return '<div class="sess"><h2>'+esc(bot)+' sessions</h2>'+roll+'<table><thead><tr><th>start</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+    const foot='<tr class="sum"><td>sum</td><td>'+sum('mins').toFixed(0)+'m</td><td>'+fmt(sum('wallet'))+'</td><td>'+fmt(sum('price'))+'</td><td>'+fmt(sum('maker'))+'</td><td>'+fmt(-Math.abs(sum('fees')))+'</td><td>'+fmt(sum('net'))+'</td><td>'+fmtN(sum('vol'))+'</td><td>'+sum('fills')+'</td><td>'+sum('parks')+'</td><td></td></tr>';
+    return '<div class="sess card"><h2>'+esc(bot)+' sessions</h2>'+roll+'<table><thead><tr><th>start</th><th>len</th><th>wallet</th><th>price</th><th>maker</th><th>fees</th><th>net</th><th>vol</th><th>fills</th><th>parks</th><th>top</th></tr></thead><tbody>'+body+'</tbody><tfoot>'+foot+'</tfoot></table></div>';
   }).join('');
 }
 function liveCfgForm(b){
