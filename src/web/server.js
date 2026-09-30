@@ -256,6 +256,9 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .kpi span.pw{font-size:10px;opacity:.85}.kpi span.pm{font-size:9px;opacity:.75}
 .kpi span.py{font-size:8px;opacity:.65}
 .hdr-stats .pw{font-size:10px}.hdr-stats .pm{font-size:9px}.hdr-stats .py{font-size:8px;opacity:.7}
+.hold-card{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:0 0 6px;font-size:11px}
+.hold-card .hr{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:3px 7px}
+.hold-card .hr b{margin-right:4px}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:8px;line-height:normal;width:100%}
 .board-card .cell{flex:0 0 auto;width:118px;min-height:110px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
 .board-card .cell .sym{font-size:12px;font-weight:600}
@@ -531,6 +534,7 @@ function card(b){
     '<div><label>Sell orders</label><b>$'+fmtN(w.asks)+'</b></div>'+
     '<div><label>Book</label><b>$'+fmtN(Number(w.bids||0)+Number(w.asks||0))+'</b></div>'+
     '<div><label>Inventory</label><b>$'+fmtN(w.inventory)+'</b></div>'+
+    '<div><label>Hold</label><b>$'+fmtN(w.holdUsd)+'</b><span>'+fmt(w.holdGain)+'</span></div>'+
     '<div><label>Cash '+esc(b.quote||'')+'</label><b>$'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Cash on bids</label><b>$'+fmtN(w.cashHold)+'</b></div>'+
     '<div><label>Equity</label><b>$'+fmtN(w.equity||p.lastEquity)+'</b></div>'+
@@ -585,7 +589,11 @@ function boardHtml(rows){
         '<div class="col"><label>inv</label><b>$'+fmtN((b.working||{}).inventory)+'</b></div>'+
         '<div class="col"><label>fills</label><b>'+((b.working&&b.working.fills)!=null?String(b.working.fills):'0')+'</b></div>'+
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
+        '<div class="col"><label>hold</label><b>$'+fmtN((b.working||{}).holdUsd)+'</b><span>gain '+fmt((b.working||{}).holdGain)+'</span></div>'+
       '</div>'+
+      '<div class="hold-card">'+((b.markets||[]).filter(function(m){return Number(m.heldUsd||0)>0;}).map(function(m){
+        return '<div class="hr"><b>'+esc(m.symbol)+'</b> $'+fmtN(m.heldUsd)+' <span class="'+(Number(m.heldGain)>=0?'up':'dn')+'">'+fmt(m.heldGain)+'</span></div>';
+      }).join('')||'<div class="age">no hold</div>')+'</div>'+
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }

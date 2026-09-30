@@ -219,8 +219,21 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const a of mmAlloc) {
         const st = pairState.get(a.pair);
         const legs = st && st.ladder ? [...st.ladder.buys, ...st.ladder.sells] : [];
-        const openB = legs.filter((o) => o.side === 'buy' && o.status === 'open');
-        const openA = legs.filter((o) => o.side === 'sell' && o.status === 'open');
+        const seenId = new Set();
+        const openB = legs.filter((o) => {
+          if (!(o.side === 'buy' && o.status === 'open')) return false;
+          const id = String(o.orderId || '');
+          if (id && seenId.has(id)) return false;
+          if (id) seenId.add(id);
+          return true;
+        });
+        const openA = legs.filter((o) => {
+          if (!(o.side === 'sell' && o.status === 'open')) return false;
+          const id = String(o.orderId || '');
+          if (id && seenId.has('s' + id)) return false;
+          if (id) seenId.add('s' + id);
+          return true;
+        });
         const bids = openB.length;
         const asks = openA.length;
         const bidUsd = openB.reduce((s, o) => s + Number(o.size) * Number(o.price), 0);
@@ -288,15 +301,6 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd)).toFixed(2) +
         '  fills=' + fillCount);
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
-      if (cfg.exchange === 'coinbase' && Date.now() - (emitStatus.lastDust || 0) > Number(process.env.DUST_SWEEP_MS || 300000)) {
-        emitStatus.lastDust = Date.now();
-        const keepSet = new Set(mmAlloc.map((a) => a.symbol));
-        const dust = Object.keys(pos).filter((s) => !keepSet.has(s) && Number((pos[s].amount || 0)) > 0);
-        if (dust.length) {
-          console.log('dust sweep bg ' + dust.join(','));
-          skimToBank(cfg, liveSnap, 1, dust, 'run', getLive).catch((e) => console.warn('dust sweep', e.message));
-        }
-      }
       saveMmSet(mmAlloc);
       const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
       const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
@@ -311,7 +315,12 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       postStatus({
         bot: process.env.BOT || 'ladder', exchange: cfg.exchange, quote: cfg.quote,
         pnl: snap, markets: marketRows, wallet, proj,
-        working: { bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold, equity: Number((liveSnap && liveSnap.totalEquity) || 0), fills: fillCount },
+        working: {
+          bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
+          equity: Number((liveSnap && liveSnap.totalEquity) || 0), fills: fillCount,
+          holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
+          holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
+        },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),
