@@ -615,8 +615,13 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
   const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
   const focused = isTopWeight(a.pair, focusN);
-  if (!focused && pairState.has(a.pair)) {
-    const ladder = pairState.get(a.pair).ladder;
+  if (!focused) {
+    if (!pairState.has(a.pair)) {
+      pairState.set(a.pair, { ladder: { buys: [], sells: [] }, symbol: a.symbol, lastMid: book.mid, parked: true, bornAt: Date.now() });
+    }
+    const st = pairState.get(a.pair);
+    st.parked = true;
+    const ladder = st.ladder;
     const buys = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
     if (buys.length) {
       console.log('  PARK ' + a.symbol + ' not in top ' + focusN + ' 1m — pull bids');
@@ -636,7 +641,6 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     publishOrders(a, ladder, book.mid);
     return;
   }
-  if (!focused) return;
   if (!liveTapeReady(a.symbol)) return;
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
@@ -669,7 +673,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     }
   }
   if (wantLv < haveLv) {
-    const drop = [...ladder.buys, ...ladder.sells].filter((o) => o.status === 'open' && Number(o.level) > wantLv);
+    const drop = [...ladder.buys, ...ladder.sells].filter((o) => o.status === 'open' && Number(o.level) > wantLv && !(o.cover || (o.side === 'sell' && Number(o.level) === 1)));
     if (drop.length) {
       console.log('  COLLAPSE ' + a.symbol + ' L' + haveLv + ' -> L' + wantLv);
       await Promise.all(drop.map(async (o) => {
@@ -795,10 +799,10 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
 export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!getLive || !book) return;
   const live = await getLive();
-  const held = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0);
-  const openQty = (ladder.sells || []).filter((o) => o.status === 'open' && o.orderId).reduce((s, o) => s + Number(o.size || 0), 0);
+  const pos = live.positions && live.positions[a.symbol];
+  const available = Number((pos && pos.amount) || 0);
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
-  const need = held - openQty;
+  const need = available;
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
@@ -814,12 +818,12 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
     px = formatPrice(floor, a.pairDecimals);
     console.log('  COVER FLOOR ' + a.symbol + ' touch would lose vs vwap+' + (2 * feeBps).toFixed(0) + 'bps -> ' + px);
   }
-  const size = formatVolume(need * 0.95, a.lotDecimals);
+  const size = formatVolume(need * 0.995, a.lotDecimals);
   if (!(Number(size) >= minV)) return;
-  console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' held=' + held.toFixed(4) + ' open=' + openQty.toFixed(4));
+  console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' avail=' + available.toFixed(4));
   const r = await ex.limitOrder(a.pair, 'sell', px, size, { level: 1 });
   if (r && r.order_id) {
-    ladder.sells.push({ level: 1, side: 'sell', price: px, size, orderId: r.order_id, status: 'open' });
+    ladder.sells.push({ level: 1, side: 'sell', price: px, size, orderId: r.order_id, status: 'open', cover: true });
     logEvent('place', { pair: a.pair, symbol: a.symbol, side: 'sell', level: 1, price: px, size, orderId: r.order_id, mid });
   }
 }
