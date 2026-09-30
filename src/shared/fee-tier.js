@@ -7,7 +7,8 @@ export function feeTierSnap() { return last; }
 
 export async function refreshFeeTier(cfg) {
   if (cfg.exchange !== 'coinbase') return last;
-  if (Date.now() - lastAt < Number(process.env.FEE_TIER_MS || 300000) && last) return last;
+  const gap = Number(process.env.FEE_TIER_MS || 11 * 60 * 1000);
+  if (Date.now() - lastAt < gap && last) return last;
   try {
     const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/transaction_summary?product_type=SPOT');
     const ft = data.fee_tier || {};
@@ -22,12 +23,19 @@ export async function refreshFeeTier(cfg) {
       volFrom: Number(ft.usd_from || 0),
       volTo: to,
       need: to > vol ? to - vol : 0,
+      refreshedAt: Date.now(),
+      nextAt: Date.now() + gap,
     };
     lastAt = Date.now();
   } catch (e) {
     console.warn('fee tier', e.message);
   }
   return last;
+}
+
+export function feeTierNextAt() {
+  const gap = Number(process.env.FEE_TIER_MS || 11 * 60 * 1000);
+  return lastAt ? lastAt + gap : 0;
 }
 
 export function etaNextTierHours(volPerHour) {

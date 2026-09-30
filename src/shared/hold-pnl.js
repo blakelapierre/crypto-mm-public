@@ -1,7 +1,9 @@
 const pending = new Map();
 let realized = 0;
+const fills = [];
 
 export function holdRealizedUsd() { return realized; }
+export function holdFills() { return fills.slice(); }
 export function holdBasis(symbol) {
   const lot = pending.get(String(symbol || '').toUpperCase());
   return lot && lot.mid > 0 ? lot.mid : 0;
@@ -26,6 +28,8 @@ export function consumeHoldSale(symbol, price, size, fee, pair) {
   const used = Math.min(qty, lot.qty);
   const pnl = (px - lot.mid) * used - f * (used / qty);
   realized += pnl;
+  fills.push({ ts: Date.now(), symbol: key, price: px, size: used, fee: f * (used / qty), pnl });
+  while (fills.length > 10) fills.shift();
   lot.qty -= used;
   if (lot.qty <= 1e-12) pending.delete(key);
   else pending.set(key, lot);

@@ -183,6 +183,7 @@ function collect() {
       price: kpiSeries(b.bot, 'price'),
       maker: kpiSeries(b.bot, 'maker'),
       fees: kpiSeries(b.bot, 'fees'),
+      net: kpiSeries(b.bot, 'net'),
       vol: kpiSeries(b.bot, 'vol'),
       bank: kpiSeries(b.bot, 'bank'),
     },
@@ -340,6 +341,7 @@ function projectOf(b){
     vol: vol/hours,
     maker: Number(pnl.makerPnl||0)/hours,
     fees: Number(pnl.fees||0)/hours,
+    net: (Number(pnl.makerPnl||0)-Number(pnl.fees||0))/hours,
     wallet: Number(pnl.walletGain||0)/hours,
     price: Number(pnl.pricePnl||0)/hours,
     bank: bankRun/hours,
@@ -510,6 +512,12 @@ function fillsTable(b){
   return '<div class="fills"><h2>Fills</h2><p class="age">'+hist+'</p><table><thead><tr><th>Time</th><th></th><th>Mkt</th><th>Price</th><th>Size</th><th>$</th><th>Fee</th><th>bps</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function botRank(b){const n=String(b.bot||'').toLowerCase();if(n==='ladder')return 0;if(n==='comp')return 2;return 1;}
+function tierCd(b){
+  const n=Number(b.tierNextAt||(b.feeTier&&b.feeTier.nextAt)||0);
+  if(!n) return '';
+  const s=Math.max(0,Math.floor((n-Date.now())/1000));
+  return Math.floor(s/60)+'m'+(s%60).toString().padStart(2,'0')+'s';
+}
 function sessAge(b){
   const t0=(b.pnl&&b.pnl.startedAt)||b.startedAt||b.ts;
   if(!t0) return '';
@@ -518,6 +526,15 @@ function sessAge(b){
   if(s<3600) return (s/60).toFixed(0)+'m';
   if(s<86400) return (s/3600).toFixed(1)+'h';
   return (s/86400).toFixed(2)+'d';
+}
+function holdFillsTable(b){
+  const rows=((b.working||{}).holdFills||[]).slice(-10).reverse();
+  if(!rows.length) return '<div class="fills"><h2>Hold sells</h2><p class="age">none yet</p></div>';
+  const body=rows.map(function(f){
+    const when=new Date(f.ts||Date.now()).toISOString().slice(11,19);
+    return '<tr class="sell"><td>'+esc(when)+'</td><td>'+esc(f.symbol)+'</td><td class="px">'+esc(f.price)+'</td><td>'+esc(f.size)+'</td><td>'+fmt(f.pnl)+'</td></tr>';
+  }).join('');
+  return '<div class="fills"><h2>Hold sells</h2><table><thead><tr><th>Time</th><th>Mkt</th><th>Px</th><th>Size</th><th>PnL $</th></tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function card(b){
   const p=b.pnl||{};
@@ -538,6 +555,7 @@ function card(b){
     '<div><label>PRICE</label><b>'+fmt(p.pricePnl)+'</b>'+sparkSvg((b.kpiSpark||{}).price)+projLines(q,'price',(b.kpiSpark||{}).price,t0,true)+'</div>'+
     '<div><label>MAKER</label><b>'+fmt(p.makerPnl)+'</b>'+sparkSvg((b.kpiSpark||{}).maker)+projLines(q,'maker',(b.kpiSpark||{}).maker,t0,true)+'</div>'+
     '<div><label>FEES</label><b>'+fmt(p.fees!=null?-p.fees:null)+'</b>'+sparkSvg((b.kpiSpark||{}).fees)+projLines({fees:q.fees!=null?-q.fees:0},'fees',(b.kpiSpark||{}).fees,t0,true)+'</div>'+
+    '<div><label>NET</label><b>'+fmt(p.netMaker!=null?p.netMaker:(Number(p.makerPnl||0)-Number(p.fees||0)))+'</b>'+sparkSvg((b.kpiSpark||{}).net)+projLines(q,'net',(b.kpiSpark||{}).net,t0,true)+'</div>'+
     '<div><label>TAKER</label><b>'+fmt(p.takerFees!=null?-p.takerFees:null)+'</b></div>'+
     '<div><label>GAP</label><b>'+fmt(p.otherPnl)+'</b></div>'+
     '<div><label>BANK</label><b>'+fmt(b.banked)+'</b></div>'+
@@ -558,7 +576,7 @@ function card(b){
     '<div><label>Edge 1h</label><b>'+(b.edgeBps==null?'n/a':(Number(b.edgeBps)>=0?'+':'')+Number(b.edgeBps).toFixed(0)+'bps')+'</b></div></div>'+
     
     '<div class="split"><div class="wallet">'+walletTable(b)+'</div><div class="markets"><table><thead><tr><th>Mkt</th><th>mid</th><th>spr</th><th>edge</th><th>bid/ask</th><th>bid$</th><th>ask$</th><th>inv$</th><th>fills</th><th>buy vol</th><th>sell vol</th><th>vol</th><th>fee</th><th>w</th></tr></thead><tbody>'+
-    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+fillsTable(b)+apiBlock(b)+'</section>';
+    (mk||'<tr><td colspan="10">no markets</td></tr>')+'</tbody></table></div></div>'+holdFillsTable(b)+fillsTable(b)+apiBlock(b)+'</section>';
 }
 function boardHtml(rows){
   return (rows||[]).map(function(b){
@@ -604,7 +622,7 @@ function boardHtml(rows){
         '<div class="col"><label>bank</label><b>$'+fmtN(b.bankedRun)+'</b><span>/h '+fmt(q.bank)+'</span><span>/d '+fmt(q.bank*24)+'</span><span class="pw">/7d '+fmt(q.bank*24*7)+'</span><span class="pm">/30d '+fmt(q.bank*24*30)+'</span><span class="py">/365d '+fmt(q.bank*24*365)+'</span></div>'+
         '<div class="col"><label>hold</label><b>$'+fmtN((b.working||{}).holdUsd)+'</b><span>gain '+fmt((b.working||{}).holdGain)+'</span></div>'+
         '<div class="col"><label>hold x</label><b>'+fmt((b.working||{}).holdRealized)+'</b></div>'+
-        (b.feeTier?'<div class="col"><label>tier</label><b>'+esc(b.feeTier.tier||'')+'</b><span>$'+fmtN(b.feeTier.volume)+' / $'+fmtN(b.feeTier.volTo)+'</span><span>'+(b.tierEtaH!=null?(Number(b.tierEtaH).toFixed(1)+'h to next'):'')+'</span></div>':'')+
+        (b.feeTier?'<div class="col"><label>tier</label><b>'+esc(b.feeTier.tier||'')+'</b><span>$'+fmtN(b.feeTier.volume)+' / $'+fmtN(b.feeTier.volTo)+'</span><span>'+(b.tierEtaH!=null?(Number(b.tierEtaH).toFixed(1)+'h to next'):'')+'</span><span>ref '+tierCd(b)+'</span></div>':'')+
       '</div>'+
       '<div class="hold-card">'+((b.markets||[]).filter(function(m){return Number(m.heldUsd||0)>0;}).map(function(m){
         return '<div class="hr"><b>'+esc(m.symbol)+'</b> $'+fmtN(m.heldUsd)+' <span class="'+(Number(m.heldGain)>=0?'up':'dn')+'">'+fmt(m.heldGain)+'</span></div>';
@@ -773,6 +791,7 @@ const server = http.createServer(async (req, res) => {
         price: pnl.pricePnl,
         maker: pnl.makerPnl,
         fees: pnl.fees != null ? -pnl.fees : 0,
+        net: Number(pnl.makerPnl||0)-Number(pnl.fees||0),
         vol,
         bank: Number(msg.bankedRun != null ? msg.bankedRun : prev.bankedRun || 0),
       });

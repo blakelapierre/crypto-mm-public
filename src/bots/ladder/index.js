@@ -20,8 +20,8 @@ import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBa
 import { postStatus, postMids } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { noteMid, midReturn, trendMult, shortRun } from '../../shared/mid-ring.js';
-import { holdRealizedUsd } from '../../shared/hold-pnl.js';
-import { refreshFeeTier, feeTierSnap, etaNextTierHours } from '../../shared/fee-tier.js';
+import { holdRealizedUsd, holdFills } from '../../shared/hold-pnl.js';
+import { refreshFeeTier, feeTierSnap, etaNextTierHours, feeTierNextAt } from '../../shared/fee-tier.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
@@ -343,11 +343,13 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
           holdRealized: holdRealizedUsd(),
+          holdFills: holdFills(),
         },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
         bankHoldings: bankHoldings(),
         feeTier: feeTierSnap(),
+        tierNextAt: feeTierNextAt(),
         tierEtaH: etaNextTierHours((marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0)) / Math.max((snap.elapsedMs || 1) / 3600000, 1 / 60)),
         moversVol: topVolatiles(12).map((r) => ({
           symbol: r.symbol, rangePct: r.rangePct, ret: r.ret,

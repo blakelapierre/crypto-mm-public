@@ -117,7 +117,7 @@ export function createPnl() {
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedRunUsd() - priceAcc - makerAcc + feesPaid : null;
-    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
+    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, netMaker: makerAcc - feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
@@ -126,6 +126,7 @@ export function createPnl() {
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
     console.log('  FEES   ' + fmt(-s.fees) + '   all venue commission (not in MAKER)');
+    console.log('  NET    ' + fmt(s.netMaker) + '   maker + fees');
     console.log('  TAKER  ' + fmt(-(s.takerFees || 0)) + '   market-order fees only');
     if (s.otherPnl != null) console.log('  GAP    ' + fmt(s.otherPnl) + '   residual so WALLET+BANK=PRICE+MAKER-FEES+GAP');
     const b = bankedTotalUsd();

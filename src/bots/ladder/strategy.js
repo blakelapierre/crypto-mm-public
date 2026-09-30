@@ -467,12 +467,20 @@ function liveTapeReady(symbol) {
   const cut = Date.now() - win;
   return midRing(symbol).filter((x) => x.t >= cut).length >= 8;
 }
+let focusLocked = [];
+let focusLockUntil = 0;
 function isTopWeight(selfPair, n = 2) {
   if (!liveMmAlloc.length) return false;
   const ready = liveMmAlloc.filter((a) => liveTapeReady(a.symbol));
   if (!ready.length) return false;
   const ranked = [...ready].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
-  return ranked.slice(0, n).some((a) => a.pair === selfPair);
+  const top = ranked.slice(0, n).map((a) => a.pair);
+  const now = Date.now();
+  if (now >= focusLockUntil || !focusLocked.length) {
+    focusLocked = top;
+    focusLockUntil = now + Number(process.env.FOCUS_LOCK_MS || 120000);
+  }
+  return focusLocked.includes(selfPair);
 }
 
 function heavierBare(selfPair) {
@@ -612,6 +620,12 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const buys = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
     if (buys.length) {
       console.log('  PARK ' + a.symbol + ' not in top ' + focusN + ' 1m — pull bids');
+      try {
+        const liveP = getLive ? await getLive() : null;
+        const pos = liveP && liveP.positions && liveP.positions[a.symbol];
+        const usd = pos ? (Number(pos.amount || 0) * Number(book.mid || 0)) : 0;
+        if (usd > 0) noteHoldExit(a.symbol, book.mid, usd);
+      } catch { /* ignore */ }
       await Promise.all(buys.map(async (o) => {
         try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
         o.status = 'cancelled';
