@@ -8,7 +8,7 @@ import { midRing, noteMid, midReturn, midRangePct } from '../../shared/mid-ring.
 import { postOrders } from '../../shared/status-client.js';
 import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
-import { noteHoldExit } from '../../shared/hold-pnl.js';
+import { noteHoldExit, holdBasis } from '../../shared/hold-pnl.js';
 
 
 
@@ -594,6 +594,24 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   if (!book) return;
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
+  const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
+  const focused = isTopWeight(a.pair, focusN);
+  if (!focused && pairState.has(a.pair)) {
+    const ladder = pairState.get(a.pair).ladder;
+    const buys = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
+    if (buys.length) {
+      console.log('  PARK ' + a.symbol + ' not in top ' + focusN + ' 1m — pull bids');
+      await Promise.all(buys.map(async (o) => {
+        try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+        o.status = 'cancelled';
+        logEvent('cancel', { orderId: o.orderId, side: o.side, level: o.level, price: o.price, why: 'park', mid: book.mid });
+      }));
+    }
+    await coverInventory(cfg, ex, a, ladder, book, getLive);
+    publishOrders(a, ladder, book.mid);
+    return;
+  }
+  if (!focused) return;
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
@@ -760,9 +778,16 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(mid > 0)) return;
   const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
   const half = l1HalfFrac(cfg, a.pair);
-  const px = (dropping && Number(book.ask) > 0)
+  const feeBps = Number(realizedFeeBps(a.pair) != null ? realizedFeeBps(a.pair) : assumedMakerFeeBps(cfg));
+  const basis = holdBasis(a.symbol) || 0;
+  const floor = basis > 0 ? basis * (1 + (2 * feeBps) / 10000) : 0;
+  let px = (dropping && Number(book.ask) > 0)
     ? formatPrice(book.ask, a.pairDecimals)
     : clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
+  if (floor > 0 && Number(px) + 1e-12 < floor) {
+    px = formatPrice(floor, a.pairDecimals);
+    console.log('  COVER FLOOR ' + a.symbol + ' touch would lose vs vwap+' + (2 * feeBps).toFixed(0) + 'bps -> ' + px);
+  }
   const size = formatVolume(need * 0.95, a.lotDecimals);
   if (!(Number(size) >= minV)) return;
   console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' held=' + held.toFixed(4) + ' open=' + openQty.toFixed(4));

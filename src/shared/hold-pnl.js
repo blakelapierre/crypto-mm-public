@@ -2,6 +2,10 @@ const pending = new Map();
 let realized = 0;
 
 export function holdRealizedUsd() { return realized; }
+export function holdBasis(symbol) {
+  const lot = pending.get(String(symbol || '').toUpperCase());
+  return lot && lot.mid > 0 ? lot.mid : 0;
+}
 
 export function noteHoldExit(symbol, mid, usd) {
   const key = String(symbol || '').toUpperCase();
