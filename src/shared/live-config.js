@@ -30,6 +30,11 @@ export const TUNABLES = [
   { key: 'SKEW_OTHER_SIDE', type: 'bool' },
   { key: 'SKEW_TIGHTEN_BPS', type: 'num' },
   { key: 'MM_INVENTORY_FRACTION', type: 'num' },
+  { key: 'INV_NAME_MAX_FRAC', type: 'num', hint: 'max inventory / equity per name' },
+  { key: 'INV_CAP_HARD', type: 'num' },
+  { key: 'CASH_FLOOR_FRAC', type: 'num', hint: 'min cash/equity before new buys' },
+  { key: 'CLIP_EQ_FRAC', type: 'num' },
+  { key: 'HOLD_FLAT_RET', type: 'num' },
 ];
 
 const CFG_MAP = {

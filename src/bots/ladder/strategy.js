@@ -75,7 +75,7 @@ function inventoryUsd(live, symbol) {
 }
 function inventoryCapUsd(live) {
   const eq = Number((live && live.totalEquity) || 0);
-  const frac = Number(process.env.INV_CAP_FRAC || 0.08);
+  const frac = Number(process.env.INV_NAME_MAX_FRAC || process.env.INV_CAP_FRAC || 0.22);
   return Math.max(0, eq * frac);
 }
 function inventorySkew(live, symbol) {
@@ -184,9 +184,12 @@ function resizeLeg(cfg, a, o, live) {
     const cap = inventoryCapUsd(live);
     const held = inventoryUsd(live, a.symbol);
     const ret = midReturn(a.symbol);
-    const hard = Number(process.env.INV_CAP_HARD || 1.4);
-    if (!isL1 && cap > 0 && held >= cap * hard) return 0;
-    if (!isL1 && cap > 0 && held >= cap && ret <= 0) return 0;
+    const hard = Number(process.env.INV_CAP_HARD || 1.0);
+    if (cap > 0 && held >= cap * hard) return 0;
+    if (cap > 0 && held >= cap && ret <= 0) return 0;
+    const eq = Number(live.totalEquity || 0);
+    const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
+    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.25) && !isL1) return 0;
     const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     let reserved = 0;
@@ -211,9 +214,11 @@ function resizeLeg(cfg, a, o, live) {
       ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol))[0]
       : null;
     const isTop = top && top.symbol === a.symbol;
+    const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
+    const clipMax = Number(process.env.CLIP_MAX_USD || 0) || Math.max(cfg.minOrderUsd || 1, eq * Number(process.env.CLIP_EQ_FRAC || 0.12));
     let useUsd = isL1
-      ? Math.min(cashLeft, isTop ? Math.max(cashShare, cashLeft * 0.5) : cashShare)
-      : Math.min(wantUsd || cashShare, cashShare || wantUsd, room || cashShare);
+      ? Math.min(cashLeft, nameRoom, clipMax, isTop ? Math.max(cashShare, Math.min(cashLeft * 0.35, nameRoom)) : cashShare)
+      : Math.min(wantUsd || cashShare, cashShare || wantUsd, nameRoom, clipMax);
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
     if (useUsd < minUsd && cashLeft >= minUsd) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
@@ -818,7 +823,8 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   let px = (dropping && Number(book.ask) > 0)
     ? formatPrice(book.ask, a.pairDecimals)
     : clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
-  if (floor > 0 && Number(px) + 1e-12 < floor) {
+  const fadeForce = dropping && !['0', 'false'].includes(String(process.env.COVER_FADE_TOUCH || '1').toLowerCase());
+  if (!fadeForce && floor > 0 && Number(px) + 1e-12 < floor) {
     px = formatPrice(floor, a.pairDecimals);
     console.log('  COVER FLOOR ' + a.symbol + ' touch would lose vs vwap+' + (2 * feeBps).toFixed(0) + 'bps -> ' + px);
   }

@@ -147,6 +147,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           while (keep.length > hardMax) leaving.push(keep.pop());
           const have = new Set(keep.map((a) => a.pair));
           const additions = [];
+          const eqNow = live ? Number(live.totalEquity || 0) : 0;
+          const cashNow = live ? Number(live.freeQuote || 0) : 0;
+          const cashOk = !(eqNow > 0) || cashNow / eqNow >= Number(process.env.CASH_FLOOR_FRAC || 0.25);
           const scored = ranked.map((r) => {
             const ret = midReturn(r.symbol);
             const tr = trendMult(r.symbol);
@@ -160,6 +163,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const hot = Number(r.rangePct || 0) >= enterPct;
             if (!hot && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (keep.length + additions.length >= hardMax) continue;
+            if (!cashOk) continue;
             if (!(r.pair && r.symbol)) continue;
             additions.push(r);
           }
