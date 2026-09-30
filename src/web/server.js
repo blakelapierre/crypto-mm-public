@@ -205,7 +205,7 @@ body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0e1116;color:#e7
 #chrome{position:sticky;top:0;z-index:30;background:#0e1116;padding:10px 14px 6px}
 #shell{display:flex;align-items:flex-start;gap:12px;padding:0 14px 0}
 #pin{flex:1;min-width:0;max-height:40vh;overflow-y:auto;background:#0e1116;padding:0 0 8px;border-bottom:1px solid #30363d}
-#bank.bank-card{position:sticky;top:10px;flex:0 0 240px;max-height:40vh;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
+#bank.bank-card,#hold.bank-card{position:sticky;top:10px;flex:0 0 200px;max-height:40vh;overflow:hidden;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:8px 10px}
 #root{padding:10px 14px 24px}
 h1{font-size:17px;font-weight:600;margin:0 0 8px}
 h2{font-size:13px;margin:0 0 8px}
@@ -275,11 +275,11 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .movers .botg .sub{width:100%;text-align:center;font-size:9px;color:#8b98a5;margin-top:4px}
 #top-row{display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:stretch;gap:12px;width:100%;flex:1;min-height:0;overflow:hidden}
 #board.board{flex:1 1 auto;min-width:0}
-#bank .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
-#bank table{width:100%;border-collapse:collapse}
-#bank td{padding:1px 4px}
-#bank h3{margin:0 0 2px;font-size:12px}
-#bank .bank-total{font-size:16px;font-weight:700;margin:0 0 6px;font-variant-numeric:tabular-nums}
+#bank .bank-list,#hold .bank-list{overflow-y:auto;flex:1;min-height:0;font-size:11px;font-variant-numeric:tabular-nums}
+#bank table,#hold table{width:100%;border-collapse:collapse}
+#bank td,#hold td{padding:1px 4px}
+#bank h3,#hold h3{margin:0 0 2px;font-size:12px}
+#bank .bank-total,#hold .bank-total{font-size:16px;font-weight:700;margin:0 0 6px;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -294,6 +294,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <div id="board" class="board"></div>
 </div>
 </div>
+<div id="hold" class="bank-card"></div>
 <div id="bank" class="bank-card"></div>
 </div>
 <div id="root"></div>
@@ -466,11 +467,11 @@ function orderBook(m){
     const dd=Math.abs(pct)>=1?2:3;
     return (pct>=0?'+':'')+pct.toFixed(dd)+'%';
   }
-  const row=(cls,side,px,vs,size,usd,st,id)=>
-    '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(vs)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
-  const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||''));
-  lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','','',''));
-  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'')));
+  const row=(cls,side,px,vs,size,usd,st,id,proj)=>
+    '<tr class="'+cls+'"><td>'+side+'</td><td class="px">'+esc(px)+'</td><td>'+esc(vs)+'</td><td>'+esc(size)+'</td><td>'+esc(usd)+'</td><td>'+(proj!=null&&proj!==''?'<span class="'+(Number(proj)>=0?'up':'dn')+'">'+fmt(Number(proj))+'</span>':'')+'</td><td>'+esc(st)+'</td><td>'+esc(id)+'</td></tr>';
+  const lines=sells.map(o=>row('sell','SELL L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'',o.proj));
+  lines.push(row('mid','MID',fmtPx(m.mid,d),fmtSpread(m),'','','','',''));
+  buys.forEach(o=>lines.push(row('buy','BUY L'+o.level,fmtPx(o.price,d),pctMid(o.price),o.size,'$'+Number(o.usd||0).toFixed(2),o.status||'',o.id||'','')));
   const fills=(m.sparkFills||[]).slice().sort(function(a,c){return Date.parse(c.ts||0)-Date.parse(a.ts||0);}).slice(0,5);
   const fl=fills.map(function(f){
     const side=String(f.side||'').toLowerCase();
@@ -656,6 +657,21 @@ function bankHtml(rows){
     return '<tr><td>'+esc(x.a)+'</td><td>'+esc(x.qty.toPrecision(6))+'</td><td>$'+fmtN(x.usd)+'</td></tr>';
   }).join('')+'</table></div>';
 }
+function holdHtml(rows){
+  const items=[];
+  (rows||[]).forEach(function(b){
+    (b.markets||[]).forEach(function(m){
+      if(Number(m.heldUsd||0)>0) items.push({bot:b.bot,sym:m.symbol,usd:Number(m.heldUsd||0),gain:Number(m.heldGain||0)});
+    });
+  });
+  items.sort(function(a,c){return c.usd-a.usd;});
+  const tot=items.reduce(function(s,x){return s+x.usd;},0);
+  const g=items.reduce(function(s,x){return s+x.gain;},0);
+  if(!items.length) return '<h3>hold</h3><div class="age">no rise hold</div>';
+  return '<h3>hold</h3><div class="bank-total">$'+fmtN(tot)+'</div><div class="'+(g>=0?'up':'dn')+'">gain '+fmt(g)+'</div><div class="bank-list"><table>'+items.map(function(x){
+    return '<tr><td>'+esc(x.sym)+'</td><td>$'+fmtN(x.usd)+'</td><td class="'+(x.gain>=0?'up':'dn')+'">'+fmt(x.gain)+'</td></tr>';
+  }).join('')+'</table></div>';
+}
 function render(data){
   const rows=data.bots||[];
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
@@ -668,6 +684,8 @@ function render(data){
     const snap=JSON.stringify((rows||[]).map(function(b){return b.bankHoldings||[];}));
     if(window._bankSnap!==snap){ window._bankSnap=snap; bank.innerHTML=bankHtml(rows); }
   }
+  const holdEl=document.getElementById('hold');
+  if(holdEl) holdEl.innerHTML=holdHtml(rows);
   document.getElementById('root').innerHTML=rows.map(card).join('')||'<p>No reports yet.</p>';
 }
 function connect(){

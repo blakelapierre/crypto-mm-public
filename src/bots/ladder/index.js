@@ -111,9 +111,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
       const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
-      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || cfg.mmMaxPairs || 8);
+      const hardMax = Number(process.env.MM_MAX_PAIRS_HARD || 24);
       const levels = Math.max(1, cfg.mmLevels || 1);
-      await sleep(Number(process.env.VOL_ENTER_WAIT_MS || 15000));
+      await sleep(Number(process.env.VOL_ENTER_WAIT_MS || 0));
       while (true) {
         try {
           const ranked = volScan.ranking();
@@ -139,10 +139,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             else keep.push(a);
           }
           keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
-          while (keep.length > hardMax) leaving.push(keep.pop());
+          while (keep.length > hardMax) {
+            const weak = keep[keep.length - 1];
+            const wr = Number((volStatsForSymbol(weak.symbol) || {}).rangePct || 0);
+            if (wr >= enterPct) break;
+            leaving.push(keep.pop());
+          }
           const have = new Set(keep.map((a) => a.pair));
           const additions = [];
-          let budget = free * Number(process.env.VOL_ENTER_CASH_FRAC || 0.85);
           const scored = ranked.map((r) => {
             const ret = midReturn(r.symbol);
             const tr = trendMult(r.symbol);
@@ -151,10 +155,11 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           }).sort((a, b) => b.pick - a.pick);
           for (const r of scored) {
             if (have.has(r.pair)) continue;
-            if (keep.length + additions.length >= hardMax) break;
             const rip = shortRun(r.symbol);
             const watched = watch.has(r.pair);
-            if (Number(r.rangePct || 0) < enterPct && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
+            const hot = Number(r.rangePct || 0) >= enterPct;
+            if (!hot && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
+            if (!hot && keep.length + additions.length >= hardMax) continue;
             if (!(r.pair && r.symbol)) continue;
             additions.push(r);
           }
@@ -243,10 +248,24 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         const fee = realizedFeeBps(a.pair);
         const w = sizeWeightForSymbol(a.symbol);
         const book = (snap.rows || []).find((r) => r.symbol === a.symbol) || {};
-        const orders = [...openB, ...openA].map((o) => ({
-          side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
-          usd: Number(o.size) * Number(o.price), id: o.orderId ? String(o.orderId).slice(0, 8) : '',
-        }));
+        const basis = pnl.avgBuy ? pnl.avgBuy(a.symbol) : 0;
+        const feeFrac = (realizedFeeBps(a.pair) != null ? realizedFeeBps(a.pair) : 35) / 10000;
+        const orders = [...openB, ...openA].map((o) => {
+          const usd = Number(o.size) * Number(o.price);
+          let proj = null;
+          if (String(o.side).toLowerCase() === 'sell' && Number(o.size) > 0) {
+            const buyPx = basis > 0 ? basis : (Number(mid) > 0 ? Number(mid) * (1 - feeFrac) : 0);
+            if (buyPx > 0) {
+              const gross = (Number(o.price) - buyPx) * Number(o.size);
+              const fees = feeFrac * Number(o.price) * Number(o.size) + feeFrac * buyPx * Number(o.size);
+              proj = gross - fees;
+            }
+          }
+          return {
+            side: o.side, level: o.level, size: o.size, price: o.price, status: o.status,
+            usd, proj, id: o.orderId ? String(o.orderId).slice(0, 8) : '',
+          };
+        });
         const bestBid = openB.reduce((m, o) => Math.max(m, Number(o.price) || 0), 0);
         const bestAsk = openA.reduce((m, o) => {
           const px = Number(o.price);
@@ -387,18 +406,19 @@ async function main() {
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
   if (dump.length && cfg.exchange !== 'print') {
-    console.log('startup sell non-MM: ' + dump.join(','));
-    await liquidateSymbols(cfg, ex, live, dump, productMap);
-    live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
-    invalidateLiveCache();
-    live = await fetchLivePortfolio(cfg, ex, productMap);
-    const leftover = dump.filter((s) => { const p = live.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
-    if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
-      console.log('bank leftover orphans (bg) ' + leftover.join(','));
-      skimToBank(cfg, live, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap))
-        .catch((e) => console.warn('orphan bank', e.message));
-    }
-    lists = await buildLists(cfg, productMap, live.totalEquity, live);
+    console.log('startup sell non-MM (bg): ' + dump.join(','));
+    (async () => {
+      try {
+        await liquidateSymbols(cfg, ex, live, dump, productMap);
+        invalidateLiveCache();
+        const after = await fetchLivePortfolio(cfg, ex, productMap);
+        const leftover = dump.filter((s) => { const p = after.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
+        if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
+          console.log('bank leftover orphans (bg) ' + leftover.join(','));
+          await skimToBank(cfg, after, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap));
+        }
+      } catch (e) { console.warn('bg flatten', e.message); }
+    })();
   }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');

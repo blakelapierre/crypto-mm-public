@@ -145,5 +145,10 @@ export function createPnl() {
     const bk = books.get(symbolOf(rec));
     if (bk) bk.fees += delta;
   }
-  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee };
+  function avgBuy(symbol) {
+    const b = books.get(String(symbol || '').toUpperCase());
+    if (!b || !(b.boughtQty > 0)) return 0;
+    return b.boughtCost / b.boughtQty;
+  }
+  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee, avgBuy };
 }
