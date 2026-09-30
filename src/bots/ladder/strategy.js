@@ -224,8 +224,9 @@ function resizeLeg(cfg, a, o, live) {
   const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
-  const dropping30 = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
-  const riseHold = rising && !dropping30 ? riseHoldFrac(a.symbol) : 0;
+  const holdRet = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000));
+  const flatTape = holdRet <= Number(process.env.HOLD_FLAT_RET || 0) || deadTape(a.symbol);
+  const riseHold = rising && !flatTape ? riseHoldFrac(a.symbol) : 0;
   const key = String(a.symbol || '').toUpperCase();
   const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
   const heldUsd = held * (midPx || Number(o.price) || 0);
@@ -233,9 +234,9 @@ function resizeLeg(cfg, a, o, live) {
     const prev = holdStart.get(key);
     if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
     else prev.usd = heldUsd * riseHold;
-  } else if (dropping30 && holdStart.has(key)) {
+  } else if (flatTape && holdStart.has(key)) {
     const h = holdStart.get(key);
-    console.log('  HOLD EXIT ' + a.symbol + ' fade — sell reserved at touch');
+    console.log('  HOLD EXIT ' + a.symbol + ' flat — sell reserved at touch');
     try { noteHoldExit(a.symbol, h.mid, h.usd); } catch { /* ignore */ }
     holdStart.delete(key);
   }
@@ -809,7 +810,7 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
-  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) < 0 || deadTape(a.symbol);
+  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) <= Number(process.env.HOLD_FLAT_RET || 0) || deadTape(a.symbol);
   const half = l1HalfFrac(cfg, a.pair);
   const feeBps = Number(realizedFeeBps(a.pair) != null ? realizedFeeBps(a.pair) : assumedMakerFeeBps(cfg));
   const basis = holdBasis(a.symbol) || 0;
