@@ -365,7 +365,7 @@ async function main() {
     live = await waitForSettlement(cfg, ex, productMap, 'after flatten non-MM');
     invalidateLiveCache();
     live = await fetchLivePortfolio(cfg, ex, productMap);
-    const leftover = dump.filter((s) => live.positions[s] && live.positions[s].amount > 0);
+    const leftover = dump.filter((s) => { const p = live.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
     if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
       console.log('bank leftover orphans ' + leftover.join(','));
       try { await skimToBank(cfg, live, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap)); }

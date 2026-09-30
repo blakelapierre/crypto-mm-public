@@ -1,4 +1,4 @@
-import { bankedTotalUsd } from './bank.js';
+import { bankedTotalUsd, bankedRunUsd } from './bank.js';
 
 export function createPnl() {
   const startedAt = Date.now();
@@ -115,7 +115,7 @@ export function createPnl() {
       rows.push({ symbol: sym, price: priceBy.get(sym) || 0, maker: makerBy.get(sym) || 0, fills: b.fills || 0, fees: b.fees || 0, buyUsd: b.buyVolUsd || 0, sellUsd: b.sellVolUsd || 0 });
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
-    const other = wallet != null ? wallet + bankedTotalUsd() - priceAcc - makerAcc + feesPaid : null;
+    const other = wallet != null ? wallet + bankedRunUsd() - priceAcc - makerAcc + feesPaid : null;
     return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
   }
   function print(mids = {}, tag = 'MM gain') {

@@ -280,8 +280,10 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
     const l1 = open.filter((o) => Number(o.level) === 1);
-    const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target));
-    if (good) return;
+    if (open.length) {
+      const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target));
+      if (good || l1.length) return;
+    }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
     if (!size) {
@@ -382,6 +384,10 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
   const legs = prefer === 'buy' ? [...buys, ...sells] : [...sells, ...buys];
   await Promise.all(legs.map((o, i) => sleep(i * gap).then(async () => {
     if (o.status === 'open' && o.orderId) return;
+    if (Number(o.level) === 1) {
+      const sideLegs = o.side === 'buy' ? buys : sells;
+      if (sideLegs.some((x) => x !== o && x.status === 'open' && x.orderId && Number(x.level) === 1)) return;
+    }
     if (o.side === 'buy' && livePairState && siblingHasBareBids(livePairState, pair)) {
       o.status = 'pending';
       return;
@@ -607,7 +613,30 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   publishOrders(a, ladder, book && book.mid);
   state.lastEnsureAt = 0;
   await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
+  await coverInventory(cfg, ex, a, ladder, book, getLive);
   if (newlyFilled.length) printLadder(a.symbol, a.pair, ladder, book);
+}
+
+export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
+  if (!getLive || !book) return;
+  const live = await getLive();
+  const held = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0);
+  const openQty = (ladder.sells || []).filter((o) => o.status === 'open' && o.orderId).reduce((s, o) => s + Number(o.size || 0), 0);
+  const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
+  const need = held - openQty;
+  if (!(need >= minV)) return;
+  const mid = Number(book.mid || 0);
+  if (!(mid > 0)) return;
+  const half = (Number(process.env.MIN_HALF_SPREAD_BPS || 55) / 10000);
+  const px = formatPrice(mid * (1 + half), a.pairDecimals);
+  const size = formatVolume(need * 0.95, a.lotDecimals);
+  if (!(Number(size) >= minV)) return;
+  console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' held=' + held.toFixed(4) + ' open=' + openQty.toFixed(4));
+  const r = await ex.limitOrder(a.pair, 'sell', px, size, { level: 1 });
+  if (r && r.order_id) {
+    ladder.sells.push({ level: 1, side: 'sell', price: px, size, orderId: r.order_id, status: 'open' });
+    logEvent('place', { pair: a.pair, symbol: a.symbol, side: 'sell', level: 1, price: px, size, orderId: r.order_id, mid });
+  }
 }
 
 export function siblingHasBareBids(pairState, selfPair) {
