@@ -4,6 +4,7 @@ import path from 'path';
 import { setTimeout as sleep } from 'timers/promises';
 import { krakenPublic } from './kraken.js';
 import { coinbaseRequest, coinbaseWsBook } from './coinbase.js';
+import { nnSizeMult } from '../ml/infer.js';
 
 function pairToSym(productMap) {
   const m = new Map();
@@ -157,7 +158,9 @@ export function sizeWeightForSymbol(sym) {
   if (!(sum > 0)) return 1;
   const mine = score(key);
   const n = Math.max(1, list.length);
-  return Math.min(2.2, Math.max(0.15, (mine / sum) * n));
+  const base = Math.min(2.2, Math.max(0.15, (mine / sum) * n));
+  const ret = midReturn(key, win);
+  return base * nnSizeMult({ buy: ret >= 0 ? 1 : 0, offMid: 0, feeBps: Number(process.env.MAKER_FEE_BPS || 35), invSign: ret >= 0 ? 1 : -1 });
 }
 
 export function volStatsForSymbol(sym) {

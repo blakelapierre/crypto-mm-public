@@ -14,7 +14,8 @@
     "web": "node src/web/server.js",
     "bank-dump": "node src/bots/bank-dump.js",
     "dump": "node src/bots/bank-dump.js",
-    "bank-cash": "node src/bots/bank-cash.js"
+    "bank-cash": "node src/bots/bank-cash.js",
+    "train-nn": "node src/ml/train.js"
   },
   "dependencies": {
     "ws": "^8.18.0"
