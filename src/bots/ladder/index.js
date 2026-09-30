@@ -85,7 +85,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     }
   })();
   const liveVol = !(cfg.symbols && cfg.symbols.length) && String(cfg.mmSelect || process.env.MM_SELECT || 'vol').toLowerCase() === 'vol';
-  if (liveVol) {
+  {
     const volScan = createVolScan(cfg, productMap);
     const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 900000);
     console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm rotateMin=' + (rotateMin / 1000) + 's');
@@ -99,7 +99,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         await sleep(cfg.volScanMs || Number(process.env.VOL_SCAN_MS) || 60000);
       }
     })();
-    (async () => {
+    if (liveVol) (async () => {
       const enteredAt = new Map();
       const watch = new Map();
       for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
@@ -246,6 +246,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           fills: book.fills || 0,
           edgeBps: tapeEdgeBps(a.pair),
           invUsd: Number((liveSnap && liveSnap.positions && liveSnap.positions[a.symbol] && liveSnap.positions[a.symbol].valueQuote) || 0),
+          heldUsd: (midReturn(a.symbol) > 0 ? 0.05 : 0) * Number((liveSnap && liveSnap.positions && liveSnap.positions[a.symbol] && liveSnap.positions[a.symbol].valueQuote) || 0),
+          rising: midReturn(a.symbol) > 0,
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
@@ -279,6 +281,15 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd)).toFixed(2) +
         '  fills=' + fillCount);
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
+      if (cfg.exchange === 'coinbase' && Date.now() - (emitStatus.lastDust || 0) > Number(process.env.DUST_SWEEP_MS || 300000)) {
+        emitStatus.lastDust = Date.now();
+        const keepSet = new Set(mmAlloc.map((a) => a.symbol));
+        const dust = Object.keys(pos).filter((s) => !keepSet.has(s) && Number((pos[s].amount || 0)) > 0);
+        if (dust.length) {
+          console.log('dust sweep bg ' + dust.join(','));
+          skimToBank(cfg, liveSnap, 1, dust, 'run', getLive).catch((e) => console.warn('dust sweep', e.message));
+        }
+      }
       saveMmSet(mmAlloc);
       const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
       const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
@@ -367,10 +378,9 @@ async function main() {
     live = await fetchLivePortfolio(cfg, ex, productMap);
     const leftover = dump.filter((s) => { const p = live.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
     if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
-      console.log('bank leftover orphans ' + leftover.join(','));
-      try { await skimToBank(cfg, live, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap)); }
-      catch (e) { console.warn('orphan bank', e.message); }
-      live = await waitForSettlement(cfg, ex, productMap, 'after orphan bank');
+      console.log('bank leftover orphans (bg) ' + leftover.join(','));
+      skimToBank(cfg, live, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap))
+        .catch((e) => console.warn('orphan bank', e.message));
     }
     lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }

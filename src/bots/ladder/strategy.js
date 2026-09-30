@@ -7,6 +7,7 @@ import { backtestRungs } from '../../shared/rungs.js';
 import { midRing, noteMid, midReturn } from '../../shared/mid-ring.js';
 import { postOrders } from '../../shared/status-client.js';
 import { logEvent } from '../../shared/fill-log.js';
+import { invalidateLiveCache } from '../../shared/portfolio.js';
 
 
 
@@ -651,7 +652,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   for (const leg of newlyFilled) {
-    if (leg.side === 'buy') await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
+    if (leg.side === 'buy') {
+      try { invalidateLiveCache(); } catch { /* ignore */ }
+      await coverInventory(cfg, ex, a, ladder, book, getLive);
+      await pinL1(cfg, ex, a, ladder, book, getLive, pairState);
+    }
     publishOrders(a, ladder, book && book.mid);
     await slideSameSide(cfg, ex, a, ladder, leg, book);
     await skewOtherSide(cfg, ex, a, ladder, leg);

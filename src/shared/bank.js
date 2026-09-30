@@ -140,7 +140,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (filter && !filter.has(sym)) continue;
     const avail = Number(pos.amount || 0);
-    const qty = avail * pct * 0.98;
+    const qty = avail * (pct >= 0.99 ? 0.999 : pct * 0.98);
     if (!(qty > 0)) continue;
     let send = formatVolume(qty, pos.lotDecimals != null ? pos.lotDecimals : 8);
     if (Number(send) > avail) send = String((avail * 0.97).toFixed(8));

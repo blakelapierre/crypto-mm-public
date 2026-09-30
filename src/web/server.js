@@ -17,6 +17,7 @@ const SPARK_GAP = Number(process.env.SPARK_SAMPLE_MS || 1000);
 const KPI_SPARK_MS = Number(process.env.KPI_SPARK_MS || 6 * 60 * 60 * 1000);
 const KPI_SPARK_GAP = Number(process.env.KPI_SPARK_GAP_MS || 60 * 1000);
 const kpiSparks = new Map();
+const lastMovers = new Map();
 function noteKpiSpark(bot, snap) {
   if (!bot || !snap) return;
   const now = Date.now();
@@ -188,6 +189,8 @@ function collect() {
     edgeBps: b.edgeBps,
     markets: (b.markets || []).map((m) => ({ ...m, spark: sparkSeries(b.bot, m.symbol), volSpark: volSparks.get(b.bot + ':' + m.symbol) || [], rangeSpark: rangeSparks.get(b.bot + ':' + String(m.symbol).toUpperCase()) || [], sparkFills: sparkFillsFor(b.bot, m.symbol), rungs: backtestRungs(sparkSeries(b.bot, m.symbol), parseFloat(m.fee)), edgeBps: m.edgeBps })),
     movers: (b.movers || []).map((m) => ({ ...m, rangeSpark: rangeSparks.get(b.bot + ':' + String(m.symbol).toUpperCase()) || [] })),
+    moversVol: (b.moversVol && b.moversVol.length) ? b.moversVol : (lastMovers.get(b.bot+':vol') || []),
+    moversPrice: (b.moversPrice && b.moversPrice.length) ? b.moversPrice : (lastMovers.get(b.bot+':px') || []),
   }));
 }
 
@@ -469,11 +472,12 @@ function orderBook(m){
   const fl=fills.map(function(f){
     const side=String(f.side||'').toLowerCase();
     const when=(f.ts||'').replace('T',' ').replace('Z','').slice(11,19);
-    return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+'</div>';
+    const usd=Number(f.notional||f.filledValue||((Number(f.price)||0)*(Number(f.size)||0)))||0;
+    return '<div class="'+side+'">'+when+' '+side.toUpperCase()+' '+esc(f.price)+' × '+esc(f.size)+' $'+usd.toFixed(2)+'</div>';
   }).join('')||'<div class="age">no fills</div>';
   const rg=m.rungs; const rtxt=rg?('L'+rg.levels+' @ '+rg.stepBps+'bps · '+rg.touches+' x · edge '+Number(rg.edgePct).toFixed(2)+'%'):'rungs n/a';
   const net=Number(m.makerPnl||0)+Number(m.pricePnl||0)-Math.abs(Number(m.fees||0));
-  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div>net '+fmt(net)+'</div><div class="age">'+rtxt+'</div></div>';
+  const pnl='<div class="mpnl"><div>price '+fmt(m.pricePnl)+'</div><div>maker '+fmt(m.makerPnl)+'</div><div>fees '+fmt(m.fees!=null?-Number(m.fees):null)+'</div><div>net '+fmt(net)+'</div><div>held $'+fmtN(m.heldUsd)+(m.rising?' rise':'')+'</div><div class="age">'+rtxt+'</div></div>';
   return '<div class="book-wrap"><table class="book"><thead><tr><th></th><th class="px">Price</th><th>vs mid</th><th>Size</th><th>$</th><th></th><th>id</th></tr></thead><tbody>'+
     lines.join('')+'</tbody></table><div class="mfills"><div class="age">fills</div>'+fl+'</div>'+pnl+'</div>';
 }
@@ -713,6 +717,8 @@ const server = http.createServer(async (req, res) => {
       const msg = JSON.parse(body || '{}');
       const id = String(msg.bot || 'unknown');
       const prev = bots.get(id) || {};
+      if (msg.moversVol && msg.moversVol.length) lastMovers.set(id+':vol', msg.moversVol);
+      if (msg.moversPrice && msg.moversPrice.length) lastMovers.set(id+':px', msg.moversPrice);
       bots.set(id, { ...prev, ...msg, markets: mergeMarkets(prev.markets, msg.markets), fills: mergeFills(prev.fills, msg.fills), bankHoldings: (msg.bankHoldings && msg.bankHoldings.length) ? msg.bankHoldings : (prev.bankHoldings || []), bot: id, ts: Date.now() });
       noteSparks(id, msg.markets || prev.markets);
       noteVolSparks(id, msg.markets || prev.markets);
