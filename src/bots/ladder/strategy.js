@@ -88,7 +88,12 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     if (sk > 0) bid1 = Math.min(bid1, mid * (1 - bidOff));
     if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
   }
-  if (bid1 >= ask1) { bid1 = mid - tick; ask1 = mid + tick; }
+  if (bid1 >= ask1) {
+    bid1 = mid * (1 - l1HalfFrac(cfg, pair));
+    ask1 = mid * (1 + l1HalfFrac(cfg, pair));
+  }
+  bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
+  ask1 = Number(clampAwayFromMid(mid, ask1, 'sell', l1HalfFrac(cfg, pair), pairDecimals));
   const skewKey = String(symbol || '');
   const nowSk = Date.now();
   if (sk && nowSk - (generateLadder._started || (generateLadder._started = nowSk)) > 180000 && nowSk - (generateLadder._skewAt && generateLadder._skewAt[skewKey] || 0) > 120000) {
@@ -228,10 +233,20 @@ async function cancelSide(ex, legs, why = 'cancel') {
 }
 
 function l1HalfFrac(cfg, pair) {
-  const fee = realizedFeeBps(pair);
-  const feeBps = fee != null ? fee : assumedMakerFeeBps(cfg);
+  const feeBps = Number(realizedFeeBps(pair) != null ? realizedFeeBps(pair) : assumedMakerFeeBps(cfg));
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
-  return Math.max(feeBps + edge, Number(process.env.MIN_HALF_SPREAD_BPS || 55)) / 10000;
+  return (feeBps + edge) / 10000;
+}
+function clampAwayFromMid(mid, px, side, half, decimals) {
+  const inc = Number((10 ** -decimals).toFixed(decimals));
+  let p = Number(formatPrice(px, decimals));
+  const need = side === 'buy' ? mid * (1 - half) : mid * (1 + half);
+  if (side === 'buy' && p > need) p = Number(formatPrice(need, decimals));
+  if (side === 'sell' && p < need) p = Number(formatPrice(need, decimals));
+  let guard = 0;
+  while (side === 'buy' && mid > 0 && (mid - p) / mid + 1e-12 < half && guard++ < 20) p = Number(formatPrice(p - inc, decimals));
+  while (side === 'sell' && mid > 0 && (p - mid) / mid + 1e-12 < half && guard++ < 20) p = Number(formatPrice(p + inc, decimals));
+  return formatPrice(p, decimals);
 }
 
 async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
@@ -260,8 +275,8 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
   const half = l1HalfFrac(cfg, a.pair);
-  const bidT = formatPrice(mid * (1 - half), a.pairDecimals);
-  const askT = formatPrice(mid * (1 + half), a.pairDecimals);
+  const bidT = clampAwayFromMid(mid, mid * (1 - half), 'buy', half, a.pairDecimals);
+  const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
   function stillGood(side, px) {
     const p = Number(px);
@@ -627,8 +642,8 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
-  const half = (Number(process.env.MIN_HALF_SPREAD_BPS || 55) / 10000);
-  const px = formatPrice(mid * (1 + half), a.pairDecimals);
+  const half = l1HalfFrac(cfg, a.pair);
+  const px = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const size = formatVolume(need * 0.95, a.lotDecimals);
   if (!(Number(size) >= minV)) return;
   console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' held=' + held.toFixed(4) + ' open=' + openQty.toFixed(4));

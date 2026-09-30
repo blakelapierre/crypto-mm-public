@@ -50,16 +50,16 @@ export function spreadBpsForPair(cfg, pair = null) {
   const fee = realizedFeeBps(pair);
   const base = Number(cfg.mmSpreadBps || 15);
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
-  const lo = Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 55);
   const hi = Number(cfg.maxHalfSpreadBps || 250);
-  const raw = Math.max(base, (fee || assumedMakerFeeBps(cfg)) + edge);
-  return Math.min(hi, Math.max(lo, raw));
+  const raw = (fee || assumedMakerFeeBps(cfg)) + edge;
+  return Math.min(hi, raw);
 }
 
 export function joinTouchForPair(cfg, pair = null) {
   if (!cfg.joinTouch) return false;
   const fee = realizedFeeBps(pair);
-  if (fee != null && fee >= 15) return false;
+  const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
+  if ((fee || assumedMakerFeeBps(cfg)) + edge >= 20) return false;
   return true;
 }
 
