@@ -138,9 +138,11 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const meta = volStatsForSymbol(a.symbol);
             const range = meta ? Number(meta.rangePct || 0) : 0;
             const age = now - (enteredAt.get(a.pair) || now);
-            const rip = shortRun(a.symbol);
-            const weak = range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008);
-            if (weak && age >= rotateMin) leaving.push(a);
+            const ret1 = midReturn(a.symbol);
+            const weak = (range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008))
+              || ret1 < Number(process.env.FALL_EXIT_RET || -0.002);
+            const fallAge = Number(process.env.FALL_EXIT_MS || 60000);
+            if (weak && age >= (ret1 < Number(process.env.FALL_EXIT_RET || -0.002) ? fallAge : rotateMin)) leaving.push(a);
             else keep.push(a);
           }
           keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
@@ -149,7 +151,19 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const additions = [];
           const eqNow = live ? Number(live.totalEquity || 0) : 0;
           const cashNow = live ? Number(live.freeQuote || 0) : 0;
-          const cashOk = !(eqNow > 0) || cashNow / eqNow >= Number(process.env.CASH_FLOOR_FRAC || 0.25);
+          const cashFrac = eqNow > 0 ? cashNow / eqNow : 1;
+          const cashFloor = Number(process.env.CASH_FLOOR_FRAC || 0.25);
+          // Cash floor only blocks entries that are not rising. A rising tape is allowed to use cash.
+          if (cashFrac < cashFloor && keep.length) {
+            const falling = keep.filter((a) => midReturn(a.symbol) <= 0);
+            if (falling.length) {
+              falling.sort((x, y) => midReturn(x.symbol) - midReturn(y.symbol));
+              const worst = falling[0];
+              leaving.push(worst);
+              keep.splice(keep.indexOf(worst), 1);
+              console.log('  CASH FLOOR flatten ' + worst.symbol + ' ret=' + (midReturn(worst.symbol) * 100).toFixed(2) + '% cash/eq=' + cashFrac.toFixed(2));
+            }
+          }
           const scored = ranked.map((r) => {
             const ret = midReturn(r.symbol);
             const tr = trendMult(r.symbol);
@@ -161,9 +175,11 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const rip = shortRun(r.symbol);
             const watched = watch.has(r.pair);
             const hot = Number(r.rangePct || 0) >= enterPct;
+            const rising = Number(r.ret15 || 0) >= Number(process.env.ENTER_RET_MIN || 0);
+            if (!rising && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (!hot && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
             if (keep.length + additions.length >= hardMax) continue;
-            if (!cashOk) continue;
+            if (cashFrac < cashFloor && !rising) continue;
             if (!(r.pair && r.symbol)) continue;
             additions.push(r);
           }

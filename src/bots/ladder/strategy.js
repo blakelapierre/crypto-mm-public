@@ -184,12 +184,16 @@ function resizeLeg(cfg, a, o, live) {
     const cap = inventoryCapUsd(live);
     const held = inventoryUsd(live, a.symbol);
     const ret = midReturn(a.symbol);
+    if (ret < Number(process.env.ENTER_RET_MIN || 0)) return 0;
     const hard = Number(process.env.INV_CAP_HARD || 1.0);
     if (cap > 0 && held >= cap * hard) return 0;
     if (cap > 0 && held >= cap && ret <= 0) return 0;
     const eq = Number(live.totalEquity || 0);
     const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
-    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.25) && !isL1) return 0;
+    const bookInv = live.positionsValue != null ? Number(live.positionsValue) : 0;
+    const bookCap = eq * Number(process.env.INV_BOOK_MAX_FRAC || 0.55);
+    if (bookCap > 0 && bookInv >= bookCap && ret <= 0) return 0;
+    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.25) && ret <= 0) return 0;
     const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     let reserved = 0;
@@ -667,6 +671,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const state = pairState.get(a.pair);
   const ladder = state.ladder;
+  const retNow = midReturn(a.symbol);
+  if ((deadTape(a.symbol) || retNow < Number(process.env.FALL_EXIT_RET || -0.002)) && Date.now() - (state.lastFadeCover || 0) > 20000) {
+    state.lastFadeCover = Date.now();
+    await coverInventory(cfg, ex, a, ladder, book, getLive);
+  }
   const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol);
   const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
   const tooNew = Date.now() - (state.bornAt || 0) < 120000;

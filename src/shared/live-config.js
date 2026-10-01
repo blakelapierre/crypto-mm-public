@@ -35,6 +35,9 @@ export const TUNABLES = [
   { key: 'CASH_FLOOR_FRAC', type: 'num', hint: 'min cash/equity before new buys' },
   { key: 'CLIP_EQ_FRAC', type: 'num' },
   { key: 'HOLD_FLAT_RET', type: 'num' },
+  { key: 'ENTER_RET_MIN', type: 'num', hint: 'min 1m return to enter or bid' },
+  { key: 'FALL_EXIT_RET', type: 'num', hint: 'exit name if 1m return below this' },
+  { key: 'INV_BOOK_MAX_FRAC', type: 'num', hint: 'max total inventory / equity when tape is not rising' },
 ];
 
 const CFG_MAP = {
