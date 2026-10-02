@@ -4,8 +4,11 @@ import { WebSocketServer } from 'ws';
 import { loadProjectEnv } from '../shared/env.js';
 import { backtestRungs } from '../shared/rungs.js';
 import { cachedSessionSummaries } from '../shared/session-summary.js';
+import { apeBuy, apeMove, apePage, apePortfolios, apePositions, apeReady, apeSell } from '../manual/ape.js';
+import { loadEnvFile } from '../shared/env.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
+loadEnvFile('configs/ape.env', { override: false });
 
 const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
@@ -349,7 +352,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </head>
 <body>
 <div id="chrome">
-<h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
+<h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span> <a href="/ape">manual ape</a></h1>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
 <div id="botlogs" style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap"></div>
@@ -925,6 +928,42 @@ function logsPayload() {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
+  if (req.method === 'GET' && url.pathname === '/ape') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(apePage());
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/ape/state') {
+    const scan = venueScans.get('coinbase');
+    const rising = ((scan && scan.ranked) || [])
+      .map((r) => ({ symbol: r.symbol, ret: Number(r.ret || 0), rangePct: Number(r.rangePct || 0) }))
+      .filter((r) => r.ret > 0)
+      .sort((a, b) => b.ret - a.ret)
+      .slice(0, 12);
+    let portfolios = [];
+    try { portfolios = (await apePortfolios()).portfolios; } catch (e) { portfolios = []; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ready: apeReady(), rising, positions: apePositions(), portfolios }));
+    return;
+  }
+  if (req.method === 'POST' && (url.pathname === '/ape/buy' || url.pathname === '/ape/sell' || url.pathname === '/ape/move')) {
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const out = url.pathname === '/ape/buy'
+        ? await apeBuy(msg.symbol, msg.usd)
+        : url.pathname === '/ape/sell'
+          ? await apeSell(msg.symbol)
+          : await apeMove(msg.source, msg.target, msg.currency, msg.amount);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: e.message, detail: e.detail || null }));
+    }
+    return;
+  }
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/status.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(PAGE);

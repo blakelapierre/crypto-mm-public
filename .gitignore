@@ -6,6 +6,9 @@
 *.key
 coinbase.pem
 kraken.pem
+ape.pem
+configs/ape.env
+data/ape-positions.json
 
 node_modules/
 npm-debug.log*
