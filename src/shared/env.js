@@ -64,14 +64,18 @@ export function envBool(k, d) {
 }
 
 export function baseConfig() {
+  const bot = String(process.env.BOT || '').toUpperCase();
+  const pref = bot && process.env[bot + '_COINBASE_API_KEY'] ? bot + '_' : '';
+  if (pref) console.log('coinbase key prefix ' + pref);
   return {
     exchange: envStr('EXCHANGE', 'print'),
     dryRun: envBool('DRY_RUN', true),
     quote: envStr('QUOTE', 'USDC'),
     krakenApiKey: envStr('KRAKEN_API_KEY', ''),
     krakenApiSecret: envStr('KRAKEN_API_SECRET', ''),
-    coinbaseApiKey: envStr('COINBASE_API_KEY', ''),
-    coinbaseApiSecret: envStr('COINBASE_API_SECRET', ''),
+    coinbaseApiKey: envStr(pref + 'COINBASE_API_KEY', ''),
+    coinbaseApiSecret: envStr(pref + 'COINBASE_API_SECRET', ''),
+    coinbaseSecretFile: envStr(pref + 'COINBASE_API_SECRET_FILE', envStr('COINBASE_API_SECRET_FILE', '')),
     totalCapitalOverride: envNum('TOTAL_CAPITAL_USD', 0),
     portfolioFraction: envNum('PORTFOLIO_FRACTION', 0.25),
     portfolioCoins: envNum('PORTFOLIO_COINS', 10),

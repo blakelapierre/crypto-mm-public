@@ -29,7 +29,7 @@ const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
 
 async function main() {
-  logSession({ exchange: cfg.exchange, quote: cfg.quote });
+  if (!process.env.GRID_COINBASE_API_KEY) console.warn('grid is using COINBASE_API_KEY (ladder wallet). Set GRID_COINBASE_API_KEY for the grid portfolio.');
   startApiTally();
   const productMap = await ex.getProducts();
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
