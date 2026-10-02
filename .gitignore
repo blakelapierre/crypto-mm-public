@@ -9,6 +9,7 @@ kraken.pem
 ape.pem
 configs/ape.env
 data/ape-positions.json
+data/feed/
 
 node_modules/
 npm-debug.log*

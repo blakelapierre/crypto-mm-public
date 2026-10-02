@@ -1,4 +1,6 @@
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import { loadProjectEnv } from '../shared/env.js';
@@ -925,6 +927,17 @@ function logsPayload() {
   for (const [k, v] of botLogs) logs[k] = v.slice(-200);
   return JSON.stringify({ logs });
 }
+const feedFile = path.resolve(process.cwd(), 'data', 'feed', 'coinbase.json');
+let lastFeed = { ranked: [], sparks: {}, mids: {}, updated: 0 };
+function loadFeed() {
+  try {
+    const row = JSON.parse(fs.readFileSync(feedFile, 'utf8'));
+    lastFeed = row;
+    if (row.ranked && row.ranked.length) venueScans.set('coinbase', { ranked: row.ranked, ts: row.updated || Date.now(), bot: 'feed' });
+  } catch { /* feed not started */ }
+}
+loadFeed();
+setInterval(loadFeed, 2000);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
@@ -935,15 +948,20 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/ape/state') {
     const scan = venueScans.get('coinbase');
-    const rising = ((scan && scan.ranked) || [])
-      .map((r) => ({ symbol: r.symbol, ret: Number(r.ret || 0), rangePct: Number(r.rangePct || 0) }))
+    const rising = ((scan && scan.ranked) || lastFeed.ranked || [])
+      .map((r) => ({ symbol: r.symbol, ret: Number(r.ret || 0), rangePct: Number(r.rangePct || 0), mid: Number(r.mid || lastFeed.mids && lastFeed.mids[r.symbol] || 0), spark: (lastFeed.sparks && lastFeed.sparks[r.symbol]) || r.spark || [] }))
       .filter((r) => r.ret > 0)
       .sort((a, b) => b.ret - a.ret)
       .slice(0, 12);
+    const positions = apePositions().map((p) => {
+      const mid = Number(lastFeed.mids && lastFeed.mids[p.symbol] || 0);
+      const avg = p.qty > 0 ? p.cost / p.qty : 0;
+      return { ...p, mid, avg, gain: mid && p.qty ? p.qty * mid - p.cost : 0, spark: (lastFeed.sparks && lastFeed.sparks[p.symbol]) || [] };
+    });
     let portfolios = [];
     try { portfolios = (await apePortfolios()).portfolios; } catch (e) { portfolios = []; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ready: apeReady(), rising, positions: apePositions(), portfolios }));
+    res.end(JSON.stringify({ ready: apeReady(), rising, positions, portfolios, feedAt: lastFeed.updated || 0 }));
     return;
   }
   if (req.method === 'POST' && (url.pathname === '/ape/buy' || url.pathname === '/ape/sell' || url.pathname === '/ape/move')) {

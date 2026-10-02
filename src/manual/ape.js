@@ -165,9 +165,9 @@ table{width:100%;border-collapse:collapse} td,th{padding:4px;text-align:left}
 <h3>rising tapes</h3>
 <p>Buy is post-only at the bid. Sell is post-only at the ask, for the available balance.</p>
 <label>clip $ <input id="usd" value="5" size="6"></label>
-<table id="tapes"><thead><tr><th>symbol</th><th>15m</th><th></th></tr></thead><tbody></tbody></table>
+<table id="tapes"><thead><tr><th>symbol</th><th>15m</th><th>mid</th><th></th></tr></thead><tbody></tbody></table>
 <h3>positions</h3>
-<table id="pos"><thead><tr><th>symbol</th><th>qty</th><th>avg</th><th></th></tr></thead><tbody></tbody></table>
+<table id="pos"><thead><tr><th>symbol</th><th>qty</th><th>avg</th><th>mid</th><th>gain</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 <section>
 <h3>move funds</h3>
@@ -180,16 +180,24 @@ table{width:100%;border-collapse:collapse} td,th{padding:4px;text-align:left}
 </main>
 <script>
 function log(x){document.getElementById('log').textContent=typeof x==='string'?x:JSON.stringify(x,null,2);}
+function spark(points){
+  const arr=(points||[]).map(function(p){return Number(p.p);}).filter(function(n){return n>0;});
+  if(arr.length<2) return '';
+  const w=88,h=22,lo=Math.min.apply(null,arr),hi=Math.max.apply(null,arr),span=hi-lo||1;
+  const d=arr.map(function(v,i){const x=(i/(arr.length-1))*w;const y=h-((v-lo)/span)*h;return (i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1);}).join(' ');
+  return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><path d="'+d+'" fill="none" stroke="#58a6ff" stroke-width="1.2"/></svg>';
+}
 async function refresh(){
   const st=await fetch('/ape/state').then(r=>r.json());
   const body=document.querySelector('#tapes tbody');
   body.innerHTML=(st.rising||[]).map(function(r){
-    return '<tr><td>'+r.symbol+'</td><td class="'+(r.ret>=0?'up':'dn')+'">'+((r.ret*100).toFixed(2))+'%</td><td><button data-buy="'+r.symbol+'">buy</button> <button data-sell="'+r.symbol+'">sell</button></td></tr>';
-  }).join('')||'<tr><td colspan="3">no scan yet</td></tr>';
+    return '<tr><td>'+r.symbol+'<div>'+spark(r.spark)+'</div></td><td class="'+(r.ret>=0?'up':'dn')+'">'+((r.ret*100).toFixed(2))+'%</td><td>'+(r.mid?Number(r.mid).toPrecision(6):'')+'</td><td><button data-buy="'+r.symbol+'">buy</button></td></tr>';
+  }).join('')||'<tr><td colspan="4">no feed yet — run npm run feed</td></tr>';
   document.querySelector('#pos tbody').innerHTML=(st.positions||[]).map(function(p){
-    const avg=p.qty? (p.cost/p.qty).toFixed(6):'';
-    return '<tr><td>'+p.symbol+'</td><td>'+p.qty+'</td><td>'+avg+'</td><td><button data-sell="'+p.symbol+'">sell</button></td></tr>';
-  }).join('')||'<tr><td colspan="4">none</td></tr>';
+    const gain=Number(p.gain||0);
+    const pct=p.avg?((p.mid-p.avg)/p.avg*100):0;
+    return '<tr><td>'+p.symbol+'<div>'+spark(p.spark)+'</div></td><td>'+Number(p.qty).toPrecision(4)+'</td><td>'+(p.avg?Number(p.avg).toPrecision(6):'')+'</td><td>'+(p.mid?Number(p.mid).toPrecision(6):'')+'</td><td class="'+(gain>=0?'up':'dn')+'">'+(gain>=0?'+':'')+gain.toFixed(4)+' ('+(pct>=0?'+':'')+pct.toFixed(2)+'%)</td><td><button data-sell="'+p.symbol+'">sell</button></td></tr>';
+  }).join('')||'<tr><td colspan="6">none</td></tr>';
   const opts=(st.portfolios||[]).map(function(p){return '<option value="'+p.uuid+'">'+p.name+'</option>';}).join('');
   document.getElementById('src').innerHTML=opts;
   document.getElementById('dst').innerHTML=opts;

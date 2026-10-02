@@ -12,6 +12,7 @@
     "grid": "node src/bots/grid/index.js",
     "kalshi": "node src/bots/kalshi/index.js",
     "web": "node src/web/server.js",
+    "feed": "node src/feed/runner.js",
     "bank-dump": "node src/bots/bank-dump.js",
     "dump": "node src/bots/bank-dump.js",
     "bank-cash": "node src/bots/bank-cash.js",
