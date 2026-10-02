@@ -213,9 +213,11 @@ function mergeFills(prev, incoming) {
 }
 function mergeMarkets(prev, incoming) {
   const by = new Map((prev || []).map((m) => [String(m.symbol || '').toUpperCase(), { ...m }]));
+  const seen = new Set();
   for (const m of incoming || []) {
     const k = String(m.symbol || '').toUpperCase();
     if (!k) continue;
+    seen.add(k);
     const old = by.get(k) || {};
     const live = old.orderTs && Date.now() - old.orderTs < 20000;
     const orders = live && old.orders && old.orders.length ? old.orders : (m.orders || old.orders || []);
@@ -231,6 +233,9 @@ function mergeMarkets(prev, incoming) {
       bids: open.length ? open.filter((o) => o.side === 'buy').length : m.bids,
       asks: open.length ? open.filter((o) => o.side === 'sell').length : m.asks,
     });
+  }
+  if (seen.size) {
+    for (const k of [...by.keys()]) if (!seen.has(k)) by.delete(k);
   }
   return [...by.values()];
 }
@@ -347,7 +352,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
-<pre id="botlog" style="max-height:160px;overflow:auto;font-size:11px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px;white-space:pre-wrap"></pre>
+<div id="botlogs" style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap"></div>
 </div>
 <div id="shell">
 <div id="pin">
@@ -794,14 +799,23 @@ function holdHtml(rows){
 }
 function render(data){
   if(data&&data.logs){
-    const el=document.getElementById('botlog');
-    const parts=[];
-    Object.keys(data.logs).forEach(function(k){
-      (data.logs[k]||[]).slice(-200).forEach(function(line){ parts.push(k+'  '+line); });
+    const box=document.getElementById('botlogs');
+    const names=['ladder','grid','comp'].filter(function(n){return data.logs[n];});
+    names.forEach(function(k){
+      let card=document.getElementById('log-'+k);
+      if(!card){
+        card=document.createElement('div');
+        card.id='log-'+k;
+        card.style.cssText='flex:1;min-width:240px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px';
+        card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b>'+k+'</b><button type="button" data-logpause="'+k+'">pause</button></div><pre data-log="'+k+'" style="max-height:180px;overflow:auto;font-size:11px;margin:4px 0 0;white-space:pre-wrap"></pre>';
+        box.appendChild(card);
+      }
+      if(window._logPause&&window._logPause[k]) return;
+      const pre=card.querySelector('pre');
+      const atBottom=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-8;
+      pre.textContent=(data.logs[k]||[]).slice(-200).join('\\n');
+      if(atBottom) pre.scrollTop=pre.scrollHeight;
     });
-    const atBottom=el.scrollTop+el.clientHeight>=el.scrollHeight-8;
-    el.textContent=parts.slice(-200).join('\\n');
-    if(atBottom) el.scrollTop=el.scrollHeight;
   }
   if(data&&data.running) botCtl(data.running);
   const rows=(data.bots||[]).slice().sort(function(a,c){return botRank(a)-botRank(c);});
@@ -854,6 +868,14 @@ function botCtl(running){
     return '<button data-bot="'+n+'" data-act="'+(on?'stop':'start')+'">'+(on?'stop ':'start ')+n+'</button>'+(on?'<button data-bot="'+n+'" data-act="reload">reload '+n+'</button>':'');
   }).join(' ');
 }
+document.getElementById('botlogs').addEventListener('click', function(ev){
+  const b=ev.target.closest('button[data-logpause]');
+  if(!b) return;
+  window._logPause=window._logPause||{};
+  const k=b.getAttribute('data-logpause');
+  window._logPause[k]=!window._logPause[k];
+  b.textContent=window._logPause[k]?'resume':'pause';
+});
 document.getElementById('botctl').addEventListener('click', function(ev){
   const b=ev.target.closest('button');
   if(!b) return;

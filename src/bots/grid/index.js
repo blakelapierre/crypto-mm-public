@@ -82,10 +82,12 @@ async function main() {
         } catch { /* shared mid is enough */ }
         const st = gridState.get(a.pair) || createGridState();
         if (!book && st.lastMid) book = { mid: st.lastMid, bid: st.lastBid || st.lastMid, ask: st.lastAsk || st.lastMid, pair: a.pair };
-        if (!book || !a.pairDecimals) continue;
+        if (!book || !(book.mid > 0)) { console.warn('grid skip ' + a.symbol + ' no book'); continue; }
+        if (!a.pairDecimals) a.pairDecimals = 8;
         if (book.mid) postMids([{ symbol: a.symbol, pair: a.pair, mid: book.mid, bid: book.bid, ask: book.ask }]);
         gridState.set(a.pair, st);
-        await processGrid(cfg, ex, a, st, book, getLive, orderRegistry);
+        try { await processGrid(cfg, ex, a, st, book, getLive, orderRegistry); }
+        catch (e) { console.error('grid ' + a.symbol + ' ' + (e.message || e)); }
         await sleep(80);
       }
       const snap = pnl.snapshot(live);
