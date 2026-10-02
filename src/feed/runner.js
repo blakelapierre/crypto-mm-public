@@ -3,7 +3,8 @@ import path from 'path';
 import { coinbasePublic, startCoinbaseTickerWs } from '../shared/coinbase.js';
 
 const WINDOW = 15 * 60 * 1000;
-const SAMPLE = Number(process.env.FEED_SAMPLE_MS || 5000);
+const SAMPLE = Number(process.env.FEED_SAMPLE_MS || 1000);
+const FLUSH = Number(process.env.FEED_FLUSH_MS || 250);
 const outFile = path.resolve(process.cwd(), 'data', 'feed', 'coinbase.json');
 const series = new Map();
 const last = new Map();
