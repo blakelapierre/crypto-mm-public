@@ -7,11 +7,14 @@ import { createPnl } from '../../shared/pnl.js';
 import {
   fetchLivePortfolio, waitForSettlement, buildLists, invalidateLiveCache,
 } from '../../shared/portfolio.js';
-import { liquidateSymbols } from '../../shared/bank.js';
+import { liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
 import { postStatus, postMids, pullVenueMids } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 import { processGrid, createGridState } from './strategy.js';
+import { createVolScan, topMovers, topVolatiles } from '../../shared/vol-scan.js';
+import { planRotation } from '../../shared/rotate.js';
+import { saveMmSet } from '../../shared/mm-set.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/grid.env');
 process.env.BOT = process.env.BOT || 'grid';
@@ -40,8 +43,27 @@ async function main() {
     live = await waitForSettlement(cfg, ex, productMap, 'grid flatten');
     lists = await buildLists(cfg, productMap, live.totalEquity, live);
   }
-  const mmAlloc = lists.mmAlloc;
+  const mmAlloc = [];
+  const volScan = createVolScan(cfg, productMap);
+  const enteredAt = new Map();
+  const watch = new Map();
+  console.log('grid vol scan, same entry rules as ladder');
+  try { await volScan.tick(); } catch (e) { console.warn('grid vol', e.message); }
+  const first = planRotation({ mmAlloc, ranked: volScan.ranking(), now: Date.now(), enteredAt, watch, live, cfg });
+  for (const a of first.additions) {
+    mmAlloc.push(a);
+    enteredAt.set(a.pair, Date.now());
+    gridState.set(a.pair, createGridState());
+  }
+  if (!mmAlloc.length) {
+    for (const a of lists.mmAlloc.slice(0, Number(process.env.MM_MAX_PAIRS || 4))) {
+      mmAlloc.push(a);
+      enteredAt.set(a.pair, Date.now());
+      gridState.set(a.pair, createGridState());
+    }
+  }
   console.log('grid names ' + mmAlloc.map((a) => a.symbol).join(','));
+  saveMmSet(mmAlloc);
   invalidateLiveCache();
   const getLive = () => fetchLivePortfolio(cfg, ex, productMap);
 
@@ -63,10 +85,38 @@ async function main() {
 
   for (const a of mmAlloc) gridState.set(a.pair, createGridState());
 
+  let lastRotate = 0;
   const gap = Number(cfg.updateIntervalMs || 2000);
   while (true) {
     try {
       try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
+      if (Date.now() - lastRotate > Number(process.env.VOL_ROTATE_MS || 60000)) {
+        lastRotate = Date.now();
+        try { await volScan.tick(); } catch (e) { console.warn('grid vol', e.message); }
+        const plan = planRotation({ mmAlloc, ranked: volScan.ranking(), now: Date.now(), enteredAt, watch, live, cfg });
+      if (plan.leaving.length || plan.additions.length) {
+        console.log('grid exit ' + plan.leaving.map((a) => a.symbol).join(',') + ' enter ' + plan.additions.map((a) => a.symbol).join(','));
+        for (const a of plan.leaving) {
+          watch.set(a.pair, { ...a, leftAt: Date.now() });
+          try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
+          gridState.delete(a.pair);
+          enteredAt.delete(a.pair);
+        }
+        if (plan.leaving.length) {
+          try { await liquidateSymbols(cfg, ex, live, plan.leaving.map((a) => a.symbol), productMap); } catch (e) { console.warn('grid exit liq', e.message); }
+        }
+        mmAlloc.length = 0;
+        for (const a of [...plan.keep, ...plan.additions]) {
+          mmAlloc.push(a);
+          if (!enteredAt.has(a.pair)) enteredAt.set(a.pair, Date.now());
+          if (!gridState.has(a.pair)) gridState.set(a.pair, createGridState());
+        }
+        saveMmSet(mmAlloc);
+        if (plan.additions.length) {
+          try { await seedNewInventory(cfg, ex, plan.additions, await getLive()); } catch (e) { console.warn('grid seed', e.message); }
+        }
+        }
+      }
       live = await getLive();
       pnl.markHoldings(live);
       let shared = [];
@@ -106,6 +156,7 @@ async function main() {
       postStatus({
         bot: 'grid', exchange: cfg.exchange, quote: cfg.quote,
         pnl: snap, markets, api: snapshotApi(),
+        moversVol: topVolatiles(8), moversPrice: topMovers(8),
         working: { bids: markets.reduce((s, m) => s + m.bidUsd, 0), asks: markets.reduce((s, m) => s + m.askUsd, 0) },
       });
     } catch (e) {
