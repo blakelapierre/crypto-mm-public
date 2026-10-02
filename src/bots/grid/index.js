@@ -8,7 +8,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, invalidateLiveCache,
 } from '../../shared/portfolio.js';
 import { liquidateSymbols } from '../../shared/bank.js';
-import { postStatus } from '../../shared/status-client.js';
+import { postStatus, postMids, pullVenueMids } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 import { processGrid, createGridState } from './strategy.js';
@@ -52,7 +52,10 @@ async function main() {
         if (String(a.pair).toUpperCase() === String(tk.pair || '').toUpperCase()) {
           const st = gridState.get(a.pair) || createGridState();
           st.lastMid = tk.mid;
+          st.lastBid = tk.bid;
+          st.lastAsk = tk.ask;
           gridState.set(a.pair, st);
+          postMids([{ symbol: a.symbol, pair: a.pair, mid: tk.mid, bid: tk.bid, ask: tk.ask }]);
         }
       }
     });
@@ -66,12 +69,21 @@ async function main() {
       try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
       live = await getLive();
       pnl.mark(live);
+      let shared = [];
+      try { shared = await pullVenueMids(cfg.exchange); } catch { shared = []; }
+      const sharedBy = new Map(shared.map((r) => [String(r.symbol || '').toUpperCase(), r]));
       for (const a of mmAlloc) {
         let book = null;
-        try { book = await ex.getBook(a.pair); } catch { book = null; }
+        const sh = sharedBy.get(String(a.symbol).toUpperCase());
+        if (sh && Number(sh.mid) > 0) book = { mid: Number(sh.mid), bid: Number(sh.bid || sh.mid), ask: Number(sh.ask || sh.mid), pair: a.pair };
+        try {
+          const liveBook = await ex.getBook(a.pair);
+          if (liveBook && liveBook.mid) book = liveBook;
+        } catch { /* shared mid is enough */ }
         const st = gridState.get(a.pair) || createGridState();
-        if (!book && st.lastMid) book = { mid: st.lastMid, pair: a.pair };
-        if (!book) continue;
+        if (!book && st.lastMid) book = { mid: st.lastMid, bid: st.lastBid || st.lastMid, ask: st.lastAsk || st.lastMid, pair: a.pair };
+        if (!book || !a.pairDecimals) continue;
+        if (book.mid) postMids([{ symbol: a.symbol, pair: a.pair, mid: book.mid, bid: book.bid, ask: book.ask }]);
         gridState.set(a.pair, st);
         await processGrid(cfg, ex, a, st, book, getLive, orderRegistry);
         await sleep(80);

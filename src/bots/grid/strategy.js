@@ -63,7 +63,8 @@ export function createGridState() {
 
 export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry) {
   const mid = Number(book && book.mid);
-  if (!(mid > 0)) return;
+  if (!(mid > 0) || !a.pairDecimals) return;
+  if (!orderRegistry || typeof orderRegistry.get !== 'function') return;
   st.lastMid = mid;
   const half = halfFrac(cfg, a.pair);
   const step = stepFrac(cfg, a.pair);

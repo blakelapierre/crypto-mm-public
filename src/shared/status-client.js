@@ -50,12 +50,21 @@ export function postMids(rows) {
     fetch(base() + '/mids', {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({ bot: process.env.BOT || 'ladder', mids }),
+      body: JSON.stringify({ bot: process.env.BOT || 'ladder', exchange: process.env.EXCHANGE || '', mids }),
     }).catch((e) => console.warn('mids post', e.message));
   }, Number(process.env.MID_POST_MS || 400));
 }
 
-export async function pullLiveConfig(bot) {
+export async function pullVenueMids(exchange) {
+  const dest = url();
+  if (!dest) return [];
+  try {
+    const r = await fetch(base() + '/mids?exchange=' + encodeURIComponent(exchange || process.env.EXCHANGE || ''), { headers: headers() });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return j.mids || [];
+  } catch { return []; }
+}
   const dest = url();
   if (!dest) return null;
   try {

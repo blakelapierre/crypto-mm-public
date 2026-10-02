@@ -1,4 +1,5 @@
 import http from 'http';
+import { spawn } from 'child_process';
 import { WebSocketServer } from 'ws';
 import { loadProjectEnv } from '../shared/env.js';
 import { backtestRungs } from '../shared/rungs.js';
@@ -9,6 +10,41 @@ loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
 const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
+const venueBooks = new Map();
+const botKids = new Map();
+const BOT_CMDS = {
+  ladder: ['src/bots/ladder/index.js', 'configs/ladder.env'],
+  grid: ['src/bots/grid/index.js', 'configs/grid.env'],
+  comp: ['src/bots/comp/index.js', 'configs/comp.env'],
+};
+function botRunning() {
+  const out = {};
+  for (const name of Object.keys(BOT_CMDS)) {
+    const kid = botKids.get(name);
+    out[name] = !!(kid && kid.exitCode == null && !kid.killed);
+  }
+  return out;
+}
+function startBot(name) {
+  const spec = BOT_CMDS[name];
+  if (!spec) throw new Error('unknown bot ' + name);
+  const cur = botKids.get(name);
+  if (cur && cur.exitCode == null && !cur.killed) return { ok: true, already: true };
+  const kid = spawn(process.execPath, [spec[0]], {
+    cwd: process.cwd(),
+    env: { ...process.env, BOT: name, BOT_CONFIG: spec[1] },
+    stdio: 'inherit',
+  });
+  kid.on('exit', () => { if (botKids.get(name) === kid) botKids.delete(name); });
+  botKids.set(name, kid);
+  return { ok: true, pid: kid.pid };
+}
+function stopBot(name) {
+  const kid = botKids.get(name);
+  if (!kid) return { ok: true, already: true };
+  kid.kill('SIGINT');
+  return { ok: true };
+}
 const pendingLive = new Map();
 const sparks = new Map();
 const volSparks = new Map();
@@ -289,6 +325,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <div id="chrome">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
+<div id="botctl" class="age"></div>
 </div>
 <div id="shell">
 <div id="pin">
@@ -777,6 +814,20 @@ function connect(){
   ws.onerror=()=>ws.close();
 }
 const TOKEN_Q=${JSON.stringify(TOKEN ? '?token=' + TOKEN : '')};
+function botCtl(running){
+  const names=['ladder','grid','comp'];
+  document.getElementById('botctl').innerHTML=names.map(function(n){
+    const on=running&&running[n];
+    return '<button data-bot="'+n+'" data-act="'+(on?'stop':'start')+'">'+(on?'stop ':'start ')+n+'</button>';
+  }).join(' ');
+}
+document.getElementById('botctl').addEventListener('click', function(ev){
+  const b=ev.target.closest('button');
+  if(!b) return;
+  fetch('/bots', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({bot:b.dataset.bot, action:b.dataset.act})})
+    .then(r=>r.json()).then(j=>botCtl(j.bots)).catch(()=>{});
+});
+fetch('/bots').then(r=>r.json()).then(j=>botCtl(j.bots)).catch(()=>{});
 fetch('/api/status').then(r=>r.json()).then(render).catch(()=>{});
 window.__saveCfg=function(ev){
   ev.preventDefault();
@@ -889,6 +940,16 @@ const server = http.createServer(async (req, res) => {
       }
       prev.markets = [...bySym.values()];
       bots.set(id, prev);
+      const ex = String(msg.exchange || '').toLowerCase();
+      if (ex) {
+        const book = venueBooks.get(ex) || new Map();
+        for (const row of incoming) {
+          const sym = String(row.symbol || '').toUpperCase();
+          if (!sym || !(Number(row.mid) > 0)) continue;
+          book.set(sym, { ...row, symbol: sym, ts: Date.now(), bot: id });
+        }
+        venueBooks.set(ex, book);
+      }
       noteSparks(id, incoming.map((r) => ({ symbol: r.symbol, mid: r.mid })));
       broadcast();
       res.writeHead(204); res.end();
@@ -966,6 +1027,35 @@ const server = http.createServer(async (req, res) => {
       broadcast();
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/mids') {
+    const ex = String(url.searchParams.get('exchange') || '').toLowerCase();
+    const book = venueBooks.get(ex);
+    const mids = book ? [...book.values()] : [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ exchange: ex, mids }));
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/bots') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ bots: botRunning() }));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/bots') {
+    if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const name = String(msg.bot || '').toLowerCase();
+      const action = String(msg.action || '');
+      const result = action === 'stop' ? stopBot(name) : startBot(name);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...result, bots: botRunning() }));
+    } catch (e) {
+      res.writeHead(400); res.end(e.message || 'bad');
+    }
     return;
   }
   res.writeHead(404); res.end('not found');
