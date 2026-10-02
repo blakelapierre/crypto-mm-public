@@ -11,6 +11,7 @@ const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
 const venueBooks = new Map();
+const venueScans = new Map();
 const botKids = new Map();
 const botLogs = new Map();
 function pushLog(name, line) {
@@ -750,15 +751,25 @@ function moversHtml(rows){
     else items.sort(function(a,c){return Math.abs(c.ret||0)-Math.abs(a.ret||0);});
     return items.slice(0,8);
   }
-  const cards=(rows||[]).map(function(b){
-    const vols=itemsOf(b,'vol');
-    const moves=itemsOf(b,'move');
-    if(!vols.length && !moves.length) return '';
-    return '<div class="botg"><div class="bn">'+esc(b.bot)+' '+esc(b.exchange||'')+'</div>'+
+  const cards = [];
+  const byEx = new Map();
+  (rows || []).forEach(function(b){
+    const ex = String(b.exchange || 'venue').toLowerCase();
+    if (!byEx.has(ex)) byEx.set(ex, { exchange: ex, moversVol: [], moversPrice: [] });
+    const g = byEx.get(ex);
+    (b.moversVol || []).forEach(function(m){ g.moversVol.push(m); });
+    (b.moversPrice || []).forEach(function(m){ g.moversPrice.push(m); });
+  });
+  byEx.forEach(function(g){
+    const fake = { bot: '', exchange: g.exchange, moversVol: g.moversVol, moversPrice: g.moversPrice };
+    const vols = itemsOf(fake, 'vol');
+    const moves = itemsOf(fake, 'move');
+    if (!vols.length && !moves.length) return;
+    cards.push('<div class="botg"><div class="bn">'+esc(g.exchange)+'</div>'+
       '<div class="sub">15m vol</div><div class="row">'+vols.map(function(x){return cell(x,'vol');}).join('')+'</div>'+
-      '<div class="sub">15m price</div><div class="row">'+moves.map(function(x){return cell(x,'move');}).join('')+'</div></div>';
-  }).join('');
-  return '<div class="row">'+cards+'</div>';
+      '<div class="sub">15m price</div><div class="row">'+moves.map(function(x){return cell(x,'move');}).join('')+'</div></div>');
+  });
+  return '<div class="row">'+cards.join('')+'</div>';
 }
 function bankHtml(rows){
   const mids={};
@@ -934,6 +945,25 @@ const server = http.createServer(async (req, res) => {
         bots.set(bot, { ...prev, liveConfig: next });
       }
       broadcast();
+      res.writeHead(204); res.end();
+    } catch { res.writeHead(400); res.end('bad json'); }
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/scan') {
+    const ex = String(url.searchParams.get('exchange') || '').toLowerCase();
+    const row = venueScans.get(ex) || { ranked: [], ts: 0 };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(row));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/scan') {
+    if (!auth(req)) { res.writeHead(401); res.end('unauthorized'); return; }
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const ex = String(msg.exchange || '').toLowerCase();
+      if (ex) venueScans.set(ex, { ranked: msg.ranked || [], ts: Date.now(), bot: msg.bot || '' });
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
     return;

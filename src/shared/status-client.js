@@ -55,7 +55,23 @@ export function postMids(rows) {
   }, Number(process.env.MID_POST_MS || 400));
 }
 
-export async function pullVenueMids(exchange) {
+export async function pullVenueScan(exchange) {
+  const dest = url();
+  if (!dest) return null;
+  try {
+    const r = await fetch(base() + '/scan?exchange=' + encodeURIComponent(exchange || process.env.EXCHANGE || ''), { headers: headers() });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+export function postVenueScan(exchange, ranked) {
+  const dest = url();
+  if (!dest || !ranked) return;
+  fetch(base() + '/scan', {
+    method: 'POST', headers: headers(),
+    body: JSON.stringify({ exchange: exchange || process.env.EXCHANGE || '', bot: process.env.BOT || '', ranked: ranked.slice(0, 40) }),
+  }).catch(() => {});
+}
   const dest = url();
   if (!dest) return [];
   try {

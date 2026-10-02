@@ -26,7 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { postStatus, postMids, pullLiveConfig } from '../../shared/status-client.js';
+import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
 import { noteMid, midReturn } from '../../shared/mid-ring.js';
@@ -41,7 +41,7 @@ bindLiveConfig(cfg);
 {
   const raw = process.env.SYMBOLS || (cfg.symbols || []).join(',');
   cfg.symbols = String(raw).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (String(process.env.BOT || '').toLowerCase() === 'comp' && !cfg.symbols.length) cfg.symbols = ['GNOT', 'SN64'];
+  if (String(process.env.BOT || '').toLowerCase() === 'comp' && !cfg.symbols.length) cfg.symbols = ['GNOT'];
 }
 const orderRegistry = new Map();
 const pairState = new Map();
@@ -114,6 +114,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         try {
           const n = await volScan.tick();
           const top = volScan.ranking().slice(0, 8);
+          postVenueScan(cfg.exchange, volScan.ranking());
           if (top.length) console.log('vol ' + top.map((r) => r.symbol + ' ' + r.rangePct.toFixed(2) + '%').join('  ') + ' (n=' + n + ')');
         } catch (e) { console.warn('vol scan', e.message); }
         await sleep(cfg.volScanMs || Number(process.env.VOL_SCAN_MS) || 60000);

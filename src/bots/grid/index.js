@@ -8,7 +8,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, invalidateLiveCache,
 } from '../../shared/portfolio.js';
 import { liquidateSymbols, seedNewInventory } from '../../shared/bank.js';
-import { postStatus, postMids, pullVenueMids } from '../../shared/status-client.js';
+import { postStatus, postMids, pullVenueMids, pullVenueScan } from '../../shared/status-client.js';
 import { logSession } from '../../shared/fill-log.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
 import { processGrid, createGridState } from './strategy.js';
@@ -92,8 +92,15 @@ async function main() {
       try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
       if (Date.now() - lastRotate > Number(process.env.VOL_ROTATE_MS || 60000)) {
         lastRotate = Date.now();
-        try { await volScan.tick(); } catch (e) { console.warn('grid vol', e.message); }
-        const plan = planRotation({ mmAlloc, ranked: volScan.ranking(), now: Date.now(), enteredAt, watch, live, cfg });
+        let ranked = [];
+        const sharedScan = await pullVenueScan(cfg.exchange);
+        if (sharedScan && sharedScan.ranked && Date.now() - Number(sharedScan.ts || 0) < 120000) {
+          ranked = sharedScan.ranked;
+          console.log('grid using shared ' + cfg.exchange + ' scan n=' + ranked.length);
+        } else {
+          try { await volScan.tick(); ranked = volScan.ranking(); } catch (e) { console.warn('grid vol', e.message); }
+        }
+        const plan = planRotation({ mmAlloc, ranked, now: Date.now(), enteredAt, watch, live, cfg });
       if (plan.leaving.length || plan.additions.length) {
         console.log('grid exit ' + plan.leaving.map((a) => a.symbol).join(',') + ' enter ' + plan.additions.map((a) => a.symbol).join(','));
         for (const a of plan.leaving) {
@@ -140,7 +147,7 @@ async function main() {
         catch (e) { console.error('grid ' + a.symbol + ' ' + (e.message || e)); }
         await sleep(80);
       }
-      const snap = pnl.snapshot(live);
+      const snap = pnl.snapshot();
       const markets = mmAlloc.map((a) => {
         const st = gridState.get(a.pair) || {};
         const bid = st.bid && st.bid.status === 'open' ? Number(st.bid.price) * Number(st.bid.size) : 0;
@@ -155,7 +162,7 @@ async function main() {
       });
       postStatus({
         bot: 'grid', exchange: cfg.exchange, quote: cfg.quote,
-        pnl: snap, markets, api: snapshotApi(),
+        pnl: snap, equity: live && live.totalEquity, cash: live && live.freeQuote, markets, api: snapshotApi(),
         moversVol: topVolatiles(8), moversPrice: topMovers(8),
         working: { bids: markets.reduce((s, m) => s + m.bidUsd, 0), asks: markets.reduce((s, m) => s + m.askUsd, 0) },
       });
