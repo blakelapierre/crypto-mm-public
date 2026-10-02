@@ -116,7 +116,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const useBook = false;
   let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
   let ask1 = mid * (1 + Math.max(tick / mid, askOff, sellHalf));
-  if (rising && inv0 <= 0 && book && Number(book.bid) > 0) bid1 = Number(book.bid);
+  if (rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1) && book && Number(book.bid) > 0) bid1 = Number(book.bid);
   if (useBook && sk) {
     if (sk > 0) bid1 = Math.min(bid1, mid * (1 - bidOff));
     if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
@@ -125,7 +125,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     bid1 = mid * (1 - l1HalfFrac(cfg, pair));
     ask1 = mid * (1 + l1HalfFrac(cfg, pair));
   }
-  if (!(rising && inv0 <= 0)) bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
+  if (!(rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1))) bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
   else bid1 = Number(formatPrice(bid1, pairDecimals));
   ask1 = Number(clampAwayFromMid(mid, ask1, 'sell', sellHalf, pairDecimals));
   const skewKey = String(symbol || '');
@@ -218,11 +218,15 @@ function resizeLeg(cfg, a, o, live) {
       ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol))[0]
       : null;
     const isTop = top && top.symbol === a.symbol;
-    const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
+    const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashLeft;
     const clipMax = Number(process.env.CLIP_MAX_USD || 0) || Math.max(cfg.minOrderUsd || 1, eq * Number(process.env.CLIP_EQ_FRAC || 0.12));
+    const deploy = !['0', 'false', 'off'].includes(String(process.env.DEPLOY_CASH || '1').toLowerCase());
     let useUsd = isL1
-      ? Math.min(cashLeft, nameRoom, clipMax, isTop ? Math.max(cashShare, Math.min(cashLeft * 0.35, nameRoom)) : cashShare)
+      ? Math.min(cashLeft, nameRoom, deploy && ret > 0 ? cashLeft : clipMax, isTop ? Math.max(cashShare, Math.min(cashLeft * 0.35, nameRoom)) : cashShare)
       : Math.min(wantUsd || cashShare, cashShare || wantUsd, nameRoom, clipMax);
+    if (deploy && isL1 && ret > 0 && cashLeft > 0) {
+      useUsd = Math.min(nameRoom, Math.max(cashShare, cashLeft * Math.max(wFrac, 1 / Math.max(1, pairs))));
+    }
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
     if (useUsd < minUsd && cashLeft >= minUsd) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
@@ -364,8 +368,8 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       inv0 = Number((live.positions && live.positions[a.symbol] && (Number(live.positions[a.symbol].amount || 0) + Number(live.positions[a.symbol].hold || 0))) || 0);
     } catch { inv0 = 0; }
   }
-  const bidT = rising && inv0 <= 0 && book.bid > 0
-    ? formatPrice(book.bid, a.pairDecimals)
+  const bidT = rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1) && book.bid > 0
+    ? formatPrice(Math.min(book.bid, book.ask ? book.ask - Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals)) : book.bid), a.pairDecimals)
     : clampAwayFromMid(mid, mid * (1 - l1HalfFrac(cfg, a.pair)), 'buy', l1HalfFrac(cfg, a.pair), a.pairDecimals);
   const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
@@ -390,8 +394,10 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     const lastM = pinMid.get(key);
     const midMoved = lastM > 0 && Math.abs(mid - lastM) / lastM >= move;
     if (open.length && !midMoved) {
-      const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target));
-      if (good || l1.length) return;
+      const atTouch = side === 'buy' && rising && Math.abs(Number(l1[0] && l1[0].price) - Number(target)) / mid < 0.0008;
+      const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target) || atTouch);
+      if (good) return;
+      if (l1.length && !(side === 'buy' && rising)) return;
     }
     if (midMoved && l1.length) {
       for (const o of l1) {
@@ -628,7 +634,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
   const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
   const focused = isTopWeight(a.pair, focusN);
-  if (!focused) {
+  const risingNow = midReturn(a.symbol) > 0;
+  if (!focused && !risingNow) {
     if (!pairState.has(a.pair)) {
       pairState.set(a.pair, { ladder: { buys: [], sells: [] }, symbol: a.symbol, lastMid: book.mid, parked: true, bornAt: Date.now() });
     }
