@@ -31,9 +31,16 @@ const ex = createExchange(cfg, orderRegistry);
 async function main() {
   if (!process.env.GRID_COINBASE_API_KEY) console.warn('grid is using COINBASE_API_KEY (ladder wallet). Set GRID_COINBASE_API_KEY for the grid portfolio.');
   startApiTally();
+  console.log('grid products');
   const productMap = await ex.getProducts();
-  if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
+  console.log('grid products ' + Object.keys(productMap).length);
+  if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') {
+    console.log('grid cancel open');
+    await ex.cancelAll();
+  }
+  console.log('grid portfolio');
   let live = await fetchLivePortfolio(cfg, ex, productMap);
+  console.log('grid equity ' + Number(live.totalEquity || 0).toFixed(2) + ' cash ' + Number(live.freeQuote || 0).toFixed(2));
   let lists = await buildLists(cfg, productMap, live.totalEquity, live);
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
@@ -48,8 +55,13 @@ async function main() {
   const enteredAt = new Map();
   const watch = new Map();
   console.log('grid vol scan, same entry rules as ladder');
-  try { await volScan.tick(); } catch (e) { console.warn('grid vol', e.message); }
-  const first = planRotation({ mmAlloc, ranked: volScan.ranking(), now: Date.now(), enteredAt, watch, live, cfg });
+  const sharedScan = await pullVenueScan(cfg.exchange);
+  if (sharedScan && sharedScan.ranked && Date.now() - Number(sharedScan.ts || 0) < 120000) {
+    console.log('grid using shared scan n=' + sharedScan.ranked.length);
+  } else {
+    try { await volScan.tick(); } catch (e) { console.warn('grid vol', e.message); }
+  }
+  const first = planRotation({ mmAlloc, ranked: (sharedScan && sharedScan.ranked) || volScan.ranking(), now: Date.now(), enteredAt, watch, live, cfg });
   for (const a of first.additions) {
     mmAlloc.push(a);
     enteredAt.set(a.pair, Date.now());

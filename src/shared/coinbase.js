@@ -133,7 +133,7 @@ async function coinbaseRequestOnce(cfg, method, reqPath, bodyObj = null, attempt
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
-    const opts = { method, headers };
+    const opts = { method, headers, signal: AbortSignal.timeout(Number(process.env.CB_TIMEOUT_MS || 15000)) };
     if (bodyObj && method !== 'GET') opts.body = JSON.stringify(bodyObj);
     const res = await fetch(COINBASE_BASE + reqPath, opts);
     const text = await res.text();
@@ -157,7 +157,7 @@ async function coinbaseRequestOnce(cfg, method, reqPath, bodyObj = null, attempt
 export async function coinbasePublic(reqPath) {
   const t0 = Date.now();
   try {
-    const res = await fetch(COINBASE_BASE + reqPath, { headers: { Accept: 'application/json' } });
+    const res = await fetch(COINBASE_BASE + reqPath, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(Number(process.env.CB_TIMEOUT_MS || 15000)) });
     const data = await res.json();
     noteApi('coinbase', 'PUB ' + shortPath(reqPath), Date.now() - t0, res.ok);
     if (!res.ok) throw new Error(JSON.stringify(data));
