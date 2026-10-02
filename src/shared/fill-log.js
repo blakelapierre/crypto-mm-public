@@ -87,7 +87,7 @@ function rotateFile(dest) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = path.join(path.dirname(dest), 'archives');
   fs.mkdirSync(dir, { recursive: true });
-  const arch = path.join(dir, path.basename(dest).replace(/\.jsonl$/i, '') + '-' + stamp + '.jsonl');
+  const arch = path.join(dir, path.basename(dest).replace(/\.(jsonl|log)$/i, '') + '-' + stamp + path.extname(dest));
   try {
     fs.renameSync(dest, arch);
     console.log('rotated ' + dest + ' -> ' + arch);
@@ -104,6 +104,7 @@ function archiveLooseLogs(dir) {
       if (name.startsWith('debug-') && !name.includes('20')) continue;
       if (name.startsWith('px-') && !name.includes('20')) continue;
       if (name.startsWith('vol-scan-') && name.endsWith('.json') && !name.includes('20')) continue;
+      if (name.startsWith('console-') && !name.includes('20')) continue;
       if (/20\d{2}-/.test(name)) {
         try { fs.renameSync(path.join(dir, name), path.join(dest, name)); } catch {}
       }
@@ -111,12 +112,40 @@ function archiveLooseLogs(dir) {
   } catch (e) { console.warn('log archive', e.message); }
 }
 
+function consolePath() {
+  const bot = String(process.env.BOT || 'bot').toLowerCase();
+  return path.resolve(process.cwd(), 'logs', 'console-' + bot + '.log');
+}
+let consoleHooked = false;
+export function startConsoleLog() {
+  if (consoleHooked) return;
+  consoleHooked = true;
+  const dest = consolePath();
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    rotateFile(dest);
+  } catch { /* ignore */ }
+  const write = (level, args) => {
+    try {
+      const line = new Date().toISOString() + ' ' + level + ' ' + args.map((a) => {
+        if (typeof a === 'string') return a;
+        try { return JSON.stringify(a); } catch { return String(a); }
+      }).join(' ');
+      fs.appendFileSync(dest, line + '\n');
+    } catch { /* ignore */ }
+  };
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  console.log = (...a) => { orig.log(...a); write('log', a); };
+  console.warn = (...a) => { orig.warn(...a); write('warn', a); };
+  console.error = (...a) => { orig.error(...a); write('err', a); };
+}
 export function logSession(extra = {}) {
   try {
     archiveLooseLogs(path.dirname(filePath() || debugPath() || path.resolve(process.cwd(), 'logs/x')));
     rotateFile(filePath());
     rotateFile(debugPath());
     rotatePxLog();
+    startConsoleLog();
     fillDest.v = null;
     debugDest.v = null;
     writeBoth(['shapes', SHAPE_LIST]);
