@@ -64,6 +64,6 @@ startCoinbaseTickerWs(pairs, (rec) => {
   const sym = String(rec.pair || '').split('-')[0];
   note(sym, rec.last || rec.mid || rec.bid);
 });
-setInterval(flush, SAMPLE);
+setInterval(flush, FLUSH);
 flush();
 console.log('feed writing', outFile);

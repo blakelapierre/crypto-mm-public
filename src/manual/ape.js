@@ -214,6 +214,6 @@ document.body.addEventListener('click', async function(ev){
   } catch(e) { log(String(e)); }
 });
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 1000);
 </script></body></html>`;
 }

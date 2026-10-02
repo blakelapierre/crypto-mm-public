@@ -937,7 +937,7 @@ function loadFeed() {
   } catch { /* feed not started */ }
 }
 loadFeed();
-setInterval(loadFeed, 2000);
+setInterval(loadFeed, 250);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
