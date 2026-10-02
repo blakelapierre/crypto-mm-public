@@ -170,7 +170,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             if (cfg.exchange === 'coinbase' && (leaveSyms.length || additions.length)) {
               try {
                 if (leaveSyms.length) {
-                  await skimToBank(cfg, await getLive(), Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms, 'run', getLive);
+                  const liveNow = await getLive();
+                  skimToBank(cfg, liveNow, Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms, 'run', getLive)
+                    .then(() => refreshBankHoldings(cfg).catch(() => {}))
+                    .catch((e) => console.warn('rotate bank', e.message));
                   await liquidateSymbols(cfg, ex, await getLive(), leaveSyms);
                 }
                 if (additions.length) await seedNewInventory(cfg, ex, additions.map((a) => mmAlloc.find((x) => x.pair === a.pair)).filter(Boolean), await getLive());
@@ -391,11 +394,11 @@ async function main() {
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
   let live = await fetchLivePortfolio(cfg, ex, productMap);
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
-    console.log('bank skim 0.5% -> trade bot bank');
-    try {
-      await skimToBank(cfg, live, Number(process.env.BANK_START_PCT || 0.005), null, 'startup', () => fetchLivePortfolio(cfg, ex, productMap));
-      live = await waitForSettlement(cfg, ex, productMap, 'after startup bank skim');
-    } catch (e) { console.warn('startup bank skim', e.message); }
+    console.log('bank skim 0.5% -> trade bot bank (bg)');
+    const skimLive = live;
+    skimToBank(cfg, skimLive, Number(process.env.BANK_START_PCT || 0.005), null, 'startup', () => fetchLivePortfolio(cfg, ex, productMap))
+      .then(() => refreshBankHoldings(cfg))
+      .catch((e) => console.warn('startup bank skim', e.message));
   }
   let lists = await buildLists(cfg, productMap, live.totalEquity, live);
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
@@ -411,6 +414,7 @@ async function main() {
         if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
           console.log('bank leftover orphans (bg) ' + leftover.join(','));
           await skimToBank(cfg, after, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap));
+          await refreshBankHoldings(cfg);
         }
       } catch (e) { console.warn('bg flatten', e.message); }
     })();
