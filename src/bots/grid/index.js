@@ -167,7 +167,6 @@ async function main() {
       postStatus({
         bot: 'grid', exchange: cfg.exchange, quote: cfg.quote,
         pnl: snap, equity: live && live.totalEquity, cash: live && live.freeQuote, markets, api: snapshotApi(),
-        moversVol: topVolatiles(8), moversPrice: topMovers(8),
         working: { bids: markets.reduce((s, m) => s + m.bidUsd, 0), asks: markets.reduce((s, m) => s + m.askUsd, 0) },
       });
     } catch (e) {

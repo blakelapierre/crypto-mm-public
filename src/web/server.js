@@ -16,10 +16,9 @@ const botKids = new Map();
 const botLogs = new Map();
 function pushLog(name, line) {
   const arr = botLogs.get(name) || [];
-  arr.push(String(line).replace(/\s+$/, ''));
+  arr.push(String(line).replace(/\s+$/, '').slice(0, 180));
   while (arr.length > 200) arr.shift();
   botLogs.set(name, arr);
-  if (!pushLog._t) pushLog._t = setTimeout(() => { pushLog._t = null; try { broadcast(); } catch { /* early */ } }, 500);
 }
 function startBot(name) {
   const spec = BOT_CMDS[name];
@@ -724,7 +723,7 @@ function boardHtml(rows){
       '<div class="sparks">'+inner+'</div></section>';
   }).join('');
 }
-function moversHtml(rows){
+function moversHtml(rows, scans){
   function cell(x, kind){
     const ret=x.ret, cls=ret>0?'up':(ret<0?'dn':'');
     const extra=kind==='vol'
@@ -753,13 +752,17 @@ function moversHtml(rows){
   }
   const cards = [];
   const byEx = new Map();
-  (rows || []).forEach(function(b){
-    const ex = String(b.exchange || 'venue').toLowerCase();
-    if (!byEx.has(ex)) byEx.set(ex, { exchange: ex, moversVol: [], moversPrice: [] });
-    const g = byEx.get(ex);
-    (b.moversVol || []).forEach(function(m){ g.moversVol.push(m); });
-    (b.moversPrice || []).forEach(function(m){ g.moversPrice.push(m); });
+  Object.keys(scans || {}).forEach(function(ex){
+    const ranked = (scans[ex] && scans[ex].ranked) || [];
+    byEx.set(ex, { exchange: ex, moversVol: ranked, moversPrice: ranked });
   });
+  if (!byEx.size) {
+    (rows || []).forEach(function(b){
+      const ex = String(b.exchange || 'venue').toLowerCase();
+      if (byEx.has(ex)) return;
+      byEx.set(ex, { exchange: ex, moversVol: b.moversVol || [], moversPrice: b.moversPrice || [] });
+    });
+  }
   byEx.forEach(function(g){
     const fake = { bot: '', exchange: g.exchange, moversVol: g.moversVol, moversPrice: g.moversPrice };
     const vols = itemsOf(fake, 'vol');
@@ -818,7 +821,7 @@ function render(data){
         card=document.createElement('div');
         card.id='log-'+k;
         card.style.cssText='flex:1;min-width:240px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px';
-        card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b>'+k+'</b><button type="button" data-logpause="'+k+'">pause</button></div><pre data-log="'+k+'" style="max-height:180px;overflow:auto;font-size:11px;margin:4px 0 0;white-space:pre-wrap"></pre>';
+        card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b>'+k+'</b><button type="button" data-logpause="'+k+'">pause</button></div><pre data-log="'+k+'" style="max-height:140px;overflow:auto;font-size:11px;margin:4px 0 0;white-space:pre-wrap"></pre>';
         box.appendChild(card);
       }
       if(window._logPause&&window._logPause[k]) return;
@@ -828,11 +831,12 @@ function render(data){
       if(atBottom) pre.scrollTop=pre.scrollHeight;
     });
   }
+  if(data&&data.logs && !data.bots) return;
   if(data&&data.running) botCtl(data.running);
   const rows=(data.bots||[]).slice().sort(function(a,c){return botRank(a)-botRank(c);});
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
   const mv=document.getElementById('movers');
-  if(mv) mv.innerHTML=moversHtml(rows);
+  if(mv) mv.innerHTML=moversHtml(rows, data.scans);
   const board=document.getElementById('board');
   if(board) board.innerHTML=boardHtml(rows);
   const sess=document.getElementById('sessions');
@@ -895,6 +899,7 @@ document.getElementById('botctl').addEventListener('click', function(ev){
 });
 fetch('/bots').then(r=>r.json()).then(j=>botCtl(j.bots)).catch(()=>{});
 fetch('/api/status').then(r=>r.json()).then(render).catch(()=>{});
+setInterval(function(){ fetch('/logs').then(r=>r.json()).then(render).catch(()=>{}); }, 2000);
 window.__saveCfg=function(ev){
   ev.preventDefault();
   const f=ev.target;
@@ -908,9 +913,14 @@ connect();
 </body></html>`;
 
 function payload() {
+  const scans = {};
+  for (const [ex, row] of venueScans) scans[ex] = { ranked: (row.ranked || []).slice(0, 8), ts: row.ts };
+  return JSON.stringify({ bots: collect(), sessions: cachedSessionSummaries(), running: botRunning(), scans });
+}
+function logsPayload() {
   const logs = {};
-  for (const [k, v] of botLogs) logs[k] = v;
-  return JSON.stringify({ bots: collect(), sessions: cachedSessionSummaries(), logs, running: botRunning() });
+  for (const [k, v] of botLogs) logs[k] = v.slice(-200);
+  return JSON.stringify({ logs });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -966,6 +976,11 @@ const server = http.createServer(async (req, res) => {
       if (ex) venueScans.set(ex, { ranked: msg.ranked || [], ts: Date.now(), bot: msg.bot || '' });
       res.writeHead(204); res.end();
     } catch { res.writeHead(400); res.end('bad json'); }
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/logs') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(logsPayload());
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/status') {
