@@ -72,6 +72,7 @@ export function postVenueScan(exchange, ranked) {
     body: JSON.stringify({ exchange: exchange || process.env.EXCHANGE || '', bot: process.env.BOT || '', ranked: ranked.slice(0, 40) }),
   }).catch(() => {});
 }
+export async function pullVenueMids(exchange) {
   const dest = url();
   if (!dest) return [];
   try {
