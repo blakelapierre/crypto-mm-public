@@ -60,6 +60,7 @@ function reloadBot(name) {
   kid.kill('SIGUSR2');
   return { ok: true };
 }
+function stopBot(name) {
   const kid = botKids.get(name);
   if (!kid) return { ok: true, already: true };
   kid.kill('SIGINT');
