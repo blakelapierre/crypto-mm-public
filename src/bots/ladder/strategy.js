@@ -632,10 +632,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   if (!book) return;
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
+  const forced = (cfg.symbols || []).includes(a.symbol);
   const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
   const focused = isTopWeight(a.pair, focusN);
   const risingNow = midReturn(a.symbol) > 0;
-  if (!focused && !risingNow) {
+  if (!forced && !focused && !risingNow) {
     if (!pairState.has(a.pair)) {
       pairState.set(a.pair, { ladder: { buys: [], sells: [] }, symbol: a.symbol, lastMid: book.mid, parked: true, bornAt: Date.now() });
     }
@@ -661,7 +662,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     publishOrders(a, ladder, book.mid);
     return;
   }
-  if (!liveTapeReady(a.symbol)) return;
+  if (!forced && !liveTapeReady(a.symbol)) return;
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;

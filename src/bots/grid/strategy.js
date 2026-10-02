@@ -86,7 +86,8 @@ export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry, 
   const live = getLive ? await getLive() : null;
   async function ensure(side, target, lotHint) {
     const cur = side === 'buy' ? st.bid : st.ask;
-    if (cur && cur.status === 'open' && cur.orderId && formatPrice(Number(cur.price), a.pairDecimals) === String(target)) return;
+    const same = cur && cur.status === 'open' && cur.orderId && Math.abs(Number(cur.price) - Number(target)) <= step * 0.51;
+    if (same) return;
     if (cur && cur.status === 'open' && cur.orderId) {
       try { await ex.cancelOrder(cur.orderId); } catch { /* ignore */ }
       cur.status = 'cancelled';
@@ -124,7 +125,8 @@ export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry, 
   publish(a, st, mid);
   const bidN = st.bid && st.bid.status === 'open' ? 1 : 0;
   const askN = st.ask && st.ask.status === 'open' ? 1 : 0;
-  if (bidN + askN) {
+  if (bidN + askN && Date.now() - (st.loggedAt || 0) > 15000) {
+    st.loggedAt = Date.now();
     console.log('[grid] ' + a.symbol + ' mid=' + mid + ' bid ' + (st.bid && st.bid.status === 'open' ? st.bid.price : '-') +
       ' ask ' + (st.ask && st.ask.status === 'open' ? st.ask.price : '-') +
       ' lots=' + st.lots.length + ' shorts=' + st.shorts.length);
