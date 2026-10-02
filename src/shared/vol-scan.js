@@ -225,8 +225,10 @@ export function createVolScan(cfg, productMap) {
       const hi = Math.max(...arr.map((a) => a.mid));
       const lo = Math.min(...arr.map((a) => a.mid));
       const last = arr[arr.length - 1].mid;
+      const first = arr[0].mid;
       const range = last > 0 ? (hi - lo) / last : 0;
-      rows.push({ symbol: sym, ...productMap[sym], volScore: sigma * Math.sqrt(rets.length) + range, rangePct: range * 100, samples: arr.length, last });
+      const ret = first > 0 ? (last - first) / first : 0;
+      rows.push({ symbol: sym, ...productMap[sym], volScore: sigma * Math.sqrt(rets.length) + range, rangePct: range * 100, samples: arr.length, last, ret });
     }
     rows.sort((a, b) => b.volScore - a.volScore);
     lastScore.clear();

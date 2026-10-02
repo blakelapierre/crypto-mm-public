@@ -165,19 +165,32 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             }
           }
           const scored = ranked.map((r) => {
-            const ret = midReturn(r.symbol);
+            const ret = Number(r.ret != null ? r.ret : midReturn(r.symbol));
             const tr = trendMult(r.symbol);
             const rise = ret > 0 ? 1.6 : (ret < -0.01 ? 0.45 : 0.8);
-            return { ...r, ret15: ret, trend: tr, pick: Number(r.rangePct || 0) * Math.max(tr, 1) * rise };
-          }).sort((a, b) => b.pick - a.pick);
+            return { ...r, ret15: ret, trend: tr, pick: ret * 100 + Number(r.rangePct || 0) * Math.max(tr, 1) * rise };
+          }).sort((a, b) => b.ret15 - a.ret15 || b.pick - a.pick);
           for (const r of scored) {
             if (have.has(r.pair)) continue;
             const rip = shortRun(r.symbol);
             const watched = watch.has(r.pair);
             const hot = Number(r.rangePct || 0) >= enterPct;
-            const rising = Number(r.ret15 || 0) >= Number(process.env.ENTER_RET_MIN || 0);
+            const rising = Number(r.ret15 || 0) >= Number(process.env.ENTER_RET_MIN || 0.003);
             if (!rising && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
-            if (!hot && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
+            if (!hot && !rising) continue;
+            while (keep.length + additions.length >= hardMax) {
+              const retOf = (a) => {
+                const row = ranked.find((x) => x.pair === a.pair || x.symbol === a.symbol);
+                return Number(row && row.ret != null ? row.ret : midReturn(a.symbol));
+              };
+              keep.sort((x, y) => retOf(x) - retOf(y));
+              const worst = keep[0];
+              if (!worst || retOf(worst) >= Number(r.ret15 || 0)) break;
+              leaving.push(worst);
+              keep.shift();
+              have.delete(worst.pair);
+              console.log('  RISE SWAP out ' + worst.symbol + ' for ' + r.symbol + ' ret=' + (r.ret15 * 100).toFixed(2) + '%');
+            }
             if (keep.length + additions.length >= hardMax) continue;
             if (cashFrac < cashFloor && !rising) continue;
             if (!(r.pair && r.symbol)) continue;

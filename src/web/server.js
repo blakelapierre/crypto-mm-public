@@ -12,6 +12,35 @@ const TOKEN = process.env.STATUS_TOKEN || '';
 const bots = new Map();
 const venueBooks = new Map();
 const botKids = new Map();
+const botLogs = new Map();
+function pushLog(name, line) {
+  const arr = botLogs.get(name) || [];
+  arr.push(String(line).replace(/\s+$/, ''));
+  while (arr.length > 200) arr.shift();
+  botLogs.set(name, arr);
+  if (!pushLog._t) pushLog._t = setTimeout(() => { pushLog._t = null; try { broadcast(); } catch { /* early */ } }, 500);
+}
+function startBot(name) {
+  const spec = BOT_CMDS[name];
+  if (!spec) throw new Error('unknown bot ' + name);
+  const cur = botKids.get(name);
+  if (cur && cur.exitCode == null && !cur.killed) return { ok: true, already: true };
+  const kid = spawn(process.execPath, [spec[0]], {
+    cwd: process.cwd(),
+    env: { ...process.env, BOT: name, BOT_CONFIG: spec[1] },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const take = (buf) => String(buf).split(/\n/).forEach((line) => { if (line) pushLog(name, line); });
+  kid.stdout.on('data', take);
+  kid.stderr.on('data', take);
+  kid.on('exit', (code) => {
+    pushLog(name, 'exit ' + code);
+    if (botKids.get(name) === kid) botKids.delete(name);
+  });
+  botKids.set(name, kid);
+  pushLog(name, 'started pid ' + kid.pid);
+  return { ok: true, pid: kid.pid };
+}
 const BOT_CMDS = {
   ladder: ['src/bots/ladder/index.js', 'configs/ladder.env'],
   grid: ['src/bots/grid/index.js', 'configs/grid.env'],
@@ -24,20 +53,6 @@ function botRunning() {
     out[name] = !!(kid && kid.exitCode == null && !kid.killed);
   }
   return out;
-}
-function startBot(name) {
-  const spec = BOT_CMDS[name];
-  if (!spec) throw new Error('unknown bot ' + name);
-  const cur = botKids.get(name);
-  if (cur && cur.exitCode == null && !cur.killed) return { ok: true, already: true };
-  const kid = spawn(process.execPath, [spec[0]], {
-    cwd: process.cwd(),
-    env: { ...process.env, BOT: name, BOT_CONFIG: spec[1] },
-    stdio: 'inherit',
-  });
-  kid.on('exit', () => { if (botKids.get(name) === kid) botKids.delete(name); });
-  botKids.set(name, kid);
-  return { ok: true, pid: kid.pid };
 }
 function stopBot(name) {
   const kid = botKids.get(name);
@@ -326,6 +341,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span></h1>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
+<pre id="botlog" style="max-height:160px;overflow:auto;font-size:11px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px;white-space:pre-wrap"></pre>
 </div>
 <div id="shell">
 <div id="pin">
@@ -771,6 +787,17 @@ function holdHtml(rows){
   }).join('')+'</table></div>';
 }
 function render(data){
+  if(data&&data.logs){
+    const el=document.getElementById('botlog');
+    const parts=[];
+    Object.keys(data.logs).forEach(function(k){
+      (data.logs[k]||[]).slice(-200).forEach(function(line){ parts.push(k+'  '+line); });
+    });
+    const atBottom=el.scrollTop+el.clientHeight>=el.scrollHeight-8;
+    el.textContent=parts.slice(-200).join('\\n');
+    if(atBottom) el.scrollTop=el.scrollHeight;
+  }
+  if(data&&data.running) botCtl(data.running);
   const rows=(data.bots||[]).slice().sort(function(a,c){return botRank(a)-botRank(c);});
   document.getElementById('meta').textContent=rows.length?rows.length+' bot(s) · live websocket':'waiting for bot POSTs';
   const mv=document.getElementById('movers');
@@ -842,7 +869,9 @@ connect();
 </body></html>`;
 
 function payload() {
-  return JSON.stringify({ bots: collect(), sessions: cachedSessionSummaries() });
+  const logs = {};
+  for (const [k, v] of botLogs) logs[k] = v;
+  return JSON.stringify({ bots: collect(), sessions: cachedSessionSummaries(), logs, running: botRunning() });
 }
 
 const server = http.createServer(async (req, res) => {
