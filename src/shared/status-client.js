@@ -65,6 +65,8 @@ export async function pullVenueMids(exchange) {
     return j.mids || [];
   } catch { return []; }
 }
+
+export async function pullLiveConfig(bot) {
   const dest = url();
   if (!dest) return null;
   try {
