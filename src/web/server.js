@@ -54,7 +54,12 @@ function botRunning() {
   }
   return out;
 }
-function stopBot(name) {
+function reloadBot(name) {
+  const kid = botKids.get(name);
+  if (!kid) return { ok: false, error: 'not running from UI' };
+  kid.kill('SIGUSR2');
+  return { ok: true };
+}
   const kid = botKids.get(name);
   if (!kid) return { ok: true, already: true };
   kid.kill('SIGINT');
@@ -845,7 +850,7 @@ function botCtl(running){
   const names=['ladder','grid','comp'];
   document.getElementById('botctl').innerHTML=names.map(function(n){
     const on=running&&running[n];
-    return '<button data-bot="'+n+'" data-act="'+(on?'stop':'start')+'">'+(on?'stop ':'start ')+n+'</button>';
+    return '<button data-bot="'+n+'" data-act="'+(on?'stop':'start')+'">'+(on?'stop ':'start ')+n+'</button>'+(on?'<button data-bot="'+n+'" data-act="reload">reload '+n+'</button>':'');
   }).join(' ');
 }
 document.getElementById('botctl').addEventListener('click', function(ev){
@@ -1079,7 +1084,7 @@ const server = http.createServer(async (req, res) => {
       const msg = JSON.parse(body || '{}');
       const name = String(msg.bot || '').toLowerCase();
       const action = String(msg.action || '');
-      const result = action === 'stop' ? stopBot(name) : startBot(name);
+      const result = action === 'stop' ? stopBot(name) : action === 'reload' ? reloadBot(name) : startBot(name);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ...result, bots: botRunning() }));
     } catch (e) {

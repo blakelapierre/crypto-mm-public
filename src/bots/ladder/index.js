@@ -12,6 +12,15 @@ import {
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
 import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo } from './strategy.js';
+import { pathToFileURL } from 'url';
+let strat = { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo };
+async function reloadStrategy() {
+  const href = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'strategy.js')).href + '?t=' + Date.now();
+  const next = await import(href);
+  strat = next;
+  console.log('strategy reloaded');
+}
+process.on('SIGUSR2', () => { reloadStrategy().catch((e) => console.warn('reload', e.message)); });
 import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles, midHistory } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
@@ -138,6 +147,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const meta = volStatsForSymbol(a.symbol);
             const range = meta ? Number(meta.rangePct || 0) : 0;
             const age = now - (enteredAt.get(a.pair) || now);
+            const rip = shortRun(a.symbol);
             const ret1 = midReturn(a.symbol);
             const weak = (range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008))
               || ret1 < Number(process.env.FALL_EXIT_RET || -0.002);
@@ -170,8 +180,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const rise = ret > 0 ? 1.6 : (ret < -0.01 ? 0.45 : 0.8);
             return { ...r, ret15: ret, trend: tr, pick: ret * 100 + Number(r.rangePct || 0) * Math.max(tr, 1) * rise };
           }).sort((a, b) => b.ret15 - a.ret15 || b.pick - a.pick);
+          const topRise = scored.filter((r) => r.ret15 >= Number(process.env.ENTER_RET_MIN || 0.003)).slice(0, 4);
+          if (topRise.length) console.log('rising ' + topRise.map((r) => r.symbol + ' ' + (r.ret15 * 100).toFixed(2) + '%').join('  ') + '  held ' + keep.map((a) => a.symbol).join(','));
           for (const r of scored) {
-            if (have.has(r.pair)) continue;
+            if (have.has(r.pair) || have.has(r.symbol)) continue;
             const rip = shortRun(r.symbol);
             const watched = watch.has(r.pair);
             const hot = Number(r.rangePct || 0) >= enterPct;
@@ -412,16 +424,16 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   if (fresh.length) {
     console.log('initial ladders high-w first n=' + fresh.length + ' ' + fresh.map((a) => a.symbol).join(','));
     for (const a of fresh) {
-      try { await processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
+      try { await strat.processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
       catch (e) { console.error(a.symbol, e.message); }
     }
   }
   while (true) {
     sortAllocByWeight(mmAlloc);
     setLiveMmAlloc(mmAlloc);
-    try { await harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
+    try { await strat.harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
     await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 40)).then(() =>
-      processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
+      strat.processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))
     )));
     await sleep(cfg.updateIntervalMs);
   }
