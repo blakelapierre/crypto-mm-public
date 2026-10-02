@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { coinbaseRequest } from '../shared/coinbase.js';
+import { coinbasePublic, coinbaseRequest } from '../shared/coinbase.js';
 
 const file = path.resolve(process.cwd(), 'data', 'ape-positions.json');
 const positions = new Map();
