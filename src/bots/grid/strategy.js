@@ -27,18 +27,19 @@ function snapUp(px, step, decimals) {
   return formatPrice(Math.pow(1 + step, n), decimals);
 }
 
-function clipSize(cfg, a, px, live, side) {
+function clipSize(cfg, a, px, live, side, budget) {
   const usd = Number(process.env.GRID_CLIP_USD || cfg.minOrderUsd || 5);
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
   let size = usd / px;
   if (side === 'buy') {
-    const cash = (live && live.freeQuote || 0) * (cfg.orderSizeHaircut || 0.9);
+    const cash = Math.min((live && live.freeQuote || 0), budget && budget.left != null ? budget.left : Infinity) * (cfg.orderSizeHaircut || 0.9);
     size = Math.min(size, cash / px);
   } else {
     const held = (live && live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
-    size = Math.min(size, held * (cfg.orderSizeHaircut || 0.9));
+    const avail = budget && budget.base && budget.base[a.symbol] != null ? budget.base[a.symbol] : held;
+    size = Math.min(size, avail * (cfg.orderSizeHaircut || 0.9));
   }
-  if (size + 1e-12 < minV) return heldOrCashOk(side, live, a, minV, px) ? formatVolume(minV, a.lotDecimals) : 0;
+  if (!(size > 0) || size + 1e-12 < minV) return 0;
   return formatVolume(size, a.lotDecimals);
 }
 
@@ -61,7 +62,7 @@ export function createGridState() {
   return { bid: null, ask: null, lots: [], shorts: [], lastMid: 0 };
 }
 
-export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry) {
+export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry, budget) {
   const mid = Number(book && book.mid);
   if (!(mid > 0) || !a.pairDecimals) return;
   if (!orderRegistry || typeof orderRegistry.get !== 'function') return;
@@ -91,10 +92,19 @@ export async function processGrid(cfg, ex, a, st, book, getLive, orderRegistry) 
       cur.status = 'cancelled';
       logEvent('cancel', { orderId: cur.orderId, side, price: cur.price, why: 'grid-move', mid });
     }
-    const size = lotHint && lotHint.size ? formatVolume(lotHint.size, a.lotDecimals) : clipSize(cfg, a, Number(target), live, side);
+    if (side === 'buy' && st.buyHoldUntil && Date.now() < st.buyHoldUntil) return;
+    if (side === 'sell' && st.sellHoldUntil && Date.now() < st.sellHoldUntil) return;
+    const size = lotHint && lotHint.size ? formatVolume(lotHint.size, a.lotDecimals) : clipSize(cfg, a, Number(target), live, side, budget);
     if (!size) return;
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
-    if (!(r && r.order_id)) return;
+    if (!(r && r.order_id)) {
+      if (side === 'buy') st.buyHoldUntil = Date.now() + 30000;
+      else st.sellHoldUntil = Date.now() + 30000;
+      return;
+    }
+    const notional = Number(size) * Number(target);
+    if (budget && side === 'buy') budget.left = Math.max(0, Number(budget.left || 0) - notional);
+    if (budget && budget.base && side === 'sell') budget.base[a.symbol] = Math.max(0, Number(budget.base[a.symbol] || 0) - Number(size));
     logEvent('place', { pair: a.pair, symbol: a.symbol, side, level: 1, price: target, size, orderId: r.order_id, mid });
     const row = { side, price: target, size, orderId: r.order_id, status: 'open', level: 1 };
     if (side === 'buy') st.bid = row; else st.ask = row;

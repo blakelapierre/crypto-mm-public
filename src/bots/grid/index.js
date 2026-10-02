@@ -129,6 +129,10 @@ async function main() {
       let shared = [];
       try { shared = await pullVenueMids(cfg.exchange); } catch { shared = []; }
       const sharedBy = new Map(shared.map((r) => [String(r.symbol || '').toUpperCase(), r]));
+      const budget = {
+        left: Number(live && live.freeQuote || 0),
+        base: Object.fromEntries(Object.entries(live && live.positions || {}).map(([k, p]) => [k, Number(p.amount || 0)])),
+      };
       for (const a of mmAlloc) {
         let book = null;
         const sh = sharedBy.get(String(a.symbol).toUpperCase());
@@ -143,7 +147,7 @@ async function main() {
         if (!a.pairDecimals) a.pairDecimals = 8;
         if (book.mid) postMids([{ symbol: a.symbol, pair: a.pair, mid: book.mid, bid: book.bid, ask: book.ask }]);
         gridState.set(a.pair, st);
-        try { await processGrid(cfg, ex, a, st, book, getLive, orderRegistry); }
+        try { await processGrid(cfg, ex, a, st, book, getLive, orderRegistry, budget); }
         catch (e) { console.error('grid ' + a.symbol + ' ' + (e.message || e)); }
         await sleep(80);
       }
