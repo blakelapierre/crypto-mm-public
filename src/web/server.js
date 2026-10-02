@@ -961,7 +961,7 @@ const server = http.createServer(async (req, res) => {
     let portfolios = [];
     try { portfolios = (await apePortfolios()).portfolios; } catch (e) { portfolios = []; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ready: apeReady(), rising, positions, portfolios, feedAt: lastFeed.updated || 0 }));
+    res.end(JSON.stringify({ ready: apeReady(), key: process.env.APE_COINBASE_API_KEY ? process.env.APE_COINBASE_API_KEY.slice(-8) : 'missing', rising, positions, portfolios, feedAt: lastFeed.updated || 0 }));
     return;
   }
   if (req.method === 'POST' && (url.pathname === '/ape/buy' || url.pathname === '/ape/sell' || url.pathname === '/ape/move')) {

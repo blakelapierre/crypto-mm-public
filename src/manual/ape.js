@@ -53,13 +53,29 @@ async function product(symbol) {
   };
 }
 
+function keyTail() {
+  const key = process.env.APE_COINBASE_API_KEY || '';
+  return key ? key.slice(-8) : 'missing';
+}
+
 async function touch(id) {
-  const cfg = apeCfg();
-  const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(id));
-  const row = (data.pricebooks || [])[0] || {};
-  const bid = Number(row.bids && row.bids[0] && row.bids[0].price || 0);
-  const ask = Number(row.asks && row.asks[0] && row.asks[0].price || 0);
-  return { bid, ask, mid: bid && ask ? (bid + ask) / 2 : bid || ask };
+  const sym = id.split('-')[0];
+  try {
+    const data = await coinbasePublic('/api/v3/brokerage/market/product_book?product_id=' + encodeURIComponent(id) + '&limit=1');
+    const book = data.pricebook || data;
+    const bid = Number(book.bids && book.bids[0] && book.bids[0].price || 0);
+    const ask = Number(book.asks && book.asks[0] && book.asks[0].price || 0);
+    if (bid > 0 && ask > 0) return { bid, ask, mid: (bid + ask) / 2, src: 'public' };
+  } catch { /* fall through to the feed */ }
+  try {
+    const feed = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'data', 'feed', 'coinbase.json'), 'utf8'));
+    const mid = Number(feed.mids && feed.mids[sym] || 0);
+    const row = (feed.ranked || []).find((r) => r.symbol === sym) || {};
+    const bid = Number(row.bid || mid || 0);
+    const ask = Number(row.ask || mid || 0);
+    if (bid > 0 && ask > 0) return { bid, ask, mid: (bid + ask) / 2, src: 'feed' };
+  } catch { /* no feed */ }
+  throw new Error('no public book for ' + id + ' (ape key ' + keyTail() + ' is not used for the book)');
 }
 
 async function place(cfg, pair, side, price, size) {
@@ -95,7 +111,7 @@ export async function apeBuy(symbol, usd) {
   prev.lastBuy = { id, price: Number(px), size: Number(size), at: Date.now() };
   positions.set(prev.symbol, prev);
   save();
-  return { ok: true, side: 'buy', symbol: prev.symbol, price: px, size, id, note: 'post-only at bid; qty is reserved until the order fills' };
+  return { ok: true, side: 'buy', symbol: prev.symbol, price: px, size, id, key: keyTail(), note: 'post-only at bid; qty is reserved until the order fills' };
 }
 
 export async function apeSell(symbol) {
@@ -131,7 +147,7 @@ export async function apePortfolios() {
   const cfg = apeCfg();
   if (!apeReady()) return { ready: false, portfolios: [] };
   const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/portfolios');
-  return { ready: true, portfolios: (data.portfolios || []).map((p) => ({ uuid: p.uuid, name: p.name, type: p.type })) };
+  return { ready: true, key: keyTail(), portfolios: (data.portfolios || []).map((p) => ({ uuid: p.uuid, name: p.name, type: p.type })) };
 }
 
 export async function apeMove(source, target, currency, amount) {
@@ -202,6 +218,7 @@ async function refresh(){
   document.getElementById('src').innerHTML=opts;
   document.getElementById('dst').innerHTML=opts;
   if(!st.ready) log('waiting for APE_COINBASE_API_KEY');
+  else log('ape key …'+st.key);
 }
 document.body.addEventListener('click', async function(ev){
   const b=ev.target.closest('button');

@@ -8,8 +8,10 @@ const FLUSH = Number(process.env.FEED_FLUSH_MS || 250);
 const outFile = path.resolve(process.cwd(), 'data', 'feed', 'coinbase.json');
 const series = new Map();
 const last = new Map();
+const bids = new Map();
+const asks = new Map();
 
-function note(symbol, mid) {
+function note(symbol, mid, bid, ask) {
   const px = Number(mid);
   if (!(px > 0)) return;
   const now = Date.now();
@@ -20,6 +22,8 @@ function note(symbol, mid) {
   while (arr.length && now - arr[0].t > WINDOW) arr.shift();
   series.set(symbol, arr);
   last.set(symbol, px);
+  if (Number(bid) > 0) bids.set(symbol, Number(bid));
+  if (Number(ask) > 0) asks.set(symbol, Number(ask));
 }
 
 function stats(symbol) {
@@ -31,7 +35,7 @@ function stats(symbol) {
   const hi = Math.max(...ps);
   const lo = Math.min(...ps);
   const mid = (hi + lo) / 2;
-  return { symbol, mid: b, ret: a > 0 ? (b - a) / a : 0, rangePct: mid > 0 ? ((hi - lo) / mid) * 100 : 0, spark: arr.slice(-180) };
+  return { symbol, mid: b, bid: bids.get(symbol) || b, ask: asks.get(symbol) || b, ret: a > 0 ? (b - a) / a : 0, rangePct: mid > 0 ? ((hi - lo) / mid) * 100 : 0, spark: arr.slice(-180) };
 }
 
 function flush() {
@@ -63,7 +67,7 @@ const pairs = await universe();
 console.log('feed universe', pairs.length);
 startCoinbaseTickerWs(pairs, (rec) => {
   const sym = String(rec.pair || '').split('-')[0];
-  note(sym, rec.last || rec.mid || rec.bid);
+  note(sym, rec.last || rec.mid || rec.bid, rec.bid, rec.ask);
 });
 setInterval(flush, FLUSH);
 flush();
