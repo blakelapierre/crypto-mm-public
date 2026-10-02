@@ -68,7 +68,7 @@ async function main() {
     try {
       try { await pollOpenOrders(ex, orderRegistry, cfg, pnl); } catch (e) { console.warn('order poll', e.message); }
       live = await getLive();
-      pnl.mark(live);
+      pnl.markHoldings(live);
       let shared = [];
       try { shared = await pullVenueMids(cfg.exchange); } catch { shared = []; }
       const sharedBy = new Map(shared.map((r) => [String(r.symbol || '').toUpperCase(), r]));
