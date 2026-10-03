@@ -35,14 +35,14 @@ function stats(symbol) {
   const hi = Math.max(...ps);
   const lo = Math.min(...ps);
   const mid = (hi + lo) / 2;
-  return { symbol, mid: b, bid: bids.get(symbol) || b, ask: asks.get(symbol) || b, ret: a > 0 ? (b - a) / a : 0, rangePct: mid > 0 ? ((hi - lo) / mid) * 100 : 0, spark: arr.slice(-180) };
+  return { symbol, mid: b, bid: bids.get(symbol) || b, ask: asks.get(symbol) || b, ret: a > 0 ? (b - a) / a : 0, rangePct: mid > 0 ? ((hi - lo) / mid) * 100 : 0 };
 }
 
 function flush() {
   const ranked = [...series.keys()].map(stats).filter(Boolean).sort((a, b) => b.ret - a.ret).slice(0, 40);
   const keep = new Set(['BTC', 'ETH', ...ranked.map((r) => r.symbol)]);
   const sparks = {};
-  for (const sym of keep) sparks[sym] = (series.get(sym) || []).slice(-180);
+  for (const sym of keep) sparks[sym] = (series.get(sym) || []).slice(-90);
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
   fs.writeFileSync(outFile, JSON.stringify({ updated: Date.now(), ranked, sparks, mids: Object.fromEntries(last) }));
 }

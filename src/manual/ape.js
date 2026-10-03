@@ -79,17 +79,20 @@ async function touch(id) {
 }
 
 async function place(cfg, pair, side, price, size) {
-  const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', {
+  const body = {
     client_order_id: randomUUID(),
     product_id: pair,
     side: side.toUpperCase(),
     order_configuration: {
       limit_limit_gtc: { base_size: String(size), limit_price: String(price), post_only: true },
     },
-  });
+  };
+  if (process.env.APE_PORTFOLIO_UUID) body.retail_portfolio_id = process.env.APE_PORTFOLIO_UUID;
+  const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', body);
   if (res.success === false || res.error_response) {
-    const err = new Error((res.error_response && (res.error_response.message || res.error_response.error)) || 'order rejected');
-    err.detail = res.error_response || res;
+    const detail = res.error_response || res;
+    const err = new Error((detail.message || detail.error || detail.preview_failure_reason || 'order rejected') + ' key=' + keyTail());
+    err.detail = detail;
     throw err;
   }
   return (res.success_response && res.success_response.order_id) || res.order_id;
@@ -204,6 +207,9 @@ function spark(points){
   return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><path d="'+d+'" fill="none" stroke="#58a6ff" stroke-width="1.2"/></svg>';
 }
 async function refresh(){
+  const st=await fetch('/ape/state').then(r=>r.json());
+  if(window._boot && st.boot && window._boot!==st.boot){ location.reload(); return; }
+  window._boot=st.boot;
   const st=await fetch('/ape/state').then(r=>r.json());
   const body=document.querySelector('#tapes tbody');
   body.innerHTML=(st.rising||[]).map(function(r){

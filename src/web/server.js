@@ -914,6 +914,7 @@ window.__saveCfg=function(ev){
   return false;
 };
 connect();
+setInterval(function(){ fetch('/health').then(r=>r.json()).then(function(h){ if(window._boot && h.boot!==window._boot) location.reload(); window._boot=h.boot; }).catch(function(){}); }, 15000);
 </script>
 </body></html>`;
 
@@ -933,14 +934,29 @@ function loadFeed() {
   try {
     const row = JSON.parse(fs.readFileSync(feedFile, 'utf8'));
     lastFeed = row;
-    if (row.ranked && row.ranked.length) venueScans.set('coinbase', { ranked: row.ranked, ts: row.updated || Date.now(), bot: 'feed' });
+    if (row.ranked && row.ranked.length) {
+      const ranked = row.ranked.slice(0, 20).map(({ spark, ...rest }) => rest);
+      venueScans.set('coinbase', { ranked, ts: row.updated || Date.now(), bot: 'feed' });
+    }
+    if (row.sparks) {
+      const slim = {};
+      for (const [k, v] of Object.entries(row.sparks)) slim[k] = (v || []).slice(-60);
+      row.sparks = slim;
+    }
+    lastFeed = row;
   } catch { /* feed not started */ }
 }
+const BOOT = String(Date.now());
 loadFeed();
-setInterval(loadFeed, 250);
+setInterval(loadFeed, 1000);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
+  if (req.method === 'GET' && url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, boot: BOOT, rss: process.memoryUsage().rss }));
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/ape') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(apePage());
@@ -961,7 +977,7 @@ const server = http.createServer(async (req, res) => {
     let portfolios = [];
     try { portfolios = (await apePortfolios()).portfolios; } catch (e) { portfolios = []; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ready: apeReady(), key: process.env.APE_COINBASE_API_KEY ? process.env.APE_COINBASE_API_KEY.slice(-8) : 'missing', rising, positions, portfolios, feedAt: lastFeed.updated || 0 }));
+    res.end(JSON.stringify({ ready: apeReady(), boot: BOOT, key: process.env.APE_COINBASE_API_KEY ? process.env.APE_COINBASE_API_KEY.slice(-8) : 'missing', rising, positions, portfolios, feedAt: lastFeed.updated || 0 }));
     return;
   }
   if (req.method === 'POST' && (url.pathname === '/ape/buy' || url.pathname === '/ape/sell' || url.pathname === '/ape/move')) {
