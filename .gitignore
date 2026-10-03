@@ -10,6 +10,7 @@ ape.pem
 configs/ape.env
 data/ape-positions.json
 data/feed/
+data/keys.env
 
 node_modules/
 npm-debug.log*

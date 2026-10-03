@@ -42,6 +42,7 @@ export function loadEnvFile(file, { override = true } = {}) {
 export function loadProjectEnv(configFile) {
   loadEnvFile('.env', { override: false });
   if (configFile) loadEnvFile(configFile, { override: true });
+  loadEnvFile('data/keys.env', { override: true });
   console.log(
     `resolved EXCHANGE=${process.env.EXCHANGE || ''} QUOTE=${process.env.QUOTE || ''} ` +
       `DRY_RUN=${process.env.DRY_RUN || ''} MM_LEVELS=${process.env.MM_LEVELS || ''} BOT=${process.env.BOT || ''}`

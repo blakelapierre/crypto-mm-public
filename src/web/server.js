@@ -11,6 +11,7 @@ import { loadEnvFile } from '../shared/env.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/web.env');
 loadEnvFile('configs/ape.env', { override: false });
+loadEnvFile('data/keys.env', { override: true });
 
 const PORT = Number(process.env.STATUS_PORT || 8787);
 const TOKEN = process.env.STATUS_TOKEN || '';
@@ -355,6 +356,21 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <body>
 <div id="chrome">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span> <a href="/ape">manual ape</a></h1>
+<div class="card" id="keys">
+  <h2>API keys</h2>
+  <p class="age">Saved on this box only, in data/keys.env. Leave a field blank to keep the current value.</p>
+  <form id="keyform">
+    <label>ladder key <input name="COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>ladder secret <input name="COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>grid key <input name="GRID_COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>grid secret <input name="GRID_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>ape key <input name="APE_COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>ape secret <input name="APE_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>ape portfolio uuid <input name="APE_PORTFOLIO_UUID" autocomplete="off"/></label>
+    <button type="submit">save keys</button>
+    <span class="age" id="keymsg"></span>
+  </form>
+</div>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
 <div id="botlogs" style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap"></div>
@@ -914,6 +930,15 @@ window.__saveCfg=function(ev){
   return false;
 };
 connect();
+document.getElementById('keyform').addEventListener('submit', function(ev){
+  ev.preventDefault();
+  const body={};
+  new FormData(ev.target).forEach(function(v,k){ if(String(v).trim()) body[k]=String(v).trim(); });
+  fetch('/setup-keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(function(j){
+    document.getElementById('keymsg').textContent=j.ok?('saved '+j.saved.join(', ')):(j.error||'failed');
+    ev.target.reset();
+  }).catch(function(e){ document.getElementById('keymsg').textContent=e.message; });
+});
 setInterval(function(){ fetch('/health').then(r=>r.json()).then(function(h){ if(window._boot && h.boot!==window._boot) location.reload(); window._boot=h.boot; }).catch(function(){}); }, 15000);
 </script>
 </body></html>`;
@@ -952,6 +977,34 @@ setInterval(loadFeed, 1000);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
+  if (req.method === 'POST' && url.pathname === '/setup-keys') {
+    let body = '';
+    for await (const c of req) body += c;
+    try {
+      const msg = JSON.parse(body || '{}');
+      const allow = ['COINBASE_API_KEY', 'COINBASE_API_SECRET', 'GRID_COINBASE_API_KEY', 'GRID_COINBASE_API_SECRET', 'APE_COINBASE_API_KEY', 'APE_COINBASE_API_SECRET', 'APE_PORTFOLIO_UUID', 'PORTFOLIO_UUID'];
+      const file = path.resolve(process.cwd(), 'data', 'keys.env');
+      const cur = {};
+      if (fs.existsSync(file)) {
+        for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+          const i = line.indexOf('=');
+          if (i > 0) cur[line.slice(0, i)] = line.slice(i + 1);
+        }
+      }
+      const saved = [];
+      for (const k of allow) {
+        if (msg[k]) { cur[k] = String(msg[k]).replace(/\n/g, ''); process.env[k] = cur[k]; saved.push(k); }
+      }
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, Object.entries(cur).map(([k, v]) => k + '=' + v).join('\n') + '\n', { mode: 0o600 });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, saved }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, boot: BOOT, rss: process.memoryUsage().rss }));

@@ -299,14 +299,16 @@ async function cancelSide(ex, legs, why = 'cancel') {
 function l1HalfFrac(cfg, pair) {
   const feeBps = Number(realizedFeeBps(pair) != null ? realizedFeeBps(pair) : assumedMakerFeeBps(cfg));
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
-  return (feeBps + edge) / 10000;
+  const floor = Math.max(Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 0), Number(process.env.MIN_SPREAD_BPS || 0) / 2, feeBps + edge);
+  return floor / 10000;
 }
 function riseSellHalf(cfg, pair, symbol) {
   const feeBps = Number(realizedFeeBps(pair) != null ? realizedFeeBps(pair) : assumedMakerFeeBps(cfg));
   const edge = Number(cfg.minEdgeBps || process.env.MIN_EDGE_BPS || 20);
   const s = riseStrength(symbol);
   const extra = Math.min(Number(process.env.RISE_SELL_EXTRA_BPS || 40), s * 2500);
-  return (feeBps * 2 + edge + extra) / 10000;
+  const floor = Math.max(Number(cfg.minHalfSpreadBps || process.env.MIN_HALF_SPREAD_BPS || 0), Number(process.env.MIN_SPREAD_BPS || 0) / 2);
+  return Math.max(floor, feeBps * 2 + edge + extra) / 10000;
 }
 const holdStart = new Map();
 export function holdInfo(symbol, mid) {
