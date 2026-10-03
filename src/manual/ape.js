@@ -210,7 +210,6 @@ async function refresh(){
   const st=await fetch('/ape/state').then(r=>r.json());
   if(window._boot && st.boot && window._boot!==st.boot){ location.reload(); return; }
   window._boot=st.boot;
-  const st=await fetch('/ape/state').then(r=>r.json());
   const body=document.querySelector('#tapes tbody');
   body.innerHTML=(st.rising||[]).map(function(r){
     return '<tr><td>'+r.symbol+'<div>'+spark(r.spark)+'</div></td><td class="'+(r.ret>=0?'up':'dn')+'">'+((r.ret*100).toFixed(2))+'%</td><td>'+(r.mid?Number(r.mid).toPrecision(6):'')+'</td><td><button data-buy="'+r.symbol+'">buy</button></td></tr>';
