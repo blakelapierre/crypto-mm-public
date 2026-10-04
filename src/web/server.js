@@ -1033,6 +1033,11 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (req.method === 'GET' && url.pathname === '/slow') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(SLOW_PAGE);
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, boot: BOOT, rss: process.memoryUsage().rss }));
