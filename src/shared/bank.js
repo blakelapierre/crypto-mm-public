@@ -105,17 +105,7 @@ export async function refreshBankHoldings(cfg, bankUuid) {
     }
   } catch (e) {
     console.warn('bank portfolio get', e.message);
-  }
-  if (!lastBankHoldings.length) {
-    try {
-      const accts = await coinbaseRequest(auth, 'GET', '/api/v3/brokerage/accounts?limit=250');
-      lastBankHoldings = (accts.accounts || []).map((a) => ({
-        asset: String(a.currency || '').toUpperCase(),
-        qty: Number((a.available_balance && a.available_balance.value) || 0) + Number((a.hold && a.hold.value) || 0),
-      })).filter((x) => x.asset && x.qty > 0);
-    } catch (e) {
-      console.warn('bank accounts get', e.message);
-    }
+    lastBankHoldings = null;
   }
   return lastBankHoldings;
 }

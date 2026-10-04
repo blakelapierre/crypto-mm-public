@@ -103,10 +103,10 @@ export function createPnl() {
       console.log('VALUATION GAP skip mark ' + lastPosValue.toFixed(2) + ' -> ' + pos.toFixed(2));
       return;
     }
-    const cash = Number(live.freeQuote || 0);
+    const cash = Number(live.freeQuote || 0) + Number(live.quoteHold || 0);
     if (lastCash != null && Date.now() - lastFillAt > 8000) {
       const d = cash - lastCash;
-      if (Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) noteTransfer(d, 'cash');
+      if (Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) console.log('CASH JUMP unconfirmed ' + d.toFixed(2) + ' not booked');
     }
     lastCash = cash;
     lastPosValue = pos;

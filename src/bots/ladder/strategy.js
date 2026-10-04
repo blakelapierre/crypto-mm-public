@@ -184,7 +184,9 @@ function resizeLeg(cfg, a, o, live) {
     if (cap > 0 && held >= cap * hard) return 0;
     const eq = Number(live.totalEquity || 0);
     const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
-    const bookInv = live.positionsValue != null ? Number(live.positionsValue) : 0;
+    const bookInv = liveMmAlloc
+      ? liveMmAlloc.reduce((s, x) => s + Number((live.positions && live.positions[x.symbol] && live.positions[x.symbol].valueQuote) || 0), 0)
+      : 0;
     let openBids = 0;
     if (livePairState) {
       for (const st of livePairState.values()) {
@@ -239,7 +241,7 @@ function resizeLeg(cfg, a, o, live) {
       for (const s of (st.ladder && st.ladder.sells) || []) if (s.status === 'open' && st.symbol === a.symbol) locked += Number(s.size) || 0;
     }
   }
-  const held = Math.max(0, heldRaw - locked);
+  const held = heldRaw;
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
   const holdRet = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000));

@@ -207,7 +207,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
-        try { await tickExits(ex, orderRegistry, live); } catch (e) { console.warn('exit tick', e.message); }
+        try {
+          const exitLive = await getLive();
+          await tickExits(ex, orderRegistry, exitLive);
+        } catch (e) { console.warn('exit tick', e.message); }
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
@@ -358,8 +361,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         pnl: snap, markets: marketRows, wallet, proj,
         working: {
           bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
-          equity: Number((liveSnap && liveSnap.totalEquity) || 0) + (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0),
-          bankEquity: (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0), fills: fillCount,
+          equity: Number((liveSnap && liveSnap.totalEquity) || 0),
+          bankEquity: null, fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
           holdRealized: holdRealizedUsd(),
