@@ -82,8 +82,11 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     const book = books.get(info.pair) || null;
     const ring = midRing(sym);
     const ringMid = ring.length ? Number(ring[ring.length - 1].p) : 0;
-    const mid = Number((book && book.mid) || ringMid || pos.mid || 0);
-    if (!(mid > 0)) continue;
+    const last = (fetchLivePortfolio._lastMid || (fetchLivePortfolio._lastMid = new Map())).get(sym) || 0;
+    const mid = Number((book && book.mid) || ringMid || pos.mid || last || 0);
+    if (!(mid > 0)) { console.log('VALUATION GAP ' + sym); continue; }
+    fetchLivePortfolio._lastMid = fetchLivePortfolio._lastMid || new Map();
+    fetchLivePortfolio._lastMid.set(sym, mid);
     pos.mid = mid;
     pos.valueQuote = (Number(pos.amount || 0) + Number(pos.hold || 0)) * mid;
     Object.assign(pos, info);

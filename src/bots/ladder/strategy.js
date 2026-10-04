@@ -232,7 +232,14 @@ function resizeLeg(cfg, a, o, live) {
     if (size + 1e-12 < minV) return minV * o.price <= cashLeft ? formatVolume(minV, a.lotDecimals) : 0;
     return formatVolume(size, a.lotDecimals);
   }
-  const held = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
+  const heldRaw = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
+  let locked = 0;
+  if (livePairState) {
+    for (const st of livePairState.values()) {
+      for (const s of (st.ladder && st.ladder.sells) || []) if (s.status === 'open' && st.symbol === a.symbol) locked += Number(s.size) || 0;
+    }
+  }
+  const held = Math.max(0, heldRaw - locked);
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
   const holdRet = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000));

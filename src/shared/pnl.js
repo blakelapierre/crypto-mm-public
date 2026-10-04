@@ -88,19 +88,28 @@ export function createPnl() {
     transfers.push({ ts: Date.now(), usd: n, src: src || 'detected' });
     console.log('TRANSFER ' + (n >= 0 ? '+' : '') + n.toFixed(2) + ' ' + (src || 'detected') + ' start=' + startEquity.toFixed(2));
   }
+  let lastCash = null;
+  let lastPosValue = null;
   function markWallet(equity) {
     const n = Number(equity);
     if (!Number.isFinite(n)) return;
     if (startEquity == null) startEquity = n;
-    else if (lastEquity != null) {
-      const d = n - lastEquity;
-      const quiet = Date.now() - lastFillAt > 8000;
-      if (quiet && Math.abs(d) > Math.max(0.5, Math.abs(lastEquity) * 0.05)) noteTransfer(d, 'cash-jump');
-    }
     lastEquity = n;
   }
   function markHoldings(live) {
     if (!live) return;
+    const pos = Number(live.positionsValue || 0);
+    if (lastPosValue > 1 && pos < lastPosValue * 0.8 && Date.now() - lastFillAt > 8000) {
+      console.log('VALUATION GAP skip mark ' + lastPosValue.toFixed(2) + ' -> ' + pos.toFixed(2));
+      return;
+    }
+    const cash = Number(live.freeQuote || 0);
+    if (lastCash != null && Date.now() - lastFillAt > 8000) {
+      const d = cash - lastCash;
+      if (Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) noteTransfer(d, 'cash');
+    }
+    lastCash = cash;
+    lastPosValue = pos;
     markWallet(live.totalEquity);
     for (const [raw, p] of Object.entries(live.positions || {})) {
       const sym = key(raw);

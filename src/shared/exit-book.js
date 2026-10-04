@@ -22,8 +22,9 @@ export async function tickExits(ex, orderRegistry, live) {
     const rec = row.orderId && orderRegistry.get(row.orderId);
     if (rec && rec.status === 'filled') { book.delete(row.symbol); continue; }
     const pos = live && live.positions && live.positions[row.symbol];
-    const free = Number(pos && pos.amount || row.qty);
-    if (!(free > 0)) { book.delete(row.symbol); continue; }
+    const free = Number(pos && pos.amount || 0);
+    const midPx = Number((pos && pos.mid) || 0);
+    if (!(free > 0) || (midPx > 0 && free * midPx < Number(process.env.MIN_ORDER_USD || 1))) { book.delete(row.symbol); continue; }
     if (row.orderId && Date.now() - row.lastPostAt < stepMs) continue;
     try {
       const b = await ex.getBook(row.pair);

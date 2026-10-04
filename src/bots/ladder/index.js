@@ -367,7 +367,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        recon: { gapUsd: gap, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
+        recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, volNow || 1), alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
         exits: exitBook(),
         bankHoldings: (bankHoldings() || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
         liveConfig: liveConfigSnap(),
@@ -449,16 +449,11 @@ async function main() {
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
   if (dump.length && cfg.exchange !== 'print') {
-    console.log('startup sell non-MM (bg): ' + dump.join(','));
-    (async () => {
-      try {
-        await liquidateSymbols(cfg, ex, live, dump, productMap);
-        invalidateLiveCache();
-        const after = await fetchLivePortfolio(cfg, ex, productMap);
-        const leftover = dump.filter((s) => { const p = after.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
-        if (leftover.length) console.log('  leave dust in place ' + leftover.join(','));
-      } catch (e) { console.warn('bg flatten', e.message); }
-    })();
+    console.log('startup queue non-MM exits: ' + dump.join(','));
+    for (const sym of dump) {
+      const p = live.positions[sym];
+      if (p && p.pair && Number(p.amount) * Number(p.mid || 0) >= Number(process.env.MIN_ORDER_USD || 1)) queueExit(sym, p.pair, p.amount, p.mid);
+    }
   }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');
