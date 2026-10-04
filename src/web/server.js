@@ -1343,4 +1343,6 @@ function broadcast() {
   }
 }
 
+server.keepAliveTimeout = 70000;
+server.headersTimeout = 75000;
 server.listen(PORT, () => console.log('status UI http://127.0.0.1:' + PORT + '/  (ws /ws)'));
