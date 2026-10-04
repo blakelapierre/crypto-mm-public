@@ -1,80 +1,83 @@
-import { midReturn, trendMult, shortRun } from './mid-ring.js';
+import { midReturn } from './mid-ring.js';
 import { volStatsForSymbol, sizeWeightForSymbol } from './vol-scan.js';
 import { insideFeeDrop } from './inside-fee.js';
+
+const belowSince = new Map();
+const swapAt = [];
+let lastSwap = 0;
+
+function scoreOf(row) {
+  const range = Number(row.rangePct || 0);
+  const ret = Number(row.ret != null ? row.ret : 0);
+  return range + Math.max(ret, 0) * 100;
+}
 
 export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg }) {
   const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
   const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
-  const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 900000);
+  const minHold = Number(process.env.ROTATE_MIN_HOLD_MS || process.env.VOL_ROTATE_MIN_MS || 1800000);
+  const stopRet = Number(process.env.ROTATE_STOP_RET || -0.04);
+  const stopMin = Number(process.env.ROTATE_STOP_MIN_MS || 300000);
+  const hyst = Number(process.env.ROTATE_EXIT_HYST || 0.6);
+  const confirmTicks = Number(process.env.ROTATE_CONFIRM_TICKS || 3);
+  const maxPerHour = Number(process.env.ROTATE_MAX_PER_HOUR || 4);
   const hardMax = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_MAX_PAIRS || cfg.mmMaxPairs || 4));
+  const hourAgo = now - 3600000;
+  while (swapAt.length && swapAt[0] < hourAgo) swapAt.shift();
+  const capped = swapAt.length >= maxPerHour;
   const keep = [];
   const leaving = [];
   for (const a of mmAlloc) {
-    const meta = volStatsForSymbol(a.symbol);
-    const range = meta ? Number(meta.rangePct || 0) : 0;
+    const meta = volStatsForSymbol(a.symbol) || {};
+    const range = Number(meta.rangePct || 0);
     const age = now - (enteredAt.get(a.pair) || now);
-    const rip = shortRun(a.symbol);
-    const ret1 = midReturn(a.symbol, 60000);
-    const weak = insideFeeDrop(a.symbol)
-      || (range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008))
-      || ret1 < Number(process.env.FALL_EXIT_RET || -0.002);
-    const fallAge = insideFeeDrop(a.symbol) ? 0 : Number(process.env.FALL_EXIT_MS || 60000);
-    if (weak && age >= (ret1 < Number(process.env.FALL_EXIT_RET || -0.002) ? fallAge : rotateMin)) {
-      if (insideFeeDrop(a.symbol)) console.log('  INSIDE FEE drop ' + a.symbol);
+    const ret15 = midReturn(a.symbol, 15 * 60 * 1000);
+    const emergency = ret15 < stopRet && age >= stopMin;
+    const weak = insideFeeDrop(a.symbol) || (range < exitPct && scoreOf({ rangePct: range, ret: ret15 }) < enterPct * hyst);
+    if (weak) belowSince.set(a.pair, (belowSince.get(a.pair) || 0) + 1);
+    else belowSince.set(a.pair, 0);
+    const held = belowSince.get(a.pair) >= confirmTicks;
+    if (emergency) {
+      console.log('  ROTATE_STOP_RET ' + a.symbol + ' ret15=' + (ret15 * 100).toFixed(2) + '% age=' + Math.round(age / 1000) + 's');
       leaving.push(a);
+    } else if (!capped && held && age >= minHold) {
+      console.log('  ROTATE exit ' + a.symbol + ' hold=' + Math.round(age / 60000) + 'm range=' + range.toFixed(2));
+      leaving.push(a);
+      swapAt.push(now);
     } else keep.push(a);
   }
   keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
-  while (keep.length > hardMax) leaving.push(keep.pop());
+  while (keep.length > hardMax) {
+    const extra = keep.pop();
+    if (now - (enteredAt.get(extra.pair) || now) >= minHold) leaving.push(extra);
+    else keep.push(extra);
+    if (keep.length <= hardMax) break;
+  }
   const have = new Set(keep.map((a) => a.pair));
   const additions = [];
-  const eqNow = live ? Number(live.totalEquity || 0) : 0;
-  const cashNow = live ? Number(live.freeQuote || 0) : 0;
-  const cashFrac = eqNow > 0 ? cashNow / eqNow : 1;
-  const cashFloor = Number(process.env.CASH_FLOOR_FRAC || 0.25);
-  if (cashFrac < cashFloor && keep.length) {
-    const falling = keep.filter((a) => midReturn(a.symbol) <= 0);
-    if (falling.length) {
-      falling.sort((x, y) => midReturn(x.symbol) - midReturn(y.symbol));
-      const worst = falling[0];
-      leaving.push(worst);
-      keep.splice(keep.indexOf(worst), 1);
-      console.log('  CASH FLOOR flatten ' + worst.symbol + ' ret=' + (midReturn(worst.symbol) * 100).toFixed(2) + '% cash/eq=' + cashFrac.toFixed(2));
-    }
-  }
-  const scored = ranked.map((r) => {
-    const ret = Number(r.ret != null ? r.ret : midReturn(r.symbol));
-    const tr = trendMult(r.symbol);
-    const rise = ret > 0 ? 1.6 : (ret < -0.01 ? 0.45 : 0.8);
-    return { ...r, ret15: ret, trend: tr, pick: ret * 100 + Number(r.rangePct || 0) * Math.max(tr, 1) * rise };
-  }).sort((a, b) => b.ret15 - a.ret15 || b.pick - a.pick);
-  const topRise = scored.filter((r) => r.ret15 >= Number(process.env.ENTER_RET_MIN || 0.003)).slice(0, 4);
-  if (topRise.length) console.log('rising ' + topRise.map((r) => r.symbol + ' ' + (r.ret15 * 100).toFixed(2) + '%').join('  ') + '  held ' + keep.map((a) => a.symbol).join(','));
+  const cool = Number(process.env.REENTER_COOLDOWN_MS || 1800000);
+  const scored = ranked.map((r) => ({ ...r, ret15: Number(r.ret != null ? r.ret : midReturn(r.symbol)), pick: scoreOf(r) }))
+    .filter((r) => Number(r.rangePct || 0) >= enterPct)
+    .sort((a, b) => b.pick - a.pick);
   for (const r of scored) {
     if (have.has(r.pair) || have.has(r.symbol)) continue;
-    const rip = shortRun(r.symbol);
-    const watched = watch.has(r.pair);
-    const hot = Number(r.rangePct || 0) >= enterPct;
-    const rising = Number(r.ret15 || 0) >= Number(process.env.ENTER_RET_MIN || 0.003);
-    if (!rising && !(watched && rip >= Number(process.env.SHORT_RUN_ENTER || 0.008))) continue;
-    if (!hot && !rising) continue;
-    while (keep.length + additions.length >= hardMax) {
-      const retOf = (a) => {
-        const row = ranked.find((x) => x.pair === a.pair || x.symbol === a.symbol);
-        return Number(row && row.ret != null ? row.ret : midReturn(a.symbol));
-      };
-      keep.sort((x, y) => retOf(x) - retOf(y));
-      const worst = keep[0];
-      if (!worst || retOf(worst) >= Number(r.ret15 || 0)) break;
+    const left = watch.get(r.pair);
+    if (left && now - (left.leftAt || 0) < cool) continue;
+    if (keep.length + additions.length >= hardMax) {
+      if (now - lastSwap < Number(process.env.SWAP_COOLDOWN_MS || 900000) || capped) continue;
+      const worst = keep[keep.length - 1];
+      if (!worst || now - (enteredAt.get(worst.pair) || now) < minHold) continue;
+      if (r.pick < scoreOf(worst) * Number(process.env.SWAP_SCORE_MULT || 1.5)) continue;
       leaving.push(worst);
-      keep.shift();
+      keep.pop();
       have.delete(worst.pair);
-      console.log('  RISE SWAP out ' + worst.symbol + ' for ' + r.symbol + ' ret=' + (r.ret15 * 100).toFixed(2) + '%');
+      lastSwap = now;
+      swapAt.push(now);
+      console.log('  RISE SWAP out ' + worst.symbol + ' for ' + r.symbol);
     }
     if (keep.length + additions.length >= hardMax) continue;
-    if (cashFrac < cashFloor && !rising) continue;
     if (!(r.pair && r.symbol)) continue;
     additions.push(r);
   }
-  return { keep, leaving, additions, topRise };
+  return { keep, leaving, additions, topRise: scored.slice(0, 4) };
 }

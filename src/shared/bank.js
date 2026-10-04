@@ -169,6 +169,10 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
 }
 
 export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null) {
+  if (!['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
+    console.log('  skip market exit n=' + symbols.length + ' ALLOW_MARKET_EXIT=0');
+    return;
+  }
   const jobs = [];
   const gap = Number(process.env.SELL_STAGGER_MS || 250);
   for (const raw of symbols) {
@@ -198,6 +202,10 @@ export async function liquidateSymbols(cfg, ex, live, symbols, productMap = null
 }
 
 export async function seedNewInventory(cfg, ex, mmAlloc, live) {
+  if (String(process.env.SEED_MODE || 'off').toLowerCase() === 'off') {
+    console.log('  seed off, bids will build inventory');
+    return;
+  }
   let budget = safeSpend(cfg, live.freeQuote);
   const each = mmAlloc.length ? budget / mmAlloc.length : 0;
   const jobs = [];

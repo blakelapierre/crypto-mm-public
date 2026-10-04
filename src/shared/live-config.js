@@ -38,6 +38,10 @@ export const TUNABLES = [
   { key: 'ENTER_RET_MIN', type: 'num', hint: 'min 1m return to enter or bid' },
   { key: 'FALL_EXIT_RET', type: 'num', hint: 'exit name if 1m return below this' },
   { key: 'INV_BOOK_MAX_FRAC', type: 'num', hint: 'max total inventory / equity when tape is not rising' },
+  { key: 'ROTATE_MIN_HOLD_MS', type: 'num' },
+  { key: 'ALLOW_MARKET_EXIT', type: 'bool' },
+  { key: 'SEED_MODE', type: 'str' },
+  { key: 'BANK_ROTATE_PCT', type: 'num' },
 ];
 
 const CFG_MAP = {

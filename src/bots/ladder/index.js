@@ -171,7 +171,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               try {
                 if (leaveSyms.length) {
                   const liveNow = await getLive();
-                  skimToBank(cfg, liveNow, Number(process.env.BANK_ROTATE_PCT || 0.01), leaveSyms, 'run', getLive)
+                  skimToBank(cfg, liveNow, Number(process.env.BANK_ROTATE_PCT || 0), leaveSyms, 'run', getLive)
                     .then(() => refreshBankHoldings(cfg).catch(() => {}))
                     .catch((e) => console.warn('rotate bank', e.message));
                   await liquidateSymbols(cfg, ex, await getLive(), leaveSyms);
