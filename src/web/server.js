@@ -265,6 +265,31 @@ function collect() {
   }));
 }
 
+const SLOW_PAGE = `<!doctype html><html><head><meta charset="utf-8"/><title>crypto-mm 1m</title>
+<style>body{font:13px ui-sans-serif,system-ui;background:#0e1116;color:#e7ecf3;margin:16px}a{color:#79c0ff}table{border-collapse:collapse;width:100%;margin:8px 0}td,th{padding:3px 6px;border-bottom:1px solid #30363d;text-align:left}th{color:#8b98a5}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px;margin:10px 0}.up{color:#3fb950}.dn{color:#f85149}</style>
+</head><body>
+<h1>1-minute status <a href="/">live</a></h1>
+<p id="meta">loading</p>
+<div id="root"></div>
+<script>
+function esc(s){return String(s??'').replace(/&/g,'&').replace(/</g,'<');}
+function n(v){return Number.isFinite(Number(v))?Number(v).toFixed(2):'';}
+function s(v){if(!Number.isFinite(Number(v)))return 'n/a';const x=Number(v);return (x>=0?'+':'')+x.toFixed(4);}
+function draw(d){
+  const rows=d.bots||[];
+  document.getElementById('meta').textContent=new Date().toLocaleTimeString()+'  '+rows.length+' bot(s)  next refresh 60s';
+  document.getElementById('root').innerHTML=rows.map(function(b){
+    const p=b.pnl||{}; const w=b.working||{};
+    const mk=(b.markets||[]).map(function(m){
+      return '<tr><td>'+esc(m.symbol)+'</td><td>'+esc(m.mid)+'</td><td>'+esc(m.w||'')+'</td><td>'+(m.bids||0)+'/'+(m.asks||0)+'</td><td>'+n(m.bidUsd)+'</td><td>'+n(m.askUsd)+'</td><td>'+n(m.buyUsd)+'</td><td>'+n(m.sellUsd)+'</td></tr>';
+    }).join('');
+    return '<div class="card"><h2>'+esc(b.bot)+' '+esc(b.exchange||'')+'</h2><p>wallet '+s(p.walletGain)+'  price '+s(p.pricePnl)+'  maker '+s(p.makerPnl)+'  fees '+s(-(p.fees||0))+'  cash '+n(w.cash)+'  inv '+n(w.inventory)+'  eq '+n(w.equity)+'</p><table><tr><th>mkt</th><th>mid</th><th>w</th><th>b/a</th><th>bid$</th><th>ask$</th><th>buy$</th><th>sell$</th></tr>'+mk+'</table></div>';
+  }).join('')||'<p>no bot reports</p>';
+}
+function tick(){fetch('/api/status').then(r=>r.json()).then(draw).catch(function(e){document.getElementById('meta').textContent=e.message;});}
+tick(); setInterval(tick, 60000);
+</script></body></html>`;
+
 const PAGE = `<!doctype html>
 <html>
 <head>
@@ -355,7 +380,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </head>
 <body>
 <div id="chrome">
-<h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span> <a href="/ape">manual ape</a></h1>
+<h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span> <a href="/ape">manual ape</a> <a href="/slow">1-minute status</a></h1>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
 <div id="botlogs" style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap"></div>
