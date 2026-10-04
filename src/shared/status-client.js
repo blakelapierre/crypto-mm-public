@@ -1,6 +1,6 @@
 import { bankedTotalUsd, bankedRunUsd } from './bank.js';
 
-const url = () => process.env.STATUS_URL || '';
+const url = () => process.env.STATUS_URL || ('http://127.0.0.1:' + (process.env.STATUS_PORT || 8787));
 const token = () => process.env.STATUS_TOKEN || '';
 function base() {
   return String(url() || '').replace(/\/$/, '').replace(/\/(status|fill|mids|orders)$/,'');

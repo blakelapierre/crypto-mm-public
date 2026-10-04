@@ -33,7 +33,7 @@ function startBot(name) {
   if (cur && cur.exitCode == null && !cur.killed) return { ok: true, already: true };
   const kid = spawn(process.execPath, [spec[0]], {
     cwd: process.cwd(),
-    env: { ...process.env, BOT: name, BOT_CONFIG: spec[1] },
+    env: { ...process.env, BOT: name, BOT_CONFIG: spec[1], STATUS_URL: 'http://127.0.0.1:' + (process.env.STATUS_PORT || 8787) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const take = (buf) => String(buf).split(/\n/).forEach((line) => { if (line) pushLog(name, line); });
@@ -356,21 +356,6 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 <body>
 <div id="chrome">
 <h1>crypto-mm status <span class="age" id="conn"><span class="dot"></span>connecting</span> <a href="/ape">manual ape</a></h1>
-<div class="card" id="keys">
-  <h2>API keys</h2>
-  <p class="age">Saved on this box only, in data/keys.env. Leave a field blank to keep the current value.</p>
-  <form id="keyform">
-    <label>ladder key <input name="COINBASE_API_KEY" autocomplete="off"/></label>
-    <label>ladder secret <input name="COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
-    <label>grid key <input name="GRID_COINBASE_API_KEY" autocomplete="off"/></label>
-    <label>grid secret <input name="GRID_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
-    <label>ape key <input name="APE_COINBASE_API_KEY" autocomplete="off"/></label>
-    <label>ape secret <input name="APE_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
-    <label>ape portfolio uuid <input name="APE_PORTFOLIO_UUID" autocomplete="off"/></label>
-    <button type="submit">save keys</button>
-    <span class="age" id="keymsg"></span>
-  </form>
-</div>
 <p class="age" id="meta">waiting for bots</p>
 <div id="botctl" class="age"></div>
 <div id="botlogs" style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap"></div>
@@ -387,6 +372,24 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 </div>
 <div id="root"></div>
 <div id="sessions"></div>
+<div class="card" id="keys">
+  <h2>API keys</h2>
+  <p class="age">Saved on this box only, in data/keys.env. Leave a field blank to keep the current value.</p>
+  <form id="keyform">
+    <label>ladder key <input name="COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>ladder secret <input name="COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>grid key <input name="GRID_COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>grid secret <input name="GRID_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>ape key <input name="APE_COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>ape secret <input name="APE_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>ape portfolio uuid <input name="APE_PORTFOLIO_UUID" autocomplete="off"/></label>
+    <label>bank key <input name="BANK_COINBASE_API_KEY" autocomplete="off"/></label>
+    <label>bank secret <input name="BANK_COINBASE_API_SECRET" type="password" autocomplete="off"/></label>
+    <label>bank portfolio uuid <input name="BANK_PORTFOLIO_UUID" autocomplete="off"/></label>
+    <button type="submit">save keys</button>
+    <span class="age" id="keymsg"></span>
+  </form>
+</div>
 <script>
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmt(n){if(n==null||!Number.isFinite(Number(n)))return 'n/a';const x=Number(n);return (x>=0?'+':'')+x.toFixed(4);}
@@ -982,7 +985,7 @@ const server = http.createServer(async (req, res) => {
     for await (const c of req) body += c;
     try {
       const msg = JSON.parse(body || '{}');
-      const allow = ['COINBASE_API_KEY', 'COINBASE_API_SECRET', 'GRID_COINBASE_API_KEY', 'GRID_COINBASE_API_SECRET', 'APE_COINBASE_API_KEY', 'APE_COINBASE_API_SECRET', 'APE_PORTFOLIO_UUID', 'PORTFOLIO_UUID'];
+      const allow = ['COINBASE_API_KEY', 'COINBASE_API_SECRET', 'GRID_COINBASE_API_KEY', 'GRID_COINBASE_API_SECRET', 'APE_COINBASE_API_KEY', 'APE_COINBASE_API_SECRET', 'APE_PORTFOLIO_UUID', 'PORTFOLIO_UUID', 'BANK_COINBASE_API_KEY', 'BANK_COINBASE_API_SECRET', 'BANK_PORTFOLIO_UUID'];
       const file = path.resolve(process.cwd(), 'data', 'keys.env');
       const cur = {};
       if (fs.existsSync(file)) {
