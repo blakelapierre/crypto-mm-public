@@ -157,7 +157,10 @@ export function createExchange(cfg, orderRegistry) {
       if (venue === 'kraken' && process.env.MARKET_TOUCH_KRAKEN !== '1') {
         return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       }
-      const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 3000);
+      const waitMs = Number(process.env.MARKET_TOUCH_WAIT_MS || 0);
+      if (!['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
+        return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
+      }
       if (!(waitMs > 0) || cfg.dryRun) return { remainVol: volume, remainQuote: quoteAmount, filled: 0 };
       let book;
       try { book = await this.getBook(pair, venue); } catch { book = null; }
@@ -190,6 +193,10 @@ export function createExchange(cfg, orderRegistry) {
       return { remainVol, remainQuote, filled };
     },
     async marketBuy(pair, volume, quoteAmount = null, venue = name) {
+      if (!['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
+        console.log('  skip MARKET BUY ' + pair + ' ALLOW_MARKET_EXIT=0');
+        return null;
+      }
       const sq = quoteAmount != null ? safeQuoteSize(cfg, quoteAmount) : null;
       if (cfg.dryRun) { console.log('[DRY] MARKET BUY', venue, pair); return { ok: true }; }
       const touch = await this._touchThenMarket(pair, 'buy', volume, sq, venue);
@@ -207,6 +214,10 @@ export function createExchange(cfg, orderRegistry) {
       return krakenPrivate(cfg, 'AddOrder', { pair, type: 'buy', ordertype: 'market', volume: String(volume) });
     },
     async marketSell(pair, volume, venue = name) {
+      if (!['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
+        console.log('  skip MARKET SELL ' + pair + ' ALLOW_MARKET_EXIT=0');
+        return null;
+      }
       if (cfg.dryRun) { console.log('[DRY] MARKET SELL', venue, pair, volume); return { ok: true }; }
       const touch = await this._touchThenMarket(pair, 'sell', volume, null, venue);
       if (!(touch.remainVol > 0)) return { ok: true, touched: true };
@@ -319,6 +330,13 @@ export function createExchange(cfg, orderRegistry) {
         const map = { closed: 'FILLED', open: 'OPEN', canceled: 'CANCELLED', expired: 'EXPIRED' };
         return { status: map[o.status] || String(o.status).toUpperCase(), raw: o, filledSize: parseFloat(o.vol_exec || 0) || 0, filledValue: parseFloat(o.cost || 0) || 0, fee: parseFloat(o.fee || 0) || 0, avgPrice: parseFloat(o.price || 0) || 0 };
       } catch { return null; }
+    },
+    async listOpen(venue = name) {
+      if (venue !== 'coinbase') return [];
+      try {
+        const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?order_status=OPEN&limit=100');
+        return open.orders || [];
+      } catch (e) { console.warn('list open', e.message); return []; }
     },
     async cancelAll(venue = name) {
       if (cfg.dryRun) return;

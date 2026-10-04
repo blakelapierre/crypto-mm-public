@@ -43,7 +43,17 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
         price: rec.price, size: rec.size, fee: rec.fee, filledValue: rec.filledValue,
       });
     }
-  } else if (['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(st)) rec.status = 'cancelled';
+  } else if (['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(st)) {
+    const filled = Number(detail && detail.filledSize || 0);
+    if (filled > 0 && rec.status !== 'filled') {
+      rec.status = 'filled';
+      rec.size = filled;
+      if (detail.avgPrice) rec.price = detail.avgPrice;
+      if (detail.fee) rec.fee = Number(detail.fee);
+      if (pnl) pnl.recordFill(rec);
+      logFill(rec, { orderId, venueFee: Number(rec.fee || 0), feeSource: rec.fee > 0 ? 'venue' : 'pending' });
+    } else rec.status = 'cancelled';
+  }
 }
 
 export async function pollOpenOrders(ex, orderRegistry, cfg, pnl = null) {

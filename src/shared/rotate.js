@@ -47,12 +47,14 @@ export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg
     } else keep.push(a);
   }
   keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
-  while (keep.length > hardMax) {
-    const extra = keep.pop();
-    if (now - (enteredAt.get(extra.pair) || now) >= minHold) leaving.push(extra);
-    else keep.push(extra);
-    if (keep.length <= hardMax) break;
+  const eligible = keep.filter((a) => now - (enteredAt.get(a.pair) || now) >= minHold);
+  while (keep.length > hardMax && eligible.length) {
+    const extra = eligible.pop();
+    const i = keep.indexOf(extra);
+    if (i >= 0) keep.splice(i, 1);
+    leaving.push(extra);
   }
+  if (keep.length > hardMax) console.log('  rotate hold cap ' + keep.length + ' > ' + hardMax + ' names under min hold');
   const have = new Set(keep.map((a) => a.pair));
   const additions = [];
   const cool = Number(process.env.REENTER_COOLDOWN_MS || 1800000);

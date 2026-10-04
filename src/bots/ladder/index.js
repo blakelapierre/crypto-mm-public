@@ -26,6 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
+import { queueExit, tickExits } from '../../shared/exit-book.js';
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
@@ -136,7 +137,12 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const now = Date.now();
           let live = null;
           try { live = await getLive(); } catch { live = null; }
-          const free = live ? Number(live.freeQuote || 0) : 0;
+          const cash = live ? Number(live.freeQuote || 0) : 0;
+          const inv = live ? Math.max(0, Number(live.totalEquity || 0) - cash) : 0;
+          const minUsd = Math.max(cfg.minOrderUsd || 1, 1);
+          const effPairs = Math.max(1, Math.min(Number(process.env.MM_MAX_PAIRS || 5), Math.floor((cash + inv) / (minUsd * Number(process.env.PAIR_CASH_K || 2.5)))));
+          if (effPairs !== planRotation.eff) { planRotation.eff = effPairs; console.log('effPairs=' + effPairs); }
+          process.env.MM_MAX_PAIRS_HARD = String(effPairs);
           function costOf(row) {
             const mid = Number(row.last || 0);
             const minV = (row.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
@@ -152,6 +158,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             for (const a of leaving) {
               watch.set(a.pair, { ...a, leftAt: now });
               try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
+              const pos = live && live.positions && live.positions[a.symbol];
+              if (pos && Number(pos.amount) > 0) queueExit(a.symbol, a.pair, pos.amount);
               pairState.delete(a.pair);
               enteredAt.delete(a.pair);
             }
@@ -181,6 +189,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
+        try { await tickExits(ex, orderRegistry); } catch (e) { console.warn('exit tick', e.message); }
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
@@ -210,6 +219,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const mids = {};
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       const snap = pnl.print(mids);
+      const gap = Number(snap && snap.otherPnl || 0);
+      if (Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05)) console.log('  RECON ALERT gap=' + gap.toFixed(4));
+      const bankUsd = (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0);
       console.log('  -- markets --');
       const marketRows = [];
       for (const a of mmAlloc) {
@@ -328,7 +340,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         pnl: snap, markets: marketRows, wallet, proj,
         working: {
           bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
-          equity: Number((liveSnap && liveSnap.totalEquity) || 0), fills: fillCount,
+          equity: Number((liveSnap && liveSnap.totalEquity) || 0) + (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0),
+          bankEquity: (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0), fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
           holdRealized: holdRealizedUsd(),
@@ -392,6 +405,18 @@ async function main() {
     await sleep(Number(process.env.TICKER_WARMUP_MS || 2000));
   }
   if (cfg.cancelAllOrdersOnStartup && cfg.exchange !== 'print') await ex.cancelAll();
+  else if (ex.listOpen) {
+    const open = await ex.listOpen();
+    for (const o of open) {
+      const id = o.order_id;
+      if (!id) continue;
+      const side = String(o.side || '').toLowerCase();
+      const cfg0 = o.order_configuration || {};
+      const lim = cfg0.limit_limit_gtc || cfg0.sor_limit_ioc || {};
+      orderRegistry.set(id, { orderId: id, pair: o.product_id, side, price: lim.limit_price, size: lim.base_size, status: 'open', why: 'adopted' });
+    }
+    if (open.length) console.log('adopted open orders ' + open.length);
+  }
   let live = await fetchLivePortfolio(cfg, ex, productMap);
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
     console.log('bank skim 0.5% -> trade bot bank (bg)');
@@ -411,11 +436,7 @@ async function main() {
         invalidateLiveCache();
         const after = await fetchLivePortfolio(cfg, ex, productMap);
         const leftover = dump.filter((s) => { const p = after.positions[s]; return p && (Number(p.amount || 0) + Number(p.hold || 0) > 0); });
-        if (leftover.length && cfg.exchange === 'coinbase' && !cfg.dryRun) {
-          console.log('bank leftover orphans (bg) ' + leftover.join(','));
-          await skimToBank(cfg, after, 1, leftover, 'startup', () => fetchLivePortfolio(cfg, ex, productMap));
-          await refreshBankHoldings(cfg);
-        }
+        if (leftover.length) console.log('  leave dust in place ' + leftover.join(','));
       } catch (e) { console.warn('bg flatten', e.message); }
     })();
   }
