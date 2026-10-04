@@ -10,6 +10,7 @@ import { nnQuote } from '../../ml/infer-quote.js';
 import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
 import { noteHoldExit, holdBasis } from '../../shared/hold-pnl.js';
+import { noteCapture } from '../../shared/inside-fee.js';
 
 
 
@@ -116,17 +117,11 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const useBook = false;
   let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
   let ask1 = mid * (1 + Math.max(tick / mid, askOff, sellHalf));
-  if (rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1) && book && Number(book.bid) > 0) bid1 = Number(book.bid);
-  if (useBook && sk) {
-    if (sk > 0) bid1 = Math.min(bid1, mid * (1 - bidOff));
-    if (sk < 0) ask1 = Math.max(ask1, mid * (1 + askOff));
-  }
   if (bid1 >= ask1) {
     bid1 = mid * (1 - l1HalfFrac(cfg, pair));
     ask1 = mid * (1 + l1HalfFrac(cfg, pair));
   }
-  if (!(rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1))) bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
-  else bid1 = Number(formatPrice(bid1, pairDecimals));
+  bid1 = Number(clampAwayFromMid(mid, bid1, 'buy', l1HalfFrac(cfg, pair), pairDecimals));
   ask1 = Number(clampAwayFromMid(mid, ask1, 'sell', sellHalf, pairDecimals));
   const skewKey = String(symbol || '');
   const nowSk = Date.now();
@@ -136,8 +131,8 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
     console.log('  SKEW inv ' + symbol + ' ' + sk.toFixed(2) + ' bidOff=' + (bidOff * 10000).toFixed(1) + 'bps askOff=' + (askOff * 10000).toFixed(1) + 'bps');
   }
   const buys = []; const sells = [];
-  const ret = midReturn(symbol);
-  const buyLevels = (ret < -0.005 || inRipCooldown(symbol)) ? 1 : levels;
+  const ret = midReturn(symbol, Number(process.env.BUY_RET_MS || 60000));
+  const buyLevels = (ret < 0 || inRipCooldown(symbol)) ? 0 : levels;
   for (let i = 1; i <= levels; i++) {
     const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
     const buyPx = i === 1 ? bid1 : bid1 * (1 - (i - 1) * step);
@@ -370,8 +365,9 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       inv0 = Number((live.positions && live.positions[a.symbol] && (Number(live.positions[a.symbol].amount || 0) + Number(live.positions[a.symbol].hold || 0))) || 0);
     } catch { inv0 = 0; }
   }
-  const bidT = rising && inv0 * mid < Number(process.env.TOUCH_INV_USD || 1) && book.bid > 0
-    ? formatPrice(Math.min(book.bid, book.ask ? book.ask - Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals)) : book.bid), a.pairDecimals)
+  const falling = midReturn(a.symbol, Number(process.env.BUY_RET_MS || 60000)) < 0;
+  const bidT = falling
+    ? null
     : clampAwayFromMid(mid, mid * (1 - l1HalfFrac(cfg, a.pair)), 'buy', l1HalfFrac(cfg, a.pair), a.pairDecimals);
   const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
@@ -446,7 +442,17 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     if (a) publishOrders(a, ladder, mid);
   }
   await pin('sell', askT);
-  await pin('buy', bidT);
+  if (bidT) await pin('buy', bidT);
+  else {
+    for (const o of (ladder.buys || []).filter((x) => x.status === 'open' && x.orderId)) {
+      const off = mid > 0 ? (mid - Number(o.price)) / mid : 0;
+      if (off < l1HalfFrac(cfg, a.pair)) {
+        try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
+        o.status = 'cancelled';
+        console.log('  CANCEL tight buy ' + a.symbol + ' @ ' + o.price + ' off=' + (off * 10000).toFixed(0) + 'bps');
+      }
+    }
+  }
 }
 
 async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state = null, forceSell = false) {
@@ -806,6 +812,9 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     return;
   }
   for (const leg of newlyFilled) {
+    const midN = Number(book && book.mid);
+    const off = midN > 0 ? (leg.side === 'buy' ? (midN - Number(leg.price)) / midN : (Number(leg.price) - midN) / midN) * 10000 : 0;
+    noteCapture(a.symbol, off);
     if (leg.side === 'buy') {
       try { invalidateLiveCache(); } catch { /* ignore */ }
       await coverInventory(cfg, ex, a, ladder, book, getLive);
@@ -834,19 +843,14 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (!(need >= minV)) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
-  const dropping = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000)) <= Number(process.env.HOLD_FLAT_RET || 0) || deadTape(a.symbol);
   const half = l1HalfFrac(cfg, a.pair);
   const feeBps = Number(realizedFeeBps(a.pair) != null ? realizedFeeBps(a.pair) : assumedMakerFeeBps(cfg));
   const basis = holdBasis(a.symbol) || 0;
   const floor = basis > 0 ? basis * (1 + (2 * feeBps) / 10000) : 0;
-  let px = (dropping && Number(book.ask) > 0)
-    ? formatPrice(book.ask, a.pairDecimals)
-    : clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
-  const fadeForce = dropping && !['0', 'false'].includes(String(process.env.COVER_FADE_TOUCH || '1').toLowerCase());
-  if (!fadeForce && floor > 0 && Number(px) + 1e-12 < floor) {
-    px = formatPrice(floor, a.pairDecimals);
-    console.log('  COVER FLOOR ' + a.symbol + ' touch would lose vs vwap+' + (2 * feeBps).toFixed(0) + 'bps -> ' + px);
-  }
+  let px = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
+  if (floor > 0 && Number(px) + 1e-12 < floor) px = formatPrice(floor, a.pairDecimals);
+  const off = (Number(px) - mid) / mid;
+  if (off < half * 0.98) return;
   const size = formatVolume(need * 0.995, a.lotDecimals);
   if (!(Number(size) >= minV)) return;
   console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' avail=' + available.toFixed(4));

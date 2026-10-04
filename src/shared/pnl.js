@@ -109,6 +109,7 @@ export function createPnl() {
   function snapshot(mids = {}) {
     for (const [sym, mid] of Object.entries(mids)) accruePrice(key(sym), Number(mid));
     const wallet = startEquity != null && lastEquity != null ? lastEquity - startEquity : null;
+    const walletExBank = wallet != null ? wallet + bankedRunUsd() : null;
     const symbols = new Set([...priceBy.keys(), ...makerBy.keys(), ...books.keys()]);
     const rows = [];
     for (const sym of symbols) {
@@ -117,12 +118,12 @@ export function createPnl() {
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedRunUsd() - priceAcc - makerAcc + feesPaid : null;
-    return { startEquity, lastEquity, walletGain: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, netMaker: makerAcc - feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
+    return { startEquity, lastEquity, walletGain: walletExBank, walletRaw: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, netMaker: makerAcc - feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
     console.log('\n-- ' + tag + ' --');
-    if (s.walletGain != null) console.log('  WALLET ' + fmt(s.walletGain) + '   start=' + s.startEquity.toFixed(2) + ' now=' + s.lastEquity.toFixed(2));
+    if (s.walletGain != null) console.log('  WALLET ' + fmt(s.walletGain) + '   ex-bank  raw=' + fmt(s.walletRaw) + '  start=' + s.startEquity.toFixed(2) + ' now=' + s.lastEquity.toFixed(2));
     console.log('  PRICE  ' + fmt(s.pricePnl) + '   inventory x each mid tick');
     console.log('  MAKER  ' + fmt(s.makerPnl) + '   fill vs mid (no fees)');
     console.log('  FEES   ' + fmt(-s.fees) + '   all venue commission (not in MAKER)');

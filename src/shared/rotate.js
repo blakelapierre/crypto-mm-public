@@ -1,5 +1,6 @@
 import { midReturn, trendMult, shortRun } from './mid-ring.js';
 import { volStatsForSymbol, sizeWeightForSymbol } from './vol-scan.js';
+import { insideFeeDrop } from './inside-fee.js';
 
 export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg }) {
   const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
@@ -13,12 +14,15 @@ export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg
     const range = meta ? Number(meta.rangePct || 0) : 0;
     const age = now - (enteredAt.get(a.pair) || now);
     const rip = shortRun(a.symbol);
-    const ret1 = midReturn(a.symbol);
-    const weak = (range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008))
+    const ret1 = midReturn(a.symbol, 60000);
+    const weak = insideFeeDrop(a.symbol)
+      || (range < exitPct && rip < Number(process.env.SHORT_RUN_ENTER || 0.008))
       || ret1 < Number(process.env.FALL_EXIT_RET || -0.002);
-    const fallAge = Number(process.env.FALL_EXIT_MS || 60000);
-    if (weak && age >= (ret1 < Number(process.env.FALL_EXIT_RET || -0.002) ? fallAge : rotateMin)) leaving.push(a);
-    else keep.push(a);
+    const fallAge = insideFeeDrop(a.symbol) ? 0 : Number(process.env.FALL_EXIT_MS || 60000);
+    if (weak && age >= (ret1 < Number(process.env.FALL_EXIT_RET || -0.002) ? fallAge : rotateMin)) {
+      if (insideFeeDrop(a.symbol)) console.log('  INSIDE FEE drop ' + a.symbol);
+      leaving.push(a);
+    } else keep.push(a);
   }
   keep.sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
   while (keep.length > hardMax) leaving.push(keep.pop());
