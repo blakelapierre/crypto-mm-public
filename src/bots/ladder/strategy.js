@@ -196,7 +196,9 @@ function resizeLeg(cfg, a, o, live) {
     const bookCap = eq * Number(process.env.INV_BOOK_MAX_FRAC || 0.45);
     if (bookCap > 0 && bookInv + openBids >= bookCap) return 0;
     if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.35)) return 0;
-    const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
+    const pairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || 4));
+    const rank = liveMmAlloc ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol)) : [];
+    if (rank.length && rank.findIndex((x) => x.symbol === a.symbol) >= pairs) return 0;
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     let reserved = 0;
     if (livePairState) {

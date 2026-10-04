@@ -26,7 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { queueExit, tickExits, exitBook } from '../../shared/exit-book.js';
+import { queueExit, tickExits, exitBook, clearExit } from '../../shared/exit-book.js';
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
@@ -59,6 +59,24 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   invalidateLiveCache();
   sortAllocByWeight(mmAlloc);
   setLiveMmAlloc(mmAlloc);
+  const livePairs = new Set(mmAlloc.map((a) => a.pair));
+  for (const [id, rec] of orderRegistry) {
+    if (rec.why !== 'adopted' || rec.status !== 'open') continue;
+    if (!livePairs.has(rec.pair)) {
+      try { await ex.cancelOrder(id); } catch { /* ignore */ }
+      rec.status = 'cancelled';
+      console.log('  drop adopted ' + rec.pair + ' not in MM set');
+      continue;
+    }
+    let st = pairState.get(rec.pair);
+    if (!st) {
+      const a = mmAlloc.find((x) => x.pair === rec.pair);
+      st = { ladder: { buys: [], sells: [] }, symbol: a && a.symbol, lastMid: 0 };
+      pairState.set(rec.pair, st);
+    }
+    const leg = { level: 1, side: rec.side, price: rec.price, size: rec.size, orderId: id, status: 'open' };
+    (rec.side === 'sell' ? st.ladder.sells : st.ladder.buys).push(leg);
+  }
   setSizeUniverse(mmAlloc.map((a) => a.symbol));
   let ws = { close() {} };
   if (cfg.exchange === 'coinbase') {
@@ -108,8 +126,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         }))
       : productMap;
     const volScan = createVolScan(cfg, Object.keys(scanMap).length ? scanMap : productMap);
-    const rotateMin = Number(process.env.VOL_ROTATE_MIN_MS || 900000);
-    console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm rotateMin=' + (rotateMin / 1000) + 's');
+    const rotateMin = Number(process.env.ROTATE_MIN_HOLD_MS || 1800000);
+    console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm hold=' + (rotateMin / 60000) + 'm');
     (async () => {
       while (true) {
         try {
@@ -171,7 +189,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const invEach = next[0] && keep[0] ? keep[0].invTargetQuote : 0;
             for (const a of next) {
               mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: a.invTargetQuote || invEach });
-              if (!enteredAt.has(a.pair)) enteredAt.set(a.pair, now);
+              if (!enteredAt.has(a.pair)) { enteredAt.set(a.pair, now); clearExit(a.symbol); }
             }
             saveMmSet(mmAlloc);
             setSizeUniverse(mmAlloc.map((x) => x.symbol));

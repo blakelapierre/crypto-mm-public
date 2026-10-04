@@ -2,6 +2,7 @@ import { logFill, logFeeUpdate } from './fill-log.js';
 import { assumedMakerFeeBps } from './fee-spread.js';
 import { postFill } from './status-client.js';
 import { consumeHoldSale } from './hold-pnl.js';
+import { midRing } from './mid-ring.js';
 
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
   const st = String(statusRaw || '').toUpperCase();
@@ -20,6 +21,8 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
     }
     if (rec.status !== 'filled') {
       rec.status = 'filled';
+      const ring = midRing(rec.symbol || String(rec.pair || '').split(/[-/]/)[0]);
+      if (!rec.mid && ring.length) rec.mid = ring[ring.length - 1].p;
       const notional = Number(rec.filledValue || 0) || (Number(rec.price || 0) * Number(rec.size || 0));
       const venueFee = Number(rec.fee) || 0;
       if (!(venueFee > 0) && notional > 0) rec.fee = notional * (assumedMakerFeeBps() / 10000);
