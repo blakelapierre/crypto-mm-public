@@ -265,6 +265,48 @@ function collect() {
   }));
 }
 
+const MARKET_PAGE = `<!doctype html><html><head><meta charset="utf-8"/><title>market</title>
+<style>body{font:14px ui-sans-serif,system-ui;background:#0e1116;color:#e7ecf3;margin:16px}a{color:#79c0ff;text-decoration:none}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:10px 0}table{border-collapse:collapse;width:100%}td,th{padding:4px 6px;border-bottom:1px solid #30363d;text-align:left}th{color:#8b98a5}.up{color:#3fb950}.dn{color:#f85149}svg{width:100%;height:180px;background:#0e1116}</style>
+</head><body>
+<p><a href="/">status</a> <a href="/slow">1-minute</a></p>
+<h1 id="title">market</h1>
+<div id="root">loading</div>
+<script>
+const q=new URLSearchParams(location.search);
+const bot=q.get('bot')||'';
+const symbol=(q.get('symbol')||'').toUpperCase();
+function esc(s){return String(s??'').replace(/&/g,'&').replace(/</g,'<');}
+function n(v){return Number.isFinite(Number(v))?Number(v).toFixed(2):'';}
+function spark(pts,fills){
+  const p=(pts||[]).map(x=>Number(x.p||x.mid)).filter(x=>x>0);
+  if(p.length<2) return '';
+  const lo=Math.min.apply(null,p), hi=Math.max.apply(null,p), w=640, h=160;
+  const d=p.map((v,i)=>((i/(p.length-1))*w).toFixed(1)+','+(h-4-((v-lo)/Math.max(hi-lo,1e-9))*(h-8)).toFixed(1)).join(' ');
+  return '<svg viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="#79c0ff" stroke-width="2" points="'+d+'"/></svg><div>lo '+lo+' hi '+hi+' n='+p.length+'</div>';
+}
+function draw(d){
+  const b=(d.bots||[]).find(x=>x.bot===bot)||(d.bots||[])[0];
+  if(!b){document.getElementById('root').textContent='no bot';return;}
+  const m=(b.markets||[]).find(x=>String(x.symbol).toUpperCase()===symbol);
+  document.getElementById('title').textContent=(b.bot||'')+' '+symbol;
+  if(!m){document.getElementById('root').textContent='not in the current set';return;}
+  const fills=(b.fills||[]).filter(f=>String(f.symbol||'').toUpperCase()===symbol).slice(-20).reverse();
+  const orders=(m.orders||[]).slice().sort((a,c)=>Number(c.price)-Number(a.price));
+  document.getElementById('root').innerHTML=
+    '<div class="card"><p>mid '+esc(m.mid)+'  weight '+esc(m.w||'')+'  vol '+esc(m.vol||'')+'  fee '+esc(m.fee||'')+'  edge '+(m.edgeBps==null?'':m.edgeBps)+'</p>'+
+    '<p>maker '+n(m.makerPnl)+'  price '+n(m.pricePnl)+'  fees '+n(m.fees)+'  inv $'+n(m.invUsd)+'  buy $'+n(m.buyUsd)+'  sell $'+n(m.sellUsd)+'</p>'+
+    spark(m.spark,m.sparkFills)+spark(m.volSpark)+spark(m.rangeSpark)+'</div>'+
+    '<div class="card"><h2>orders</h2><table><tr><th>side</th><th>lvl</th><th>px</th><th>size</th><th>$</th><th>status</th></tr>'+
+    orders.map(o=>'<tr><td class="'+(o.side==='buy'?'up':'dn')+'">'+esc(o.side)+'</td><td>'+esc(o.level)+'</td><td>'+esc(o.price)+'</td><td>'+esc(o.size)+'</td><td>'+n(o.usd)+'</td><td>'+esc(o.status)+'</td></tr>').join('')+
+    '</table></div>'+
+    '<div class="card"><h2>fills</h2><table><tr><th>side</th><th>px</th><th>size</th><th>fee</th></tr>'+
+    fills.map(f=>'<tr><td>'+esc(f.side)+'</td><td>'+esc(f.price)+'</td><td>'+esc(f.size)+'</td><td>'+esc(f.fee)+'</td></tr>').join('')+
+    '</table></div>';
+}
+function tick(){fetch('/api/status').then(r=>r.json()).then(draw).catch(e=>{document.getElementById('root').textContent=e.message;});}
+tick(); setInterval(tick, 5000);
+</script></body></html>`;
+
 const SLOW_PAGE = `<!doctype html><html><head><meta charset="utf-8"/><title>crypto-mm 1m</title>
 <style>body{font:13px ui-sans-serif,system-ui;background:#0e1116;color:#e7ecf3;margin:16px}a{color:#79c0ff}table{border-collapse:collapse;width:100%;margin:8px 0}td,th{padding:3px 6px;border-bottom:1px solid #30363d;text-align:left}th{color:#8b98a5}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px;margin:10px 0}.up{color:#3fb950}.dn{color:#f85149}</style>
 </head><body>
@@ -356,7 +398,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .hold-card .hr{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:3px 7px}
 .hold-card .hr b{margin-right:4px}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:8px;line-height:normal;width:100%}
-.board-card .cell{flex:0 0 auto;width:118px;min-height:110px;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0;background:#0e1116;border:1px solid #30363d;border-radius:8px;padding:6px 8px;box-sizing:border-box}
+.board-card a.cell{color:inherit}
 .board-card .cell .sym{font-size:12px;font-weight:600}
 .board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.2;min-height:2.2em;margin-top:auto}
 .movers{display:flex;flex-direction:row;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:6px;margin:6px 0 4px;width:100%}
@@ -682,7 +724,7 @@ function card(b){
   const p=b.pnl||{};
   const w=b.working||{};
   const mk=[...(b.markets||[])].sort((x,y)=>weightOf(y)-weightOf(x)).map(m=>
-    '<tr><td>'+esc(m.symbol)+'<div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+(m.edgeBps==null?'':((Number(m.edgeBps)>=0?'+':'')+Number(m.edgeBps).toFixed(0)))+'</td><td>'+m.bids+'/'+m.asks+
+    '<tr><td><a href="/market?bot='+encodeURIComponent(b.bot)+'&symbol='+encodeURIComponent(m.symbol)+'">'+esc(m.symbol)+'</a><div>'+sparkSvg(m.spark, m.sparkFills, m.orders)+'</div></td><td>'+esc(fmtPx(m.mid,priceDigits(m.orders)))+'</td><td>'+esc(fmtSpread(m))+'</td><td>'+(m.edgeBps==null?'':((Number(m.edgeBps)>=0?'+':'')+Number(m.edgeBps).toFixed(0)))+'</td><td>'+m.bids+'/'+m.asks+
     '<div class="ord">bid $'+fmtN(m.bidUsd)+' / ask $'+fmtN(m.askUsd)+'</div></td>'+
     '<td>'+fmtN(m.bidUsd)+'</td><td>'+fmtN(m.askUsd)+'</td><td>'+fmtN(m.invUsd)+'</td><td>'+fmtN(m.fills)+'</td><td>'+fmtN(m.buyUsd)+'</td><td>'+fmtN(m.sellUsd)+
     '</td><td>'+esc(m.vol)+'</td><td>'+esc(m.fee)+'</td><td>'+esc(m.w)+'</td></tr>'+
@@ -738,12 +780,12 @@ function boardHtml(rows){
       const maker=Number(c.m.makerPnl||0), fees=Number(c.m.fees||0), price=Number(c.m.pricePnl||0);
       const net=maker+price+(-Math.abs(fees));
       const netCls=net>0?'up':(net<0?'dn':'');
-      return '<div class="cell"><div class="sym">'+esc(c.m.symbol)+'</div>'+
+      return '<a class="cell" href="/market?bot='+encodeURIComponent(b.bot)+'&symbol='+encodeURIComponent(c.m.symbol)+'"><div class="sym">'+esc(c.m.symbol)+'</div>'+
         sparkSvg(c.m.spark,c.m.sparkFills,c.m.orders,{w:88,h:28})+
         sparkSvg(c.m.volSpark,null,null,{w:88,h:16})+
         sparkSvg(c.m.rangeSpark,null,null,{w:88,h:16})+
         '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+(rng?' · '+esc(rng):'')+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+
-        '<br><span class="'+netCls+'">net '+fmt(net)+'</span></div></div>';
+        '<br><span class="'+netCls+'">net '+fmt(net)+'</span></div></a>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
@@ -1031,6 +1073,11 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: e.message }));
     }
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/market') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(MARKET_PAGE);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/slow') {
