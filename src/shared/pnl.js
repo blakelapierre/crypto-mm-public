@@ -44,6 +44,7 @@ export function createPnl() {
   }
   function recordFill(rec) {
     if (!rec) return;
+    lastFillAt = Date.now();
     const qty = Number(rec.size);
     const px = Number(rec.price);
     const fee = Number(rec.fee || 0) || 0;
@@ -78,10 +79,24 @@ export function createPnl() {
       b.soldProceeds += proceeds;
     }
   }
+  const transfers = [];
+  let lastFillAt = 0;
+  function noteTransfer(usd, src) {
+    const n = Number(usd);
+    if (!Number.isFinite(n) || !n || startEquity == null) return;
+    startEquity += n;
+    transfers.push({ ts: Date.now(), usd: n, src: src || 'detected' });
+    console.log('TRANSFER ' + (n >= 0 ? '+' : '') + n.toFixed(2) + ' ' + (src || 'detected') + ' start=' + startEquity.toFixed(2));
+  }
   function markWallet(equity) {
     const n = Number(equity);
     if (!Number.isFinite(n)) return;
     if (startEquity == null) startEquity = n;
+    else if (lastEquity != null) {
+      const d = n - lastEquity;
+      const quiet = Date.now() - lastFillAt > 8000;
+      if (quiet && Math.abs(d) > Math.max(0.5, Math.abs(lastEquity) * 0.05)) noteTransfer(d, 'cash-jump');
+    }
     lastEquity = n;
   }
   function markHoldings(live) {
@@ -118,7 +133,8 @@ export function createPnl() {
     }
     rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const other = wallet != null ? wallet + bankedRunUsd() - priceAcc - makerAcc + feesPaid : null;
-    return { startEquity, lastEquity, walletGain: walletExBank, walletRaw: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, netMaker: makerAcc - feesPaid, takerFees, otherPnl: other, rows, startedAt, elapsedMs: Date.now() - startedAt };
+    const netDep = transfers.reduce((s, t) => s + t.usd, 0);
+    return { startEquity, lastEquity, walletGain: walletExBank, walletRaw: wallet, pricePnl: priceAcc, makerPnl: makerAcc, fees: feesPaid, netMaker: makerAcc - feesPaid, takerFees, otherPnl: other, transfers, netDeposits: netDep, rows, startedAt, elapsedMs: Date.now() - startedAt };
   }
   function print(mids = {}, tag = 'MM gain') {
     const s = snapshot(mids);
@@ -154,5 +170,5 @@ export function createPnl() {
     if (!b || !(b.boughtQty > 0)) return 0;
     return b.boughtCost / b.boughtQty;
   }
-  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee, avgBuy };
+  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee, avgBuy, noteTransfer };
 }

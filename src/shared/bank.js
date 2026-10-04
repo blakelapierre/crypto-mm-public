@@ -137,6 +137,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     const cash = (live.freeQuote || 0) * pct;
     if (cash >= 0.01) jobs.push({ cur: cfg.quote, send: cash.toFixed(8), usd: cash });
   }
+  if (['0', 'false', 'off'].includes(String(process.env.BANK_ONLY_QUOTE || '1').toLowerCase())) {
   for (const [sym, pos] of Object.entries(live.positions || {})) {
     if (filter && !filter.has(sym)) continue;
     const avail = Number(pos.amount || 0);
@@ -147,6 +148,7 @@ export async function skimToBank(cfg, live, fraction, onlySymbols = null, kind =
     if (!(Number(send) > 0)) send = String(qty);
     if (!(Number(send) > 0)) continue;
     jobs.push({ cur: pos.currency || sym, send, usd: Number(send) * (pos.mid || 0) });
+  }
   }
   const gap = Number(process.env.BANK_STAGGER_MS || 250);
   await Promise.all(jobs.map((j, i) => sleep(i * gap).then(async () => {

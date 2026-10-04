@@ -26,7 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { queueExit, tickExits } from '../../shared/exit-book.js';
+import { queueExit, tickExits, exitBook } from '../../shared/exit-book.js';
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
@@ -189,7 +189,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             }
           }
         } catch (e) { console.warn('vol rotate', e.message); }
-        try { await tickExits(ex, orderRegistry); } catch (e) { console.warn('exit tick', e.message); }
+        try { await tickExits(ex, orderRegistry, live); } catch (e) { console.warn('exit tick', e.message); }
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
@@ -349,7 +349,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        bankHoldings: bankHoldings(),
+        recon: { gapUsd: gap, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
+        exits: exitBook(),
+        bankHoldings: (bankHoldings() || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
         liveConfig: liveConfigSnap(),
         feeTier: feeTierSnap(),
         tierNextAt: feeTierNextAt(),

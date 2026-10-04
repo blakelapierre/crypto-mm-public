@@ -182,13 +182,20 @@ function resizeLeg(cfg, a, o, live) {
     if (ret < Number(process.env.ENTER_RET_MIN || 0)) return 0;
     const hard = Number(process.env.INV_CAP_HARD || 1.0);
     if (cap > 0 && held >= cap * hard) return 0;
-    if (cap > 0 && held >= cap && ret <= 0) return 0;
     const eq = Number(live.totalEquity || 0);
     const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
     const bookInv = live.positionsValue != null ? Number(live.positionsValue) : 0;
-    const bookCap = eq * Number(process.env.INV_BOOK_MAX_FRAC || 0.55);
-    if (bookCap > 0 && bookInv >= bookCap && ret <= 0) return 0;
-    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.25) && ret <= 0) return 0;
+    let openBids = 0;
+    if (livePairState) {
+      for (const st of livePairState.values()) {
+        for (const b of (st.ladder && st.ladder.buys) || []) {
+          if (b.status === 'open') openBids += Number(b.price) * Number(b.size);
+        }
+      }
+    }
+    const bookCap = eq * Number(process.env.INV_BOOK_MAX_FRAC || 0.45);
+    if (bookCap > 0 && bookInv + openBids >= bookCap) return 0;
+    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.35)) return 0;
     const pairs = Math.max(1, Number(process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || (cfg.symbols && cfg.symbols.length) || 4));
     const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
     let reserved = 0;
@@ -214,14 +221,8 @@ function resizeLeg(cfg, a, o, live) {
       : null;
     const isTop = top && top.symbol === a.symbol;
     const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashLeft;
-    const clipMax = Number(process.env.CLIP_MAX_USD || 0) || Math.max(cfg.minOrderUsd || 1, eq * Number(process.env.CLIP_EQ_FRAC || 0.12));
-    const deploy = !['0', 'false', 'off'].includes(String(process.env.DEPLOY_CASH || '1').toLowerCase());
-    let useUsd = isL1
-      ? Math.min(cashLeft, nameRoom, deploy && ret > 0 ? cashLeft : clipMax, isTop ? Math.max(cashShare, Math.min(cashLeft * 0.35, nameRoom)) : cashShare)
-      : Math.min(wantUsd || cashShare, cashShare || wantUsd, nameRoom, clipMax);
-    if (deploy && isL1 && ret > 0 && cashLeft > 0) {
-      useUsd = Math.min(nameRoom, Math.max(cashShare, cashLeft * Math.max(wFrac, 1 / Math.max(1, pairs))));
-    }
+    const clipMax = Number(process.env.CLIP_MAX_USD || 2);
+    let useUsd = Math.min(cashLeft, nameRoom, clipMax, cashShare || clipMax);
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
     if (useUsd < minUsd && cashLeft >= minUsd) useUsd = minUsd;
     if (o.price <= 0 || useUsd <= 0) return 0;
@@ -840,7 +841,8 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   const available = Number((pos && pos.amount) || 0);
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
   const need = available;
-  if (!(need >= minV)) return;
+  const openCover = (ladder.sells || []).some((o) => o.status === 'open' && o.cover);
+  if (openCover) return;
   const mid = Number(book.mid || 0);
   if (!(mid > 0)) return;
   const half = l1HalfFrac(cfg, a.pair);
