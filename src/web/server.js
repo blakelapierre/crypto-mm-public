@@ -293,7 +293,7 @@ function draw(d){
   const fills=(b.fills||[]).filter(f=>String(f.symbol||'').toUpperCase()===symbol).slice(-20).reverse();
   const orders=(m.orders||[]).slice().sort((a,c)=>Number(c.price)-Number(a.price));
   document.getElementById('root').innerHTML=
-    '<div class="card"><p>mid '+esc(m.mid)+'  weight '+esc(m.w||'')+'  vol '+esc(m.vol||'')+'  fee '+esc(m.fee||'')+'  edge '+(m.edgeBps==null?'':m.edgeBps)+'</p>'+
+    '<div class="card"><p>mid '+esc(m.mid)+'  weight '+esc(m.w||'')+'  vol '+esc(m.vol||'')+'  fee '+esc(m.fee||'')+'  edge '+(m.edgeBps==null?'':m.edgeBps)+'</p><p>'+esc(m.why||'')+'</p>'+
     '<p>maker '+n(m.makerPnl)+'  price '+n(m.pricePnl)+'  fees '+n(m.fees)+'  inv $'+n(m.invUsd)+'  buy $'+n(m.buyUsd)+'  sell $'+n(m.sellUsd)+'</p>'+
     spark(m.spark,m.sparkFills)+spark(m.volSpark)+spark(m.rangeSpark)+'</div>'+
     '<div class="card"><h2>orders</h2><table><tr><th>side</th><th>lvl</th><th>px</th><th>size</th><th>$</th><th>status</th></tr>'+
@@ -398,7 +398,7 @@ tr.mid,tr.mid td{color:#79c0ff;font-weight:600}
 .hold-card .hr{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:3px 7px}
 .hold-card .hr b{margin-right:4px}
 .board-card .sparks{display:flex;flex-direction:row;flex-wrap:wrap;align-items:stretch;justify-content:center;gap:8px;line-height:normal;width:100%}
-.board-card a.cell{color:inherit}
+.board-card .why{font-size:11px;color:#8b98a5;margin:4px 0 8px;line-height:1.4}
 .board-card .cell .sym{font-size:12px;font-weight:600}
 .board-card .cell .sz{font-size:10px;color:#8b98a5;line-height:1.2;min-height:2.2em;margin-top:auto}
 .movers{display:flex;flex-direction:row;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:6px;margin:6px 0 4px;width:100%}
@@ -785,7 +785,7 @@ function boardHtml(rows){
         sparkSvg(c.m.volSpark,null,null,{w:88,h:16})+
         sparkSvg(c.m.rangeSpark,null,null,{w:88,h:16})+
         '<div class="sz">$'+fmtN(c.work)+' v$'+fmtN(c.vol)+(rng?' · '+esc(rng):'')+'<br>w '+esc(c.m.w||'')+(e?' '+e:'')+
-        '<br><span class="'+netCls+'">net '+fmt(net)+'</span></div></a>';
+        '<br><span class="'+netCls+'">net '+fmt(net)+'</span><br>'+esc(c.m.why||'')+'</div></a>';
     }).join('');
     const q=projectOf(b);
     const volNow=sumMarkets(b,'buyUsd')+sumMarkets(b,'sellUsd');
@@ -793,6 +793,7 @@ function boardHtml(rows){
     const eq=b.pnl&&b.pnl.lastEquity;
     const edge=b.edgeBps;
     return '<section class="board-card"><h2>'+esc(b.bot)+' <small>'+esc(b.exchange||'')+' '+esc(b.quote||'')+' · '+sessAge(b)+'</small></h2>'+
+      '<div class="why">'+(b.selection&&b.selection.rows||[]).map(function(r){return esc(r.symbol)+' '+esc(r.state)+': '+esc(r.why);}).join(' · ')+'</div>'+
       '<div class="hdr-stats">'+
         '<div class="col"><label>wallet</label><b>'+fmt(wal)+'</b><span>$'+fmtN(eq)+'</span>'+sparkSvg((b.kpiSpark||{}).wallet,null,null,{w:56,h:16})+'<span>/h '+fmt(q.wallet)+'</span><span>/d '+fmt(q.wallet*24)+'</span><span class="pw">/7d '+fmt(q.wallet*24*7)+'</span><span class="pm">/30d '+fmt(q.wallet*24*30)+'</span><span class="py">/365d '+fmt(q.wallet*24*365)+'</span></div>'+
         '<div class="col"><label>edge 1h</label><b>'+(edge==null?'n/a':(Number(edge)>=0?'+':'')+Number(edge).toFixed(0)+'bps')+'</b></div>'+

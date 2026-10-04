@@ -45,6 +45,7 @@ bindLiveConfig(cfg);
   if (String(process.env.BOT || '').toLowerCase() === 'comp' && !cfg.symbols.length) cfg.symbols = ['GNOT'];
 }
 const orderRegistry = new Map();
+const selection = { effPairs: 0, rows: [] };
 const pairState = new Map();
 const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
@@ -161,6 +162,20 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const effPairs = Math.max(1, Math.min(Number(process.env.MM_MAX_PAIRS || 5), Math.floor((cash + inv) / (minUsd * Number(process.env.PAIR_CASH_K || 2.5)))));
           if (effPairs !== planRotation.eff) { planRotation.eff = effPairs; console.log('effPairs=' + effPairs); }
           process.env.MM_MAX_PAIRS_HARD = String(effPairs);
+          selection.effPairs = effPairs;
+          const holdMin = Number(process.env.ROTATE_MIN_HOLD_MS || 1800000) / 60000;
+          const inSet = new Set(mmAlloc.map((a) => a.symbol));
+          const rows = mmAlloc.map((a) => {
+            const age = Math.round((now - (enteredAt.get(a.pair) || now)) / 60000);
+            const exits = exitBook().some((e) => e.symbol === a.symbol);
+            return { symbol: a.symbol, state: 'in', why: exits ? 'exit queued' : (age < holdMin ? 'holding ' + age + '/' + holdMin + 'm' : 'quoting, held ' + age + 'm') };
+          });
+          for (const r of ranked.slice(0, 8)) {
+            if (inSet.has(r.symbol)) continue;
+            const hot = Number(r.rangePct || 0) >= Number(process.env.VOL_ENTER_PCT || 2);
+            rows.push({ symbol: r.symbol, state: 'out', why: hot ? 'out: pair cap ' + effPairs : 'out: vol ' + Number(r.rangePct || 0).toFixed(2) + '% < ' + Number(process.env.VOL_ENTER_PCT || 2) + '%' });
+          }
+          selection.rows = rows;
           function costOf(row) {
             const mid = Number(row.last || 0);
             const minV = (row.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
@@ -314,6 +329,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           heldUsd: holdInfo(a.symbol, Number(mid) || 0).usd,
           heldGain: holdInfo(a.symbol, Number(mid) || 0).gain,
           rising: midReturn(a.symbol) > 0,
+          why: (selection.rows.find((r) => r.symbol === a.symbol) || {}).why || 'in set',
         });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
@@ -375,6 +391,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         edgeBps: bookEdgeBps(),
         recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, volNow || 1), alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
         exits: exitBook(),
+        selection,
         bankHoldings: (bankHoldings() || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
         liveConfig: liveConfigSnap(),
         feeTier: feeTierSnap(),
