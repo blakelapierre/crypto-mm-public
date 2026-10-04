@@ -865,7 +865,7 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   const off = (Number(px) - mid) / mid;
   if (off < half * 0.98) return;
   const size = formatVolume(need * 0.995, a.lotDecimals);
-  if (!(Number(size) >= minV)) return;
+  if (!(Number(size) >= minV) || Number(size) * mid < Number(process.env.MIN_ORDER_USD || 1)) return;
   console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' avail=' + available.toFixed(4));
   const r = await ex.limitOrder(a.pair, 'sell', px, size, { level: 1 });
   if (r && r.order_id) {

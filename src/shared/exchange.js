@@ -313,7 +313,7 @@ export function createExchange(cfg, orderRegistry) {
           const o = res.order || res;
           const st0 = String(o.status || '').toUpperCase();
           let fills = [];
-          if (st0.indexOf('FILL') >= 0) {
+          if (st0.indexOf('FILL') >= 0 || (orderRegistry.get(orderId) || {}).needFee) {
             try {
               const fl = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/fills?order_ids=' + encodeURIComponent(orderId) + '&limit=100');
               fills = fl.fills || [];

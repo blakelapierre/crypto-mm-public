@@ -214,6 +214,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
+    setInterval(() => {
+      getLive().then((liveNow) => tickExits(ex, orderRegistry, liveNow)).catch((e) => console.warn('exit tick', e.message));
+    }, Number(process.env.EXIT_TICK_MS || 15000));
   }
   const stop = () => {
     try { persistLiveConfig(process.env.BOT_CONFIG || 'configs/ladder.env'); } catch (e) { console.warn('persist env', e.message); }
@@ -442,7 +445,7 @@ async function main() {
   }
   let live = await fetchLivePortfolio(cfg, ex, productMap);
   if (cfg.exchange === 'coinbase' && !cfg.dryRun) {
-    console.log('bank skim 0.5% -> trade bot bank (bg)');
+    console.log('bank skim ' + Number(process.env.BANK_START_PCT || 0) + ' -> trade bot bank (bg)');
     const skimLive = live;
     skimToBank(cfg, skimLive, Number(process.env.BANK_START_PCT || 0.005), null, 'startup', () => fetchLivePortfolio(cfg, ex, productMap))
       .then(() => refreshBankHoldings(cfg))
