@@ -883,6 +883,7 @@ function bankHtml(rows){
     return {a,qty,usd:qty*mid};
   }).filter(function(x){return x.qty>0;}).sort(function(x,y){return y.usd-x.usd;});
   const tot=rowsH.reduce(function(s,x){return s+x.usd;},0);
+  if ((rows || []).some(function(b){ return b.bankUnreadable; }) && !rowsH.length) return '<h3>bank</h3><div class="age">bank: unreadable</div>';
   if(!rowsH.length) return '<h3>bank</h3><div class="age">no bank snapshot yet</div>';
   return '<h3>bank</h3><div class="bank-total">$'+fmtN(tot)+'</div><div class="bank-list"><table>'+rowsH.map(function(x){
     return '<tr><td>'+esc(x.a)+'</td><td>'+esc(x.qty.toPrecision(6))+'</td><td>$'+fmtN(x.usd)+'</td></tr>';

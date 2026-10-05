@@ -3,6 +3,8 @@ import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
 import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
+import { reserveSell, coolSide } from './free-qty.js';
+import { noteLimitFail } from './exit-book.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 
 function money(v) {
@@ -213,15 +215,24 @@ export function createExchange(cfg, orderRegistry) {
       }
       return krakenPrivate(cfg, 'AddOrder', { pair, type: 'buy', ordertype: 'market', volume: String(volume) });
     },
-    async marketSell(pair, volume, venue = name) {
-      if (!['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
+    async marketSell(pair, volume, venueOrOpts = name) {
+      let venue = name;
+      let reason = '';
+      if (venueOrOpts && typeof venueOrOpts === 'object') {
+        venue = venueOrOpts.venue || name;
+        reason = String(venueOrOpts.reason || '');
+      } else if (typeof venueOrOpts === 'string') venue = venueOrOpts;
+      const stranded = reason === 'stranded' && ['1', 'true', 'yes'].includes(String(process.env.STRANDED_TAKER || '0').toLowerCase());
+      if (!stranded && !['1', 'true', 'yes'].includes(String(process.env.ALLOW_MARKET_EXIT || '0').toLowerCase())) {
         console.log('  skip MARKET SELL ' + pair + ' ALLOW_MARKET_EXIT=0');
         return null;
       }
-      if (cfg.dryRun) { console.log('[DRY] MARKET SELL', venue, pair, volume); return { ok: true }; }
-      const touch = await this._touchThenMarket(pair, 'sell', volume, null, venue);
-      if (!(touch.remainVol > 0)) return { ok: true, touched: true };
-      volume = touch.remainVol;
+      if (cfg.dryRun) { console.log('[DRY] MARKET SELL', venue, pair, volume, reason); return { ok: true }; }
+      if (!stranded) {
+        const touch = await this._touchThenMarket(pair, 'sell', volume, null, venue);
+        if (!(touch.remainVol > 0)) return { ok: true, touched: true };
+        volume = touch.remainVol;
+      }
       if (venue === 'coinbase') {
         try {
           const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', { client_order_id: randomUUID(), product_id: pair, side: 'SELL', order_configuration: { market_market_ioc: { base_size: String(volume) } } });
@@ -254,6 +265,8 @@ export function createExchange(cfg, orderRegistry) {
         failCtx._at = failCtx._at || {};
         failCtx._at[k] = now;
         console.error('LIMIT FAIL id=none', venue, pair, side, 'L' + (meta.level || ''), volume, '@', price, msg);
+        noteLimitFail(msg);
+        if (/insufficient/i.test(msg)) coolSide(pair, side);
       };
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
@@ -277,7 +290,11 @@ export function createExchange(cfg, orderRegistry) {
             return null;
           }
           const oid = (res.success_response && res.success_response.order_id) || res.order_id;
-          if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
+          if (oid) {
+            const base = String(pair).split(/[-/]/)[0];
+            orderRegistry.set(oid, { pair, symbol: base, side, level: meta.level, status: 'open', price, size: volume, venue, placedAt: Date.now() });
+            if (String(side).toLowerCase() === 'sell') reserveSell(base, volume);
+          }
           return { order_id: oid };
         } catch (e) { failCtx(e.message); return null; }
       }

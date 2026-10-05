@@ -11,6 +11,7 @@ import { logEvent } from '../../shared/fill-log.js';
 import { invalidateLiveCache } from '../../shared/portfolio.js';
 import { noteHoldExit, holdBasis } from '../../shared/hold-pnl.js';
 import { noteCapture } from '../../shared/inside-fee.js';
+import { freeQty, cooled } from '../../shared/free-qty.js';
 
 
 
@@ -74,10 +75,24 @@ function inventoryUsd(live, symbol) {
   const pos = live && live.positions && live.positions[symbol];
   return Number((pos && pos.valueQuote) || 0);
 }
-function inventoryCapUsd(live) {
+function capFor(live, symbol) {
   const eq = Number((live && live.totalEquity) || 0);
-  const frac = Number(process.env.INV_NAME_MAX_FRAC || process.env.INV_CAP_FRAC || 0.22);
+  const rising = midReturn(symbol) > 0 && !deadTape(symbol);
+  const frac = rising
+    ? Number(process.env.RISE_COIN_CAP_PCT || 0.35)
+    : Number(process.env.INV_NAME_MAX_FRAC || process.env.INV_CAP_FRAC || 0.25);
   return Math.max(0, eq * frac);
+}
+function openBidUsd(symbol) {
+  let s = 0;
+  if (!livePairState) return s;
+  for (const st of livePairState.values()) {
+    if (st.symbol !== symbol) continue;
+    for (const b of (st.ladder && st.ladder.buys) || []) {
+      if (b.status === 'open') s += Number(b.price) * Number(b.size);
+    }
+  }
+  return s;
 }
 function inventorySkew(live, symbol) {
   if (!live) return 0;
@@ -176,12 +191,23 @@ function resizeLeg(cfg, a, o, live) {
   const minV = (a.ordermin || 0) * (cfg.volumeSafetyMargin || 1.05);
   const isL1 = Number(o.level || 1) === 1;
   if (o.side === 'buy') {
-    const cap = inventoryCapUsd(live);
-    const held = inventoryUsd(live, a.symbol);
+    const cap = capFor(live, a.symbol);
+    const held = inventoryUsd(live, a.symbol) + openBidUsd(a.symbol);
     const ret = midReturn(a.symbol);
     if (ret < Number(process.env.ENTER_RET_MIN || 0)) return 0;
     const hard = Number(process.env.INV_CAP_HARD || 1.0);
-    if (cap > 0 && held >= cap * hard) return 0;
+    if (cap > 0 && held >= cap * hard) {
+      if (midReturn(a.symbol) <= 0) {
+        const k = 'trim:' + a.symbol;
+        const now = Date.now();
+        if (now - (resizeLeg._trim && resizeLeg._trim[k] || 0) > 120000) {
+          resizeLeg._trim = resizeLeg._trim || {};
+          resizeLeg._trim[k] = now;
+          console.log('  TRIM ' + a.symbol + ' over cap');
+        }
+      }
+      return 0;
+    }
     const eq = Number(live.totalEquity || 0);
     const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
     const bookInv = liveMmAlloc
@@ -234,14 +260,9 @@ function resizeLeg(cfg, a, o, live) {
     if (size + 1e-12 < minV) return minV * o.price <= cashLeft ? formatVolume(minV, a.lotDecimals) : 0;
     return formatVolume(size, a.lotDecimals);
   }
+  if (cooled(a.pair, 'sell')) return 0;
   const heldRaw = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
-  let locked = 0;
-  if (livePairState) {
-    for (const st of livePairState.values()) {
-      for (const s of (st.ladder && st.ladder.sells) || []) if (s.status === 'open' && st.symbol === a.symbol) locked += Number(s.size) || 0;
-    }
-  }
-  const held = Math.max(0, heldRaw - locked);
+  const held = freeQty(a.symbol, heldRaw);
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
   const rising = midReturn(a.symbol) > 0;
   const holdRet = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000));
@@ -491,8 +512,8 @@ async function ensureBothSides(cfg, ex, a, ladder, book, getLive = null, state =
   const mid = Number((book && book.mid) || 0);
   const half = l1HalfFrac(cfg, a.pair);
   if (!openS && mid > 0) await place('sell', clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals));
-  const cap = live ? inventoryCapUsd(live) : 0;
-  const held = live ? inventoryUsd(live, a.symbol) : 0;
+  const cap = live ? capFor(live, a.symbol) : 0;
+  const held = live ? inventoryUsd(live, a.symbol) + openBidUsd(a.symbol) : 0;
   if (!openB && !buyGate && !(cap > 0 && held >= cap) && mid > 0) await place('buy', clampAwayFromMid(mid, mid * (1 - half), 'buy', half, a.pairDecimals));
 }
 

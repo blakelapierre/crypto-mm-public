@@ -26,7 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { queueExit, tickExits, exitBook, clearExit, sweepStranded, limitFails } from '../../shared/exit-book.js';
+import { queueExit, tickExits, exitBook, clearExit, sweepStranded, limitFails, dustList, strandedTakerSnap } from '../../shared/exit-book.js';
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
@@ -191,8 +191,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             for (const a of leaving) {
               watch.set(a.pair, { ...a, leftAt: now });
               try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
-              const pos = live && live.positions && live.positions[a.symbol];
-              if (pos && Number(pos.amount) > 0) queueExit(a.symbol, a.pair, pos.amount);
+              invalidateLiveCache();
+              for (const rec of orderRegistry.values()) {
+                if (rec.pair === a.pair && rec.status === 'open') rec.orphan = true;
+              }
               pairState.delete(a.pair);
               enteredAt.delete(a.pair);
             }
@@ -225,13 +227,13 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         try {
           const exitLive = await getLive();
           sweepStranded(exitLive, mmAlloc);
-          await tickExits(ex, orderRegistry, exitLive);
+          await tickExits(ex, orderRegistry, exitLive, getLive);
         } catch (e) { console.warn('exit tick', e.message); }
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
     setInterval(() => {
-      getLive().then((liveNow) => { sweepStranded(liveNow, mmAlloc); return tickExits(ex, orderRegistry, liveNow); }).catch((e) => console.warn('exit tick', e.message));
+      getLive().then((liveNow) => { sweepStranded(liveNow, mmAlloc); return tickExits(ex, orderRegistry, liveNow, getLive); }).catch((e) => console.warn('exit tick', e.message));
     }, Number(process.env.EXIT_TICK_MS || 15000));
   }
   const stop = () => {
@@ -369,6 +371,12 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
       try { await refreshFeeTier(cfg); } catch {}
       saveMmSet(mmAlloc);
+      const notional = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
+      emitStatus.gaps = emitStatus.gaps || [];
+      emitStatus.gaps.push({ t: Date.now(), gap });
+      emitStatus.gaps = emitStatus.gaps.filter((x) => Date.now() - x.t < 3600000);
+      const gap1h = emitStatus.gaps.length ? gap - emitStatus.gaps[0].gap : 0;
+      const bh = bankHoldings();
       const hours = Math.max((snap.elapsedMs || 0) / 3600000, 1 / 60);
       const volNow = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
       const proj = {
@@ -393,11 +401,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         },
         api: snapshotApi(), feesHist: feeSnapshot(),
         edgeBps: bookEdgeBps(),
-        recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, volNow || 1), alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
+        recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, notional || 1), gap1hUsd: gap1h, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [], unattributed: snap && snap.unattributed },
         exits: exitBook(),
+        dust: dustList(),
+        strandedTaker: strandedTakerSnap(),
         limitFails: limitFails(),
         selection,
-        bankHoldings: (bankHoldings() || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
+        bankUnreadable: bh == null,
+        bankHoldings: (bh || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
         liveConfig: liveConfigSnap(),
         feeTier: feeTierSnap(),
         tierNextAt: feeTierNextAt(),
