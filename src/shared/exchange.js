@@ -358,8 +358,8 @@ export function createExchange(cfg, orderRegistry) {
     async cancelPair(pair, venue = name) {
       if (venue === 'coinbase') {
         try {
-          const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?product_id=' + encodeURIComponent(pair) + '&order_status=OPEN&limit=50');
-          const ids = (open.orders || []).map((o) => o.order_id).filter(Boolean);
+          const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?product_ids=' + encodeURIComponent(pair) + '&order_status=OPEN&limit=50');
+          const ids = (open.orders || []).filter((o) => o.product_id === pair).map((o) => o.order_id).filter(Boolean);
           if (ids.length) await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: ids });
         } catch (e) { console.warn(e.message); }
         return;

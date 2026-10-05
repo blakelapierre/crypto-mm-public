@@ -26,7 +26,7 @@ import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
 import { skimToBank, liquidateSymbols, seedNewInventory, bankHoldings, refreshBankHoldings } from '../../shared/bank.js';
-import { queueExit, tickExits, exitBook, clearExit } from '../../shared/exit-book.js';
+import { queueExit, tickExits, exitBook, clearExit, sweepStranded, limitFails } from '../../shared/exit-book.js';
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
@@ -224,13 +224,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         } catch (e) { console.warn('vol rotate', e.message); }
         try {
           const exitLive = await getLive();
+          sweepStranded(exitLive, mmAlloc);
           await tickExits(ex, orderRegistry, exitLive);
         } catch (e) { console.warn('exit tick', e.message); }
         await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
       }
     })();
     setInterval(() => {
-      getLive().then((liveNow) => tickExits(ex, orderRegistry, liveNow)).catch((e) => console.warn('exit tick', e.message));
+      getLive().then((liveNow) => { sweepStranded(liveNow, mmAlloc); return tickExits(ex, orderRegistry, liveNow); }).catch((e) => console.warn('exit tick', e.message));
     }, Number(process.env.EXIT_TICK_MS || 15000));
   }
   const stop = () => {
@@ -259,7 +260,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       const snap = pnl.print(mids);
       const gap = Number(snap && snap.otherPnl || 0);
-      if (Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05)) console.log('  RECON ALERT gap=' + gap.toFixed(4));
+      if (Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05)) {
+        if (!emitStatus.alerted) console.log('  RECON ALERT gap=' + gap.toFixed(4));
+        emitStatus.alerted = true;
+      } else emitStatus.alerted = false;
       const bankUsd = (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0);
       console.log('  -- markets --');
       const marketRows = [];
@@ -391,6 +395,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         edgeBps: bookEdgeBps(),
         recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, volNow || 1), alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [] },
         exits: exitBook(),
+        limitFails: limitFails(),
         selection,
         bankHoldings: (bankHoldings() || []).map((h) => ({ ...h, value: h.asset === cfg.quote ? h.qty : h.qty * Number(mids[h.asset] || 0) })),
         liveConfig: liveConfigSnap(),
@@ -472,11 +477,8 @@ async function main() {
   const keep = new Set(lists.mmAlloc.map((a) => a.symbol));
   const dump = Object.keys(live.positions || {}).filter((s) => !keep.has(s));
   if (dump.length && cfg.exchange !== 'print') {
-    console.log('startup queue non-MM exits: ' + dump.join(','));
-    for (const sym of dump) {
-      const p = live.positions[sym];
-      if (p && p.pair && Number(p.amount) * Number(p.mid || 0) >= Number(process.env.MIN_ORDER_USD || 1)) queueExit(sym, p.pair, p.amount, p.mid);
-    }
+    console.log('startup sweep non-MM: ' + dump.join(','));
+    sweepStranded(live, lists.mmAlloc);
   }
   await rebalanceCombined(cfg, ex, lists.combinedTargets, live);
   live = await waitForSettlement(cfg, ex, productMap, 'after combined');
