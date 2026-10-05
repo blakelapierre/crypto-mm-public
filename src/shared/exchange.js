@@ -336,8 +336,13 @@ export function createExchange(cfg, orderRegistry) {
               fills = fl.fills || [];
             } catch { fills = []; }
           }
+          const taker = fills.some((f) => String(f.liquidity_indicator || '').toUpperCase() === 'TAKER');
           const fee = coinbaseFee(o, fills);
-          return { status: st0, raw: o, filledSize: money(o.filled_size), filledValue: money(o.filled_value), fee, avgPrice: money(o.average_filled_price) };
+          if (!(fee > 0) && st0.indexOf('FILL') >= 0 && !getOrderStatus._feeWarned) {
+            getOrderStatus._feeWarned = true;
+            console.warn('fills lookup empty fee', orderId, 'n=' + fills.length);
+          }
+          return { status: st0, raw: o, filledSize: money(o.filled_size), filledValue: money(o.filled_value), fee, avgPrice: money(o.average_filled_price), taker };
         } catch { return null; }
       }
       try {

@@ -35,6 +35,7 @@ import { holdRealizedUsd, holdFills } from '../../shared/hold-pnl.js';
 import { bindLiveConfig, liveConfigSnap, applyLiveConfig, persistLiveConfig } from '../../shared/live-config.js';
 import { refreshFeeTier, feeTierSnap, etaNextTierHours, feeTierNextAt } from '../../shared/fee-tier.js';
 import { snapshotApi, startApiTally } from '../../shared/api-timing.js';
+import { startVenueRecon, feeReport } from '../../shared/venue-recon.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/ladder.env');
 const cfg = baseConfig();
@@ -399,7 +400,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           holdRealized: holdRealizedUsd(),
           holdFills: holdFills(),
         },
-        api: snapshotApi(), feesHist: feeSnapshot(),
+        api: snapshotApi(), feesHist: feeSnapshot(), fees: feeReport(),
         edgeBps: bookEdgeBps(),
         recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, notional || 1), gap1hUsd: gap1h, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [], unattributed: snap && snap.unattributed },
         exits: exitBook(),
@@ -454,6 +455,7 @@ async function main() {
   startApiTally(Number(process.env.API_TALLY_MS || 10000));
   console.log('BOT=' + (process.env.BOT || 'ladder') + ' exchange=' + cfg.exchange + ' dryRun=' + cfg.dryRun + ' quote=' + cfg.quote + ' symbols=' + (cfg.symbols || []).join(','));
   logSession({ exchange: cfg.exchange, quote: cfg.quote });
+  startVenueRecon(cfg, orderRegistry, pnl);
   if (cfg.exchange === 'kraken' && (!cfg.krakenApiKey || !cfg.krakenApiSecret)) throw new Error('Missing Kraken keys');
   if (cfg.exchange === 'coinbase') console.log('JWT', ex.loadKeyInfo());
   const productMap = await ex.getProducts();

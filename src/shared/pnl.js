@@ -83,12 +83,20 @@ export function createPnl() {
   let unattributed = 0;
   let lastFillAt = 0;
   let lastPosMap = null;
-  function noteTransfer(usd, src) {
+  const transferIds = new Set();
+  let recentTransfer = 0;
+  let recentTransferAt = 0;
+  function noteTransfer(usd, src, id) {
     const n = Number(usd);
-    if (!Number.isFinite(n) || !n || startEquity == null) return;
+    if (!Number.isFinite(n) || !n || startEquity == null) return false;
+    if (id && transferIds.has(String(id))) return false;
+    if (id) transferIds.add(String(id));
     startEquity += n;
-    transfers.push({ ts: Date.now(), usd: n, src: src || 'detected' });
-    console.log('TRANSFER ' + (n >= 0 ? '+' : '') + n.toFixed(2) + ' ' + (src || 'detected') + ' start=' + startEquity.toFixed(2));
+    recentTransfer += n;
+    recentTransferAt = Date.now();
+    transfers.push({ ts: Date.now(), usd: n, src: src || 'detected', id: id || null });
+    console.log('TRANSFER ' + (n >= 0 ? '+' : '') + n.toFixed(2) + ' ' + (src || 'detected') + (id ? ' ' + id : '') + ' start=' + startEquity.toFixed(2));
+    return true;
   }
   let lastCash = null;
   let lastPosValue = null;
@@ -111,8 +119,11 @@ export function createPnl() {
     markWallet(live.totalEquity);
     if (prevEq != null && Date.now() - lastFillAt > 60000) {
       const step = Number(live.totalEquity) - prevEq;
-      if (Math.abs(step) > Math.max(0.5, Math.abs(prevEq) * 0.05)) {
-        unattributed += step;
+      const explained = Date.now() - recentTransferAt < 120000 ? recentTransfer : 0;
+      if (explained) recentTransfer = 0;
+      const residual = step - explained;
+      if (Math.abs(residual) > Math.max(0.5, Math.abs(prevEq) * 0.05)) {
+        unattributed += residual;
         const bits = [];
         const nowMap = new Map();
         for (const [sym, p] of Object.entries(live.positions || {})) {
@@ -123,7 +134,7 @@ export function createPnl() {
           if (!prev || Math.abs((prev.qty || 0) - qty) > 1e-8) bits.push(sym + ' ' + (prev ? prev.qty : 0) + '->' + qty);
         }
         lastPosMap = nowMap;
-        console.log('EQUITY STEP ' + step.toFixed(2) + ' unattributed cash ' + (prevCash == null ? '' : (cash - prevCash).toFixed(2)) + ' ' + bits.slice(0, 6).join(' '));
+        console.log('EQUITY STEP ' + residual.toFixed(2) + ' unattributed cash ' + (prevCash == null ? '' : (cash - prevCash).toFixed(2)) + ' ' + bits.slice(0, 6).join(' '));
       }
     }
     lastCash = cash;

@@ -7,6 +7,22 @@ function push(bucket, row) {
   while (bucket.length > MAX) bucket.shift();
 }
 
+const venue = [];
+
+export function noteVenueFee(fee, notional, pair = null) {
+  const f = Number(fee) || 0;
+  const n = Number(notional) || 0;
+  if (!(f > 0) || !(n > 0)) return;
+  noteFeeFill(f, n, pair);
+  push(venue, { fee: f, notional: n, t: Date.now() });
+}
+
+export function venueFeeStats() {
+  const notional = venue.reduce((s, x) => s + x.notional, 0);
+  const fee = venue.reduce((s, x) => s + x.fee, 0);
+  return { n: venue.length, fee, notional, bps: bpsFrom(venue) };
+}
+
 export function noteFeeFill(fee, notional, pair = null) {
   const f = Number(fee) || 0;
   const n = Number(notional) || 0;
@@ -33,6 +49,10 @@ export function assumedMakerFeeBps(cfg = {}) {
 }
 
 export function realizedFeeBps(pair = null) {
+  if (venue.length >= 20) {
+    const real = bpsFrom(venue);
+    if (real != null) return real;
+  }
   let got = null;
   if (pair) {
     const key = String(pair).toUpperCase();

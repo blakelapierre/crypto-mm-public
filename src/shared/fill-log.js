@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { noteFeeFill } from './fee-spread.js';
+import { noteFeeFill, noteVenueFee } from './fee-spread.js';
 import { noteTapeFill } from './pair-tape.js';
 import { invalidateLiveCache } from './portfolio.js';
 import { postFill } from './status-client.js';
@@ -153,6 +153,48 @@ export function logSession(extra = {}) {
   } catch (e) { console.warn('fill log session', e.message); }
 }
 
+const feeCounts = { venue: 0, pending: 0 };
+export function feeCountsSnap() { return { ...feeCounts }; }
+
+export function pendingFillsSince(maxAgeMs = 48 * 3600000) {
+  const main = filePath();
+  if (!main) return [];
+  const files = [];
+  const dir = path.join(path.dirname(main), 'archives');
+  if (fs.existsSync(dir)) {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('fills-') && name.endsWith('.jsonl')) files.push(path.join(dir, name));
+    }
+  }
+  if (fs.existsSync(main)) files.push(main);
+  const cutoff = Date.now() - maxAgeMs;
+  const pending = new Map();
+  const updated = new Set();
+  for (const file of files) {
+    let day = null;
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!Array.isArray(row)) continue;
+      if (row[0] === SHAPE_ID.day) { day = row[1]; continue; }
+      if (row[0] === SHAPE_ID.fee && row[2]) { updated.add(String(row[2])); continue; }
+      if (row[0] !== SHAPE_ID.fill || !day) continue;
+      const ts = Date.parse(day + 'T00:00:00.000Z') + Number(row[1] || 0);
+      if (!(ts >= cutoff)) continue;
+      if (row[11] !== 'pending' || !row[2]) continue;
+      pending.set(String(row[2]), {
+        id: String(row[2]), ts, pair: row[4], symbol: row[5], side: row[6],
+        price: Number(row[8]) || 0, size: Number(row[9]) || 0, notional: Number(row[13]) || 0,
+      });
+    }
+  }
+  for (const id of updated) pending.delete(id);
+  return [...pending.values()];
+}
+
 export function logFeeUpdate(orderId, fee, extra = {}) {
   try {
     const row = {
@@ -163,6 +205,8 @@ export function logFeeUpdate(orderId, fee, extra = {}) {
       notional: extra.notional != null ? Number(extra.notional) : null,
     };
     writeBoth(packRow('fee', { ...row, id: orderId }));
+    feeCounts.venue += 1;
+    if (feeCounts.pending > 0) feeCounts.pending -= 1;
   } catch (e) { console.warn('fill log fee', e.message); }
 }
 
@@ -171,7 +215,13 @@ export function logFill(rec, extra = {}) {
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : rec.price && rec.size ? Number(rec.price) * Number(rec.size) : null;
     const venueFee = Number(rec.venueFee != null ? rec.venueFee : (extra.venueFee != null ? extra.venueFee : (rec.feeSource === 'pending' ? 0 : rec.fee))) || 0;
     const pnlFee = Number(rec.fee) || 0;
-    if (pnlFee > 0 && notional) noteFeeFill(pnlFee, notional, rec.pair);
+    if (venueFee > 0 && notional) {
+      noteVenueFee(venueFee, notional, rec.pair);
+      feeCounts.venue += 1;
+    } else if (pnlFee > 0 && notional) {
+      noteFeeFill(pnlFee, notional, rec.pair);
+      feeCounts.pending += 1;
+    }
     noteTapeFill(rec.pair, rec.side, rec.price, rec.size);
     invalidateLiveCache();
     const row = {

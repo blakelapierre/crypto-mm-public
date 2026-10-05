@@ -1,5 +1,6 @@
 import { logFill, logFeeUpdate } from './fill-log.js';
 import { assumedMakerFeeBps } from './fee-spread.js';
+import { noteVenueFee } from './fee-spread.js';
 import { postFill } from './status-client.js';
 import { consumeHoldSale } from './hold-pnl.js';
 import { midRing } from './mid-ring.js';
@@ -17,7 +18,7 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       if (detail.filledSize) rec.size = detail.filledSize;
       if (detail.avgPrice) rec.price = detail.avgPrice;
       if (detail.filledValue) rec.filledValue = detail.filledValue;
-      if (detail.fee != null && detail.fee !== '') rec.fee = Number(detail.fee) || 0;
+      if (Number(detail.fee) > 0) rec.fee = Number(detail.fee);
     }
     if (rec.status !== 'filled') {
       rec.status = 'filled';
@@ -33,14 +34,18 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       logFill(rec, { orderId, venueFee, feeSource: venueFee > 0 ? 'venue' : 'pending' });
       rec.pnlRecorded = true;
       rec.needFee = !(venueFee > 0);
-    } else if (rec.needFee && rec.fee > 0 && pnl && pnl.adjustFee) {
-      pnl.adjustFee(rec, rec.fee, rec.feeAccounted || 0);
-      rec.feeAccounted = Number(rec.fee || 0);
+      rec.filledAt = rec.filledAt || Date.now();
+    } else if (rec.needFee && detail && Number(detail.fee) > 0 && pnl && pnl.adjustFee) {
+      const venueFee = Number(detail.fee);
+      pnl.adjustFee(rec, venueFee, rec.feeAccounted || 0);
+      rec.fee = venueFee;
+      rec.feeAccounted = venueFee;
       rec.needFee = false;
-      logFeeUpdate(orderId, rec.fee, {
-        pair: rec.pair,
-        notional: rec.filledValue || (Number(rec.price || 0) * Number(rec.size || 0)),
-      });
+      rec.feeSource = 'venue';
+      if (detail.taker) rec.taker = true;
+      const notional = rec.filledValue || (Number(rec.price || 0) * Number(rec.size || 0));
+      noteVenueFee(venueFee, notional, rec.pair);
+      logFeeUpdate(orderId, rec.fee, { pair: rec.pair, notional, src: 'venue' });
       postFill({
         orderId, pair: rec.pair, symbol: rec.symbol, side: rec.side, level: rec.level,
         price: rec.price, size: rec.size, fee: rec.fee, filledValue: rec.filledValue,
@@ -66,7 +71,11 @@ export async function pollOpenOrders(ex, orderRegistry, cfg, pnl = null) {
     ? [...orderRegistry.entries()]
     : Object.entries(orderRegistry || {});
   const todo = entries.filter(([, r]) => {
-    if (r.needFee) return true;
+    if (r.needFee) {
+      if (r.filledAt && Date.now() - r.filledAt > 5 * 60 * 1000) return false;
+      if (r.feeNext && Date.now() < r.feeNext) return false;
+      return true;
+    }
     if (r.status !== 'open') return false;
     if (wsOn && !forceRest) return false;
     return true;
@@ -74,5 +83,9 @@ export async function pollOpenOrders(ex, orderRegistry, cfg, pnl = null) {
   for (const [id, rec] of todo) {
     const st = await ex.getOrderStatus(id, rec.venue || cfg.exchange);
     if (st && st.status) markOrderFromExchange(orderRegistry, id, st.status, pnl, st);
+    if (rec.needFee) {
+      rec.feeTries = (rec.feeTries || 0) + 1;
+      rec.feeNext = Date.now() + Math.min(5 * 60 * 1000, 15000 * (2 ** Math.min(rec.feeTries, 5)));
+    }
   }
 }
