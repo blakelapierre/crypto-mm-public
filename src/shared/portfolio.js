@@ -7,6 +7,7 @@ import { getMarketCapRanking } from './coingecko.js';
 import { loadMmSet } from './mm-set.js';
 import { savedRangePct } from './vol-scan.js';
 import { midRing } from './mid-ring.js';
+import { noteBalances } from './free-qty.js';
 
 async function staggerMap(items, fn, gapMs) {
   await Promise.all(items.map((item, i) => sleep(i * Math.max(0, gapMs)).then(() => fn(item))));
@@ -19,6 +20,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
   const key = String(venue || cfg.exchange);
   const hit = liveCache.get(key);
   if (ttl > 0 && hit && Date.now() - hit.at < ttl) return hit.live;
+  const fetchedAt = Date.now();
   const quote = cfg.quote.toUpperCase();
   const positions = {};
   let freeQuote = 0;
@@ -101,6 +103,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     } catch { /* keep */ }
   }
   const liveOut = { freeQuote, quoteHold, positions, positionsValue, totalEquity, rawPositions: { ...positions } };
+  noteBalances(positions, fetchedAt);
   liveCache.set(key, { at: Date.now(), live: liveOut });
   return liveOut;
 }

@@ -37,6 +37,13 @@ export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg
     if (weak) belowSince.set(a.pair, (belowSince.get(a.pair) || 0) + 1);
     else belowSince.set(a.pair, 0);
     const held = belowSince.get(a.pair) >= confirmTicks;
+    const idleMs = Number(process.env.IDLE_RELEASE_MS || 900000);
+    const idle = cfg && cfg.idlePairs;
+    if (idle && idle.has(a.pair) && age >= idleMs) {
+      console.log('  ROTATE idle ' + a.symbol + ' ' + Math.round(age / 60000) + 'm');
+      leaving.push(a);
+      continue;
+    }
     if (emergency) {
       console.log('  ROTATE_STOP_RET ' + a.symbol + ' ret15=' + (ret15 * 100).toFixed(2) + '% age=' + Math.round(age / 1000) + 's');
       leaving.push(a);

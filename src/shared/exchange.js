@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
-import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement } from './sizing.js';
+import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement, formatVolume } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
-import { reserveSell, coolSide } from './free-qty.js';
+import { reserveSell, coolSide, sellable } from './free-qty.js';
 import { noteLimitFail } from './exit-book.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
+import { invalidateLiveCache } from './portfolio.js';
 
 function money(v) {
   if (v == null || v === '') return 0;
@@ -53,7 +54,8 @@ export function createExchange(cfg, orderRegistry) {
         const map = {};
         const q = cfg.quote.toUpperCase();
         for (const p of data.products || []) {
-          if (p.is_disabled) continue;
+          if (p.is_disabled || p.trading_disabled || p.cancel_only || p.view_only || p.auction_mode) continue;
+          if (p.status && String(p.status).toLowerCase() !== 'online') continue;
           const quoteId = (p.quote_currency_id || p.quote_currency || '').toUpperCase();
           if (quoteId !== q) continue;
           const base = (p.base_currency_id || p.base_currency || '').toUpperCase();
@@ -244,6 +246,26 @@ export function createExchange(cfg, orderRegistry) {
     },
     async limitOrder(pair, side, price, volume, meta = {}, venue = name) {
       const info = pairMeta.get(pair);
+      if (String(side).toLowerCase() === 'sell') {
+        const base = String(pair).split(/[-/]/)[0].toUpperCase();
+        const free = sellable(base);
+        if (Number.isFinite(free) && Number(volume) > free + 1e-12) {
+          const next = formatVolume(free, info && info.lotDecimals);
+          const minUsd = Number(process.env.MIN_ORDER_USD || 1);
+          const minV = (info && info.ordermin) || 0;
+          if (!(Number(next) > 0) || Number(next) + 1e-12 < minV || Number(next) * Number(price) < minUsd) {
+            const k = pair;
+            const now = Date.now();
+            if (now - (this._clampAt && this._clampAt[k] || 0) > 20000) {
+              this._clampAt = this._clampAt || {};
+              this._clampAt[k] = now;
+              console.log('  SELL CLAMP ' + base + ' want=' + volume + ' free=' + (Number.isFinite(free) ? free : 'na'));
+            }
+            return { skipped: 'free' };
+          }
+          volume = next;
+        }
+      }
       const inc = (info && info.quoteIncrement) || (info && info.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
       let px = snapToIncrement(price, inc);
       let bookSnap = null;
@@ -266,7 +288,10 @@ export function createExchange(cfg, orderRegistry) {
         failCtx._at[k] = now;
         console.error('LIMIT FAIL id=none', venue, pair, side, 'L' + (meta.level || ''), volume, '@', price, msg);
         noteLimitFail(msg);
-        if (/insufficient/i.test(msg)) coolSide(pair, side);
+        if (/insufficient/i.test(msg)) {
+          coolSide(pair, side);
+          invalidateLiveCache();
+        }
       };
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
@@ -293,7 +318,10 @@ export function createExchange(cfg, orderRegistry) {
           if (oid) {
             const base = String(pair).split(/[-/]/)[0];
             orderRegistry.set(oid, { pair, symbol: base, side, level: meta.level, status: 'open', price, size: volume, venue, placedAt: Date.now() });
-            if (String(side).toLowerCase() === 'sell') reserveSell(base, volume);
+            if (String(side).toLowerCase() === 'sell') {
+              reserveSell(base, volume, oid);
+              invalidateLiveCache();
+            }
           }
           return { order_id: oid };
         } catch (e) { failCtx(e.message); return null; }

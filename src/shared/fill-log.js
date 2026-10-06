@@ -18,7 +18,7 @@ const SHAPE_LIST = [
   ['place', 'ts', 'symbol', 'side', 'level', 'price', 'size', 'id', 'mid'],
   ['cancel', 'ts', 'id', 'side', 'level', 'price', 'why', 'offBps', 'mid'],
   ['fill', 'ts', 'id', 'venue', 'pair', 'symbol', 'side', 'level', 'price', 'size', 'fee', 'feeSrc', 'mid', 'notional'],
-  ['fee', 'ts', 'id', 'pair', 'fee', 'notional'],
+  ['fee', 'ts', 'id', 'pair', 'fee', 'notional', 'src'],
   ['kpi', 'ts', 'wallet', 'price', 'maker', 'fees', 'taker', 'gap', 'bank', 'equity', 'cash', 'inv', 'fills'],
   ['day', 'date'],
 ];
@@ -184,7 +184,7 @@ export function pendingFillsSince(maxAgeMs = 48 * 3600000) {
       if (row[0] !== SHAPE_ID.fill || !day) continue;
       const ts = Date.parse(day + 'T00:00:00.000Z') + Number(row[1] || 0);
       if (!(ts >= cutoff)) continue;
-      if (row[11] !== 'pending' || !row[2]) continue;
+      if (row[11] !== 'pending' && row[11] !== 'est' || !row[2]) continue;
       pending.set(String(row[2]), {
         id: String(row[2]), ts, pair: row[4], symbol: row[5], side: row[6],
         price: Number(row[8]) || 0, size: Number(row[9]) || 0, notional: Number(row[13]) || 0,
@@ -203,10 +203,13 @@ export function logFeeUpdate(orderId, fee, extra = {}) {
       fee: Number(fee) || 0,
       pair: extra.pair || null,
       notional: extra.notional != null ? Number(extra.notional) : null,
+      src: extra.src || null,
     };
     writeBoth(packRow('fee', { ...row, id: orderId }));
-    feeCounts.venue += 1;
-    if (feeCounts.pending > 0) feeCounts.pending -= 1;
+    if (row.src === 'venue') {
+      feeCounts.venue += 1;
+      if (feeCounts.pending > 0) feeCounts.pending -= 1;
+    }
   } catch (e) { console.warn('fill log fee', e.message); }
 }
 
@@ -235,7 +238,7 @@ export function logFill(rec, extra = {}) {
       price: Number(rec.price) || null,
       size: Number(rec.size) || null,
       fee: venueFee,
-      feeSource: venueFee > 0 ? 'venue' : 'pending',
+      feeSource: venueFee > 0 ? 'venue' : 'est',
       mid: rec.mid != null ? Number(rec.mid) : null,
       filledValue: rec.filledValue != null ? Number(rec.filledValue) : null,
       notional,

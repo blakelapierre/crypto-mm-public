@@ -12,6 +12,107 @@ function pairToSym(productMap) {
   return m;
 }
 
+const quarantine = new Map();
+const scanStats = {
+  universe: 0, scanned: 0, wsMids: 0, restMids: 0, missing: 0,
+  batchErrors1h: [], bisectCalls1h: [], productsAt: null, lastScanAt: null,
+};
+function pruneHour(arr) {
+  const cut = Date.now() - 3600000;
+  while (arr.length && arr[0] < cut) arr.shift();
+  return arr.length;
+}
+export function scannerSnap() {
+  return {
+    universe: scanStats.universe,
+    scanned: scanStats.scanned,
+    wsMids: scanStats.wsMids,
+    restMids: scanStats.restMids,
+    missing: scanStats.missing,
+    batchErrors1h: pruneHour(scanStats.batchErrors1h),
+    bisectCalls1h: pruneHour(scanStats.bisectCalls1h),
+    quarantined: [...quarantine.entries()].map(([id, q]) => ({
+      id, status: q.status, untilPT: new Date(q.until).toISOString(),
+    })),
+    productsAt: scanStats.productsAt,
+    lastScanAt: scanStats.lastScanAt,
+  };
+}
+export function noteProductsAt(ts) { scanStats.productsAt = ts || new Date().toISOString(); }
+
+async function bidAskBatch(cfg, ids) {
+  return coinbaseRequest(
+    cfg, 'GET',
+    '/api/v3/brokerage/best_bid_ask?' + ids.map((id) => 'product_ids=' + encodeURIComponent(id)).join('&'),
+  );
+}
+function statusOf(err) {
+  const m = String(err && err.message || '').match(/Coinbase (\d+)/);
+  return m ? Number(m[1]) : 0;
+}
+async function fetchBooks(cfg, ids) {
+  const books = [];
+  const now = Date.now();
+  const live = [];
+  for (const id of ids) {
+    const q = quarantine.get(id);
+    if (q && now < q.until) continue;
+    if (q) {
+      try {
+        const data = await bidAskBatch(cfg, [id]);
+        quarantine.delete(id);
+        console.log('SCAN RELEASE ' + id);
+        for (const b of data.pricebooks || []) books.push(b);
+      } catch (e) {
+        const base = Number(process.env.VOL_QUARANTINE_MS || 21600000);
+        const ttl = Math.min(24 * 3600000, (q.ttl || base) * 2);
+        quarantine.set(id, { ...q, status: statusOf(e) || q.status, until: Date.now() + ttl, ttl });
+      }
+      continue;
+    }
+    live.push(id);
+  }
+  async function take(batch) {
+    if (!batch.length) return;
+    try {
+      const data = await bidAskBatch(cfg, batch);
+      for (const b of data.pricebooks || []) books.push(b);
+    } catch (e) {
+      const status = statusOf(e);
+      scanStats.batchErrors1h.push(Date.now());
+      if (!(status >= 400 && status < 500)) {
+        await sleep(200);
+        try {
+          const data = await bidAskBatch(cfg, batch);
+          for (const b of data.pricebooks || []) books.push(b);
+        } catch {
+          console.warn('vol scan batch skip', batch.join(','));
+        }
+        return;
+      }
+      if (batch.length === 1) {
+        const id = batch[0];
+        if (!quarantine.has(id)) console.log('SCAN QUARANTINE ' + id + ' ' + status);
+        const ttl = Number(process.env.VOL_QUARANTINE_MS || 21600000);
+        quarantine.set(id, { reason: '4xx', status, firstAt: Date.now(), until: Date.now() + ttl, ttl });
+        return;
+      }
+      scanStats.bisectCalls1h.push(Date.now());
+      const mid = Math.ceil(batch.length / 2);
+      await sleep(120);
+      await take(batch.slice(0, mid));
+      await sleep(120);
+      await take(batch.slice(mid));
+    }
+  }
+  const chunk = Number(process.env.VOL_SCAN_REST_CHUNK || 25);
+  for (let i = 0; i < live.length; i += chunk) {
+    await take(live.slice(i, i + chunk));
+    if (i + chunk < live.length) await sleep(120);
+  }
+  return books;
+}
+
 export async function fetchAllMids(cfg, productMap) {
   const mids = {};
   const rev = pairToSym(productMap);
@@ -37,30 +138,39 @@ export async function fetchAllMids(cfg, productMap) {
     const sym = rev.get(pair);
     return sym && !(mids[sym] > 0);
   });
-  if (!missing.length) return mids;
+  if (!missing.length) {
+    scanStats.universe = pairs.length;
+    scanStats.scanned = Object.keys(mids).length;
+    scanStats.wsMids = Object.keys(mids).length;
+    scanStats.restMids = 0;
+    scanStats.missing = 0;
+    scanStats.lastScanAt = new Date().toISOString();
+    return mids;
+  }
   if (process.env.VOL_SCAN_REST === '0') {
     if (missing.length) console.log('vol scan ws-only missing=' + missing.length);
     return mids;
   }
-  const chunk = Number(process.env.VOL_SCAN_REST_CHUNK || 25);
-  for (let i = 0; i < missing.length; i += chunk) {
-    const ids = missing.slice(i, i + chunk);
-    try {
-      const data = await coinbaseRequest(
-        cfg, 'GET',
-        '/api/v3/brokerage/best_bid_ask?' + ids.map((id) => 'product_ids=' + encodeURIComponent(id)).join('&')
-      );
-      for (const book of data.pricebooks || []) {
-        const bid = parseFloat((book.bids && book.bids[0] && book.bids[0].price) || 0);
-        const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
-        const sym = rev.get(book.product_id);
-        if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
-      }
-    } catch (e) {
-      console.warn('vol scan batch skip', ids.length, (e && e.message || '').slice(0, 80));
-    }
-    if (i + chunk < missing.length) await sleep(120);
+  const wsN = Object.keys(mids).length;
+  const books = await fetchBooks(cfg, missing);
+  for (const book of books) {
+    const bid = parseFloat((book.bids && book.bids[0] && book.bids[0].price) || 0);
+    const ask = parseFloat((book.asks && book.asks[0] && book.asks[0].price) || 0);
+    const sym = rev.get(book.product_id);
+    if (sym && bid && ask) mids[sym] = (bid + ask) / 2;
   }
+  const still = pairs.filter((pair) => {
+    const q = quarantine.get(pair);
+    if (q && Date.now() < q.until) return false;
+    const sym = rev.get(pair);
+    return sym && !(mids[sym] > 0);
+  });
+  scanStats.universe = pairs.length;
+  scanStats.scanned = Object.keys(mids).length;
+  scanStats.wsMids = wsN;
+  scanStats.restMids = Math.max(0, Object.keys(mids).length - wsN);
+  scanStats.missing = still.length;
+  scanStats.lastScanAt = new Date().toISOString();
   return mids;
 }
 

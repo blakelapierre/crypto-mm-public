@@ -114,7 +114,9 @@ export function createPnl() {
     const prevCash = lastCash;
     if (lastCash != null) {
       const d = cash - lastCash;
-      if (Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) console.log('CASH JUMP unconfirmed ' + d.toFixed(2) + ' not booked');
+      const recentFill = Date.now() - lastFillAt < 20000;
+      const recentXfer = Date.now() - recentTransferAt < 120000;
+      if (!recentFill && !recentXfer && Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) console.log('CASH JUMP unconfirmed ' + d.toFixed(2) + ' not booked');
     }
     markWallet(live.totalEquity);
     if (prevEq != null && Date.now() - lastFillAt > 60000) {

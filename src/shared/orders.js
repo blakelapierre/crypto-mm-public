@@ -4,6 +4,7 @@ import { noteVenueFee } from './fee-spread.js';
 import { postFill } from './status-client.js';
 import { consumeHoldSale } from './hold-pnl.js';
 import { midRing } from './mid-ring.js';
+import { noteStrandedFee } from './exit-book.js';
 
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
   const st = String(statusRaw || '').toUpperCase();
@@ -31,7 +32,7 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + ' fee=' + Number(rec.fee || 0).toFixed(4) + (venueFee > 0 ? '' : ' est'));
       if (pnl) pnl.recordFill(rec);
       if (String(rec.side).toLowerCase()==='sell') consumeHoldSale(rec.symbol || (rec.pair||'').split(/[-/]/)[0], rec.price, rec.size, rec.fee, rec.pair);
-      logFill(rec, { orderId, venueFee, feeSource: venueFee > 0 ? 'venue' : 'pending' });
+      logFill(rec, { orderId, venueFee, feeSource: venueFee > 0 ? 'venue' : 'est' });
       rec.pnlRecorded = true;
       rec.needFee = !(venueFee > 0);
       rec.filledAt = rec.filledAt || Date.now();
@@ -46,9 +47,11 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       const notional = rec.filledValue || (Number(rec.price || 0) * Number(rec.size || 0));
       noteVenueFee(venueFee, notional, rec.pair);
       logFeeUpdate(orderId, rec.fee, { pair: rec.pair, notional, src: 'venue' });
+      if (rec.why === 'stranded') noteStrandedFee(orderId, venueFee);
       postFill({
         orderId, pair: rec.pair, symbol: rec.symbol, side: rec.side, level: rec.level,
         price: rec.price, size: rec.size, fee: rec.fee, filledValue: rec.filledValue,
+        feeSource: 'venue', ts: rec.filledAt || Date.now(),
       });
     }
   } else if (['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(st)) {
@@ -59,7 +62,7 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       if (detail.avgPrice) rec.price = detail.avgPrice;
       if (detail.fee) rec.fee = Number(detail.fee);
       if (pnl) pnl.recordFill(rec);
-      logFill(rec, { orderId, venueFee: Number(rec.fee || 0), feeSource: rec.fee > 0 ? 'venue' : 'pending' });
+      logFill(rec, { orderId, venueFee: Number(rec.fee || 0), feeSource: rec.fee > 0 ? 'venue' : 'est' });
     } else rec.status = 'cancelled';
   }
 }

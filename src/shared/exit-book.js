@@ -1,18 +1,24 @@
 import { invalidateLiveCache } from './portfolio.js';
 
 const book = new Map();
-const fails = { insufficient: 0, decimals: 0, postOnly: 0, other: 0 };
+const fails = { insufficient: [], decimals: [], postOnly: [], other: [] };
 const takerLog = [];
 let lastDust = [];
 
 export function noteLimitFail(msg) {
   const s = String(msg || '');
-  if (/insufficient/i.test(s)) fails.insufficient += 1;
-  else if (/decimal/i.test(s)) fails.decimals += 1;
-  else if (/post.only|INVALID_LIMIT_PRICE/i.test(s)) fails.postOnly += 1;
-  else fails.other += 1;
+  const k = /insufficient/i.test(s) ? 'insufficient' : /decimal/i.test(s) ? 'decimals' : /post.only|INVALID_LIMIT_PRICE/i.test(s) ? 'postOnly' : 'other';
+  fails[k].push(Date.now());
 }
-export function limitFails() { return { ...fails }; }
+export function limitFails() {
+  const cut = Date.now() - 3600000;
+  const n = (arr) => arr.filter((t) => t >= cut).length;
+  return { insufficient1h: n(fails.insufficient), decimals1h: n(fails.decimals), postOnly1h: n(fails.postOnly), other1h: n(fails.other) };
+}
+export function noteStrandedFee(orderId, fee) {
+  const row = [...takerLog].reverse().find((t) => t.orderId === orderId);
+  if (row) row.fee = Number(fee) || 0;
+}
 export function dustList() { return lastDust; }
 export function strandedTakerSnap() {
   const hour = Date.now() - 3600000;
@@ -130,7 +136,7 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
             const id = r && ((r.success_response && r.success_response.order_id) || r.order_id);
             row.taker = true;
             const usd = qty * (midPx || b.mid);
-            takerLog.push({ ts: Date.now(), symbol: row.symbol, qty, usd, fee: 0 });
+            takerLog.push({ ts: Date.now(), symbol: row.symbol, qty, usd, fee: 0, orderId: id || null });
             console.log('  STRANDED TAKER ' + row.symbol + ' qty=' + qty + ' usd=' + usd.toFixed(2) + ' age=' + Math.round((Date.now() - row.since) / 60000) + 'm');
             if (id) orderRegistry.set(id, { orderId: id, pair: row.pair, symbol: row.symbol, side: 'sell', price: b.bid || b.mid, size: qty, status: 'open', why: 'stranded', taker: true, needFee: true, venue: 'coinbase' });
           }

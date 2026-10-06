@@ -11,7 +11,7 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
-import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo } from './strategy.js';
+import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo, quoteSnap } from './strategy.js';
 import { pathToFileURL } from 'url';
 let strat = { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo };
 async function reloadStrategy() {
@@ -21,7 +21,7 @@ async function reloadStrategy() {
   console.log('strategy reloaded');
 }
 process.on('SIGUSR2', () => { reloadStrategy().catch((e) => console.warn('reload', e.message)); });
-import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles, midHistory } from '../../shared/vol-scan.js';
+import { createVolScan, setSizeUniverse, sizeWeightForSymbol, volStatsForSymbol, topMovers, topVolatiles, midHistory, scannerSnap, noteProductsAt } from '../../shared/vol-scan.js';
 import { tapeEdgeBps, bookEdgeBps } from '../../shared/pair-tape.js';
 import { saveMmSet } from '../../shared/mm-set.js';
 import { realizedFeeBps, feeSnapshot } from '../../shared/fee-spread.js';
@@ -153,6 +153,17 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       await sleep(Number(process.env.VOL_ENTER_WAIT_MS || 0));
       while (true) {
         try {
+          if (!runMm._productsAt) { runMm._productsAt = Date.now(); noteProductsAt(new Date().toISOString()); }
+          if (Date.now() - runMm._productsAt > Number(process.env.PRODUCTS_REFRESH_MS || 1800000)) {
+            try {
+              const nextMap = await ex.getProducts();
+              for (const k of Object.keys(productMap)) if (!nextMap[k]) delete productMap[k];
+              Object.assign(productMap, nextMap);
+              runMm._productsAt = Date.now();
+              noteProductsAt(new Date().toISOString());
+              console.log('products refresh n=' + Object.keys(productMap).length);
+            } catch (e) { console.warn('products refresh', e.message); }
+          }
           const ranked = volScan.ranking();
           const now = Date.now();
           let live = null;
@@ -169,7 +180,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const rows = mmAlloc.map((a) => {
             const age = Math.round((now - (enteredAt.get(a.pair) || now)) / 60000);
             const exits = exitBook().some((e) => e.symbol === a.symbol);
-            return { symbol: a.symbol, state: 'in', why: exits ? 'exit queued' : (age < holdMin ? 'holding ' + age + '/' + holdMin + 'm' : 'quoting, held ' + age + 'm') };
+            const st = pairState.get(a.pair);
+            const openBids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
+            const openAsks = ((st && st.ladder && st.ladder.sells) || []).filter((o) => o.status === 'open').length;
+            const q = quoteSnap(a, st && st.ladder, live);
+            const label = (!openBids && !openAsks)
+              ? ('idle ' + age + 'm: bid=' + (q.bidWhy || 'ok') + ' ask=' + (q.askWhy || 'noInv'))
+              : (exits ? 'exit queued' : 'quoting, held ' + age + 'm');
+            return { symbol: a.symbol, state: 'in', why: label, quote: q };
           });
           for (const r of ranked.slice(0, 8)) {
             if (inSet.has(r.symbol)) continue;
@@ -183,7 +201,15 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const minUsd = Math.max(cfg.minOrderUsd || 1, mid > 0 ? minV * mid : cfg.minOrderUsd || 1);
             return minUsd * 2;
           }
-          const { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg });
+          const idlePairs = new Set();
+          for (const a of mmAlloc) {
+            const st = pairState.get(a.pair);
+            const bids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open');
+            const pos = live && live.positions && live.positions[a.symbol];
+            const usd = Number((pos && pos.valueQuote) || 0);
+            if (!bids.length && usd < Math.max(cfg.minOrderUsd || 1, 1)) idlePairs.add(a.pair);
+          }
+          const { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs } });
           if (leaving.length || additions.length) {
             if (leaving.length) console.log('MM exit ' + leaving.map((a) => a.symbol).join(',') + ' (>=' + (rotateMin / 60000) + 'm)');
             if (additions.length) console.log('MM enter ' + additions.map((a) => a.symbol + ' ' + Number(a.rangePct).toFixed(2) + '% ret=' + ((a.ret15 || 0) * 100).toFixed(2) + '%').join(', '));
@@ -192,6 +218,23 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             for (const a of leaving) {
               watch.set(a.pair, { ...a, leftAt: now });
               try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
+              if (ex.listOpen) {
+                const still = await ex.listOpen();
+                for (const o of still) {
+                  if (o.product_id !== a.pair || !o.order_id) continue;
+                  console.log('  CANCEL LEFTOVER ' + a.symbol + ' ' + o.order_id);
+                  orderRegistry.set(o.order_id, {
+                    orderId: o.order_id, pair: a.pair, symbol: a.symbol,
+                    side: String(o.side || '').toLowerCase(), status: 'open', orphan: true,
+                  });
+                }
+              }
+              const ret15 = midReturn(a.symbol, 15 * 60 * 1000);
+              const pos = live && live.positions && live.positions[a.symbol];
+              const qty = Number(pos && pos.amount || 0) + Number(pos && pos.hold || 0);
+              if (ret15 < Number(process.env.ROTATE_STOP_RET || -0.04) && qty > 0) {
+                queueExit(a.symbol, a.pair, qty, Number(pos && pos.mid || 0), { lotDecimals: a.lotDecimals, pairDecimals: a.pairDecimals });
+              }
               invalidateLiveCache();
               for (const rec of orderRegistry.values()) {
                 if (rec.pair === a.pair && rec.status === 'open') rec.orphan = true;
@@ -336,6 +379,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           heldUsd: holdInfo(a.symbol, Number(mid) || 0).usd,
           heldGain: holdInfo(a.symbol, Number(mid) || 0).gain,
           rising: midReturn(a.symbol) > 0,
+          quote: quoteSnap(a, (pairState.get(a.pair) || {}).ladder, liveSnap),
           why: (selection.rows.find((r) => r.symbol === a.symbol) || {}).why || 'in set',
         });
       }
@@ -400,7 +444,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           holdRealized: holdRealizedUsd(),
           holdFills: holdFills(),
         },
-        api: snapshotApi(), feesHist: feeSnapshot(), fees: feeReport(),
+        api: snapshotApi(), feesHist: feeSnapshot(),
+        fees: Object.assign(feeReport(), { pending: [...orderRegistry.values()].filter((r) => r.needFee).length }),
+        scanner: scannerSnap(),
         edgeBps: bookEdgeBps(),
         recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, notional || 1), gap1hUsd: gap1h, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [], unattributed: snap && snap.unattributed },
         exits: exitBook(),
