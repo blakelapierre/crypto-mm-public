@@ -239,13 +239,23 @@ async function ourOrders(cfg) {
 }
 
 function posFor(pos, rec) {
-  return pos.get(rec.pair) || pos.get(rec.altname) || pos.get(rec.wsname) || { short: 0, long: 0 };
+  const btnl = rec.orderPair || (rec.altname ? rec.altname + ':BTNL' : null);
+  return pos.get(rec.pair) || pos.get(rec.altname) || (btnl && pos.get(btnl)) || pos.get(rec.wsname) || { short: 0, long: 0 };
 }
 
 function ordersFor(orders, rec) {
-  const keys = new Set([rec.pair, rec.altname, rec.wsname, rec.symbol, rec.wsname && String(rec.wsname).replace('/', '')].filter(Boolean));
+  const btnl = rec.orderPair || (rec.altname ? rec.altname + ':BTNL' : null);
+  const keys = new Set([rec.pair, rec.altname, rec.wsname, rec.symbol, btnl, rec.wsname && String(rec.wsname).replace('/', '')].filter(Boolean));
   return orders.filter((o) => keys.has(o.pair));
 }
+
+// US retail margin is a different book from the international pairs. The order
+// pair is the altname plus :BTNL. The plain pair returns Reduce only:Non-ECP.
+const US_LEV = {
+  BTC: 20, ADA: 10, AVAX: 10, DOGE: 10, ETH: 10, LINK: 10, LTC: 10, SOL: 10, SUI: 10, XRP: 10,
+  AAVE: 5, BCH: 5, CRV: 5, DOT: 5, HBAR: 5, HYPE: 5, PEPE: 5, PAXG: 5, SHIB: 5, TRX: 5, UNI: 5, ZEC: 5,
+  PENGU: 3, NEAR: 3, RENDER: 3, ALGO: 2, XLM: 2,
+};
 
 export async function main() {
   loadProjectEnv(process.env.BOT_CONFIG || 'configs/margin.env');
@@ -266,8 +276,18 @@ export async function main() {
   const ex = createExchange(cfg, new Map());
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Missing Kraken keys');
   const products = await ex.getProducts('kraken');
-  const book = Object.entries(products).filter(([, r]) => r.shortable).map(([symbol, r]) => ({ ...r, symbol }));
+  let handsOff = new Set();
+  try {
+    const existing = await marginPos(cfg);
+    for (const [pair, p] of existing) {
+      if ((p.long > 0 || p.short > 0) && String(pair).startsWith('XBT')) handsOff.add('BTC');
+    }
+  } catch (e) { console.warn('positions', e.message); }
+  const book = Object.entries(products)
+    .filter(([symbol]) => US_LEV[symbol] && !handsOff.has(symbol))
+    .map(([symbol, r]) => ({ ...r, symbol, maxLev: US_LEV[symbol], orderPair: (r.altname || symbol + 'USD') + ':BTNL' }));
   console.log('kraken book pairs=' + book.length + ' live=' + live + ' clip=$' + clip + ' long=' + (longLev >= 2 ? longLev + 'x' : 'spot') + ' short=' + (canShort ? '2x' : 'off'));
+  if (handsOff.has('BTC')) console.log('  leaving the open BTC long alone');
   if (!useMargin) console.log('  margin opens are refused on this account (Non-ECP). longs are spot');
   if (!live) console.log('  dry run. set DRY_RUN=0 and SHORT_LIVE=1 to send orders');
   let ranked = [];
@@ -359,6 +379,12 @@ export async function main() {
           console.log('  CANCEL stale ' + o.side + ' ' + r.symbol);
         }
       }
+      const knownIds = new Set(book.flatMap((r) => ordersFor(orders, r).map((o) => o.id)));
+      for (const o of orders) {
+        if (knownIds.has(o.id)) continue;
+        if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
+        console.log('  CANCEL leftover ' + o.side + ' ' + o.pair);
+      }
       let shortUsd = 0;
       let longUsd = 0;
       for (const r of active) {
@@ -411,7 +437,7 @@ async function send(ex, row, side, order, live) {
   const tag = (live ? '  ' : '  DRY ') + side.toUpperCase() + ' ' + row.symbol + ' ' + order.size + ' @ ' + order.price + ' ' + (order.role || '');
   console.log(tag);
   if (!live) return;
-  const r = await ex.limitOrder(row.pair, side, order.price, order.size, {
+  const r = await ex.limitOrder((order.leverage >= 2 && row.orderPair) ? row.orderPair : row.pair, side, order.price, order.size, {
     level: 1, userref: USERREF, marginShort: !!order.marginShort, marginClose: !!order.marginClose, leverage: order.leverage || 0,
   }, 'kraken');
   if (!r || !r.order_id) {
