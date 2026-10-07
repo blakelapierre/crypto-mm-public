@@ -252,6 +252,60 @@ function ordersFor(orders, rec) {
   return orders.filter((o) => keys.has(o.pair));
 }
 
+const seenCancels = new Set();
+let cancelSince = Math.floor(Date.now() / 1000) - 24 * 3600;
+
+function cancelLogPath() {
+  return path.join(process.cwd(), 'logs', 'kraken-cancels.jsonl');
+}
+
+function loadSeenCancels() {
+  try {
+    for (const line of fs.readFileSync(cancelLogPath(), 'utf8').split('\n')) {
+      if (!line) continue;
+      const row = JSON.parse(line);
+      if (row.id) seenCancels.add(row.id);
+    }
+  } catch { /* none yet */ }
+}
+
+function noteCancel(row) {
+  if (!row || !row.id || seenCancels.has(row.id)) return;
+  seenCancels.add(row.id);
+  try {
+    fs.mkdirSync(path.dirname(cancelLogPath()), { recursive: true });
+    fs.appendFileSync(cancelLogPath(), JSON.stringify({ ts: new Date().toISOString(), ...row }) + '\n');
+  } catch (e) { console.warn('cancel log', e.message); }
+  console.log('  CANCELLED ' + (row.why || row.reason || '') + ' ' + row.side + ' ' + (row.symbol || row.pair) + ' @ ' + row.price);
+}
+
+async function ingestClosed(cfg, pages) {
+  let ofs = 0;
+  let newest = cancelSince;
+  for (let page = 0; page < pages; page++) {
+    const r = await krakenPrivate(cfg, 'ClosedOrders', { start: cancelSince, ofs });
+    const rows = Object.entries((r && r.closed) || {});
+    if (!rows.length) break;
+    for (const [id, o] of rows) {
+      const tm = Number(o.closetm || o.opentm || 0);
+      if (tm > newest) newest = tm;
+      const st = String(o.status || '');
+      if (st !== 'canceled' && st !== 'cancelled' && st !== 'expired') continue;
+      const d = o.descr || {};
+      const reason = o.reason || '';
+      const why = /post only/i.test(reason) ? 'post-only' : (/user requested/i.test(reason) ? 'user' : (reason || st));
+      noteCancel({
+        id, pair: d.pair, side: String(d.type || '').toLowerCase(), price: Number(d.price || 0),
+        size: Number(o.vol || 0), leverage: Number(String(d.leverage || '').split(':')[0]) || 0,
+        status: st, reason, why, userref: o.userref || '', opentm: o.opentm || null, closetm: o.closetm || null,
+      });
+    }
+    if (rows.length < 50) break;
+    ofs += rows.length;
+  }
+  cancelSince = Math.max(cancelSince, Math.floor(newest) - 120);
+}
+
 // US retail margin is a different book from the international pairs. The order
 // pair is the altname plus :BTNL. The plain pair returns Reduce only:Non-ECP.
 const US_LEV = {
@@ -302,12 +356,16 @@ export async function main() {
   if (handsOff.has('BTC')) console.log('  leaving the open BTC long alone');
   if (!useMargin) console.log('  margin opens are refused on this account (Non-ECP). longs are spot');
   if (!live) console.log('  dry run. set DRY_RUN=0 and SHORT_LIVE=1 to send orders');
+  loadSeenCancels();
   let ranked = [];
   let rankedAt = 0;
+  let cancelBoot = true;
   while (true) {
     try {
       const pos = await marginPos(cfg);
       const orders = await ourOrders(cfg);
+      await ingestClosed(cfg, cancelBoot ? 20 : 2);
+      cancelBoot = false;
       const acct = await tradeState(cfg);
       const equity = acct.equity;
       const freeMargin = acct.freeMargin;
@@ -387,15 +445,23 @@ export async function main() {
       for (const r of book) {
         if (activeSyms.has(r.symbol) || heldSyms.has(r.symbol)) continue;
         for (const o of ordersFor(orders, r)) {
-          if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
-          console.log('  CANCEL stale ' + o.side + ' ' + r.symbol);
+          if (live) {
+            try {
+              await ex.cancelOrder(o.id, 'kraken');
+              noteCancel({ id: o.id, pair: o.pair, symbol: r.symbol, side: o.side, price: o.price, size: o.size, leverage: o.leverage, why: 'stale' });
+            } catch { /* ignore */ }
+          }
         }
       }
       const knownIds = new Set(book.flatMap((r) => ordersFor(orders, r).map((o) => o.id)));
       for (const o of orders) {
         if (knownIds.has(o.id)) continue;
-        if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
-        console.log('  CANCEL leftover ' + o.side + ' ' + o.pair);
+        if (live) {
+          try {
+            await ex.cancelOrder(o.id, 'kraken');
+            noteCancel({ id: o.id, pair: o.pair, side: o.side, price: o.price, size: o.size, leverage: o.leverage, why: 'leftover' });
+          } catch { /* ignore */ }
+        }
       }
       let marginLeft = freeMargin;
       let shortUsd = 0;
@@ -426,8 +492,15 @@ export async function main() {
           const keepBid = o.side === 'buy' && q.bid && !drifted(o, q.bid.price) && sameLev(o);
           const keepAsk = o.side === 'sell' && q.ask && !drifted(o, q.ask.price) && sameLev(o);
           if (keepBid || keepAsk) continue;
-          if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
-          console.log('  CANCEL ' + o.side + ' ' + r.symbol + ' @ ' + o.price);
+          const target = o.side === 'buy' ? (q.bid && q.bid.price) : (q.ask && q.ask.price);
+          const why = !target ? 'flat' : (!sameLev(o) ? 'leverage' : 'drift');
+          const offBps = target ? Math.round((o.price - target) / target * 10000) : null;
+          if (live) {
+            try {
+              await ex.cancelOrder(o.id, 'kraken');
+              noteCancel({ id: o.id, pair: o.pair, symbol: r.symbol, side: o.side, price: o.price, size: o.size, leverage: o.leverage, why, offBps });
+            } catch { /* ignore */ }
+          }
           if (o.side === 'buy') bidOpen = false;
           else askOpen = false;
         }
