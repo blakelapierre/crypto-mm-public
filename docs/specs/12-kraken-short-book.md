@@ -1,27 +1,27 @@
-# Kraken short book
+# Kraken directional book
 
-The Coinbase ladder can only hold long inventory. On a down tape the spread still pays and the inventory gives it back. This is the same two-sided post-only book with the inventory sign flipped, on Kraken spot margin.
+Same post-only ladder as Coinbase, with a side for each tape. One name is never long and short at once. It does not flip until the open inventory is flat.
 
-## What it does
-- Universe is whatever Kraken marks `leverage_sell` on the quote (USD). No coin list. Microcaps the ladder trades are not in that set, so this does not hedge BLAST, SWELL, HONEY, and the rest.
-- Rank active names by the session range, then keep a name only when its current 15-minute bar is down (`ret < SHORT_OPEN_RET`, default 0) and the bar's range is at least `VOL_ENTER_PCT`.
-- Ask, post-only, `half = maker fee + min edge` above mid, opens or adds a short. Size is one clip, and the short on a name stops at `INV_NAME_MAX_FRAC` of equity.
-- Bid, post-only, the same distance below mid, only exists to cover. Its size is floored so it cannot exceed the open short. A buy never opens a long.
-- If the 15-minute bar is no longer down, asks are pulled. The cover bid stays until the short is flat.
-- Leverage is 2. That is the borrow, not a bigger clip. `CLIP_MAX_USD` stays 1.5.
-- Orders are tagged `userref=20261007`. The bot cancels only those.
-- `ALLOW_MARKET_EXIT` stays 0. Nothing crosses the spread.
+## Direction
+- 15-minute bar **flat or up** (`ret >= SHORT_OPEN_RET`, default 0), and range at least `VOL_ENTER_PCT`: **spot long**, the Coinbase shape. A bid below mid buys. An ask above mid sells, and is never larger than the spot this bot itself bought.
+- 15-minute bar **down**: **margin short** at 2x. An ask above mid opens or adds the short. A bid below mid only covers, and is never larger than the short.
+- While a long is still open and the bar flips down, only the ask stays. No short until the spot is sold. The mirror applies to an open short when the bar flips up.
+- Existing balances are baselined in `logs/margin-book-base.json` on first start. Coins already on the account are not sold. Delete that file only if you mean to re-base.
 
-## What it does not do
-- It loses on an up tape the same way the ladder loses on a down tape. Running both does not make a flat result unless the two books are the same assets. They are not.
-- It does not short a pair Kraken's margin pool will not lend. Some margin pairs have a short limit of 0 and are skipped.
-- Rollover is charged on the borrowed coin about every 4 hours. A short held across that window pays it on top of the maker fee.
+Clip stays $1.50. Per-name cap stays 25% of equity. Leverage 2 is the borrow on shorts, not a bigger order. Longs are spot, leverage 0. `ALLOW_MARKET_EXIT` stays 0. Orders use `userref=20261007`.
+
+Universe is Kraken pairs that have `leverage_sell`, so the same name can be long on an up bar and short on a down bar. That set is majors and larger alts, not the Coinbase microcaps.
 
 ## Run
-Dry by default. From the repo, with Kraken keys in the environment:
+Dry by default.
 
 ```
 node src/bots/margin/index.js
 ```
 
-Live sends only when both `DRY_RUN=0` and `SHORT_LIVE=1`. The web UI does not start this bot. `SHORT_BOOK=0` falls back to the old leveraged long ladder.
+Sends orders only when `DRY_RUN=0` and `SHORT_LIVE=1`. The web UI does not start it.
+
+## Cross-venue
+A locked arb is `bid` on one venue minus `ask` on the other, after both fees. Measured 2026-10-07 15:35Z across 20 overlapping USD books (BTC, ETH, SOL, and the liquid alts): mids differed by about 1–23 bps. The best locked cross was ADA at 18 bps, BTC at 2 bps. This account pays about 35 bps maker on Coinbase and 16 bps on Kraken, so the bar is about 51 bps before any buffer. Nothing cleared it. Taking both legs is worse, because the taker fee is higher than 35.
+
+`src/bots/xex` already does this check and then sends two market orders. It is not in the web UI. Its Coinbase fee was 6 bps, which would have traded a gap this account still loses on. That default is now 35. Do not run it until a locked cross is larger than both fees, both legs can rest as maker, and the coin and the quote are already sitting on both venues. Transferring after the fill is too slow to be the hedge. Two ladders quoting the same name are not an arb. They are two books.

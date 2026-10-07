@@ -411,7 +411,7 @@ export function createExchange(cfg, orderRegistry) {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
         if (cfg.postOnly) params.oflags = 'post';
         if (meta.userref) params.userref = String(meta.userref);
-        const lev = Number(cfg.marginLeverage || process.env.MARGIN_LEVERAGE || 0);
+        const lev = meta.leverage != null ? Number(meta.leverage) : Number(cfg.marginLeverage || process.env.MARGIN_LEVERAGE || 0);
         if (lev >= 2) params.leverage = String(lev);
         const r = await krakenPrivate(cfg, 'AddOrder', params);
         const oid = r.txid && r.txid[0];

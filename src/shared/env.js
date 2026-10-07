@@ -114,7 +114,7 @@ export function baseConfig() {
     maxHalfSpreadBps: envNum('MAX_HALF_SPREAD_BPS', 80),
     requoteMoveBps: envNum('REQUOTE_MOVE_BPS', 8),
     minEdgeBps: envNum('MIN_EDGE_BPS', 25),
-    feeBpsCoinbase: envNum('FEE_BPS_COINBASE', 6),
+    feeBpsCoinbase: envNum('FEE_BPS_COINBASE', 35),
     feeBpsKraken: envNum('FEE_BPS_KRAKEN', 16),
     maxNotionalPerTrade: envNum('MAX_NOTIONAL_PER_TRADE', 50),
     maxGrossExposure: envNum('MAX_GROSS_EXPOSURE', 250),
