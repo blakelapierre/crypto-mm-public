@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { setTimeout as sleep } from 'timers/promises';
 import { loadProjectEnv, baseConfig, envBool, envNum } from '../../shared/env.js';
@@ -13,6 +14,29 @@ import { formatPrice, normalizeAsset } from '../../shared/sizing.js';
 // A name cannot flip until that position is flat. Spot coins are not inventory.
 // They are sold for USD, which is how an XLM deposit becomes collateral.
 const USERREF = 20261007;
+const blocked = new Set();
+let forceRank = false;
+
+function blockedFile() {
+  return path.join(process.cwd(), 'logs', 'margin-reduce-only.json');
+}
+
+function loadBlocked() {
+  try {
+    for (const s of JSON.parse(fs.readFileSync(blockedFile(), 'utf8'))) blocked.add(s);
+  } catch { /* none yet */ }
+}
+
+function blockSymbol(symbol) {
+  if (!symbol || blocked.has(symbol)) return;
+  blocked.add(symbol);
+  forceRank = true;
+  try {
+    fs.mkdirSync(path.dirname(blockedFile()), { recursive: true });
+    fs.writeFileSync(blockedFile(), JSON.stringify([...blocked]));
+  } catch { /* keep it in memory */ }
+  console.log('  block ' + symbol + ' reduce-only');
+}
 
 export function floorVol(v, d) {
   const f = 10 ** (Number(d) || 0);
@@ -108,6 +132,23 @@ function candleNow(rows) {
   const close = Number(c[4]);
   if (!(open > 0) || !(close > 0)) return null;
   return { ret: (close - open) / open, range: (high - low) / close, mid: close };
+}
+
+async function marginAllowed(cfg, row) {
+  if (blocked.has(row.symbol)) return false;
+  const px = Number(row.last || row.mid || 0);
+  const vol = Math.max(Number(row.ordermin) || 0, px > 0 ? 1 / px : 0);
+  if (!(px > 0) || !(vol > 0)) return true;
+  try {
+    await krakenPrivate(cfg, 'AddOrder', {
+      pair: row.pair, type: 'buy', ordertype: 'limit', leverage: '2', oflags: 'post', validate: true,
+      price: String(formatPrice(px * 0.5, row.pairDecimals)), volume: String(vol),
+    });
+    return true;
+  } catch (e) {
+    if (/reduce only/i.test(e.message)) { blockSymbol(row.symbol); return false; }
+    return true;
+  }
 }
 
 async function ohlc15(pair) {
@@ -210,6 +251,7 @@ export async function main() {
   const half = (envNum('MAKER_FEE_BPS', 16) + envNum('MIN_EDGE_BPS', 20)) / 10000;
   const minUsd = envNum('MIN_ORDER_USD', 1);
   const reprice = envNum('REQUOTE_BPS', 8) / 10000;
+  loadBlocked();
   const ex = createExchange(cfg, new Map());
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Missing Kraken keys');
   const products = await ex.getProducts('kraken');
@@ -232,7 +274,8 @@ export async function main() {
         const p = posFor(pos, r);
         if (p.short > 0 || p.long > 0) heldSyms.add(r.symbol);
       }
-      if (Date.now() - rankedAt > 60000 || !ranked.length) {
+      if (forceRank || Date.now() - rankedAt > 60000 || !ranked.length) {
+        forceRank = false;
         const scored = [];
         for (let i = 0; i < book.length; i += 20) {
           const part = book.slice(i, i + 20);
@@ -254,7 +297,7 @@ export async function main() {
           const need = Math.max(minUsd, (Number(r.ordermin) || 0) * r.last);
           return need <= capUsd + 1e-9 && need <= freeMargin * 2 * 0.9 + 1e-9;
         };
-        const affordable = scored.filter((r) => r.dayRange > 0 && fit(r));
+        const affordable = scored.filter((r) => r.dayRange > 0 && fit(r) && !blocked.has(r.symbol));
         const top = affordable.slice(0, Math.max(maxPairs * 4, 12));
         console.log('  universe affordable=' + affordable.length + ' cap=$' + capUsd.toFixed(2));
         for (const r of book) if (heldSyms.has(r.symbol) && !top.some((t) => t.symbol === r.symbol)) top.push(r);
@@ -264,6 +307,7 @@ export async function main() {
           try { bar = await ohlc15(r.pair); } catch (e) { console.warn('ohlc', r.symbol, e.message); }
           await sleep(200);
           if (!bar) continue;
+          if (!(await marginAllowed(cfg, { ...r, last: bar.mid }))) continue;
           noteMid(r.symbol, bar.mid);
           ranked.push({ ...r, ret15: bar.ret, range: bar.range, mid: bar.mid });
         }
@@ -274,7 +318,7 @@ export async function main() {
         console.log('  scan down ' + (previewDn.map((r) => r.symbol + ' ' + (r.ret15 * 100).toFixed(2) + '%').join(', ') || '-'));
       }
       const active = [];
-      const tradable = ranked.filter((r) => r.range >= enter && r.ret15 != null).sort((a, b) => b.range - a.range);
+      const tradable = ranked.filter((r) => !blocked.has(r.symbol) && r.range >= enter && r.ret15 != null).sort((a, b) => b.range - a.range);
       for (const r of tradable) {
         if (active.length >= maxPairs) break;
         active.push(r);
@@ -337,7 +381,11 @@ async function send(ex, row, side, order, live) {
   const r = await ex.limitOrder(row.pair, side, order.price, order.size, {
     level: 1, userref: USERREF, marginShort: !!order.marginShort, marginClose: !!order.marginClose, leverage: order.leverage || 0,
   }, 'kraken');
-  if (!r || !r.order_id) console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + (r && (r.error || r.skipped) || 'no id'));
+  if (!r || !r.order_id) {
+    const msg = String((r && (r.error || r.skipped)) || 'no id');
+    console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + msg);
+    if (/reduce only/i.test(msg)) blockSymbol(row.symbol);
+  }
 }
 
 const self = fileURLToPath(import.meta.url);
