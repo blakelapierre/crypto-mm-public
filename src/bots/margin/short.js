@@ -370,8 +370,8 @@ export async function main() {
         const longQty = longLev >= 2 ? p.long : spotQty;
         const signal = snap.ret15 == null ? null : (snap.ret15 < openRet ? 'short' : 'long');
         const mine = ordersFor(orders, r);
-        const bidOpen = mine.some((o) => o.side === 'buy');
-        const askOpen = mine.some((o) => o.side === 'sell');
+        let bidOpen = mine.some((o) => o.side === 'buy');
+        let askOpen = mine.some((o) => o.side === 'sell');
         const q = decideBook({
           mid, half, clipUsd: clip, equity, capFrac, freeMargin, freeQuote, longLeverage: longLev, canShort,
           canLong: longLev >= 2 ? r.longable !== false : true,
@@ -381,16 +381,15 @@ export async function main() {
         shortUsd += p.short * mid;
         longUsd += longQty * mid;
         const drifted = (o, px) => !(px > 0) || Math.abs(o.price - px) / px >= reprice;
-        let cancelled = false;
         for (const o of mine) {
           const keepBid = o.side === 'buy' && q.bid && !drifted(o, q.bid.price);
           const keepAsk = o.side === 'sell' && q.ask && !drifted(o, q.ask.price);
           if (keepBid || keepAsk) continue;
           if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
           console.log('  CANCEL ' + o.side + ' ' + r.symbol + ' @ ' + o.price);
-          cancelled = true;
+          if (o.side === 'buy') bidOpen = false;
+          else askOpen = false;
         }
-        if (cancelled) continue;
         if (!q.bid && !q.ask) console.log('  skip ' + r.symbol + ' ' + (q.why || 'no-quote'));
         if (q.ask && !askOpen) await send(ex, r, 'sell', q.ask, live);
         if (q.bid && !bidOpen) await send(ex, r, 'buy', q.bid, live);
