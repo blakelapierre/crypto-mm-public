@@ -26,6 +26,13 @@ function clipSize(usd, px, qtyCap, lot, room) {
   return sz;
 }
 
+function targetUsd(clip, venueMin, room, freeMargin, lev) {
+  const ceiling = Math.min(room, freeMargin * lev * 0.9);
+  const want = Math.max(clip, venueMin);
+  if (want <= ceiling + 1e-9) return want;
+  return ceiling + 1e-9 >= venueMin ? ceiling : 0;
+}
+
 function okSize(sz, px, ordermin, minUsd, qtyCap) {
   if (!(sz > 0) || !(px > 0)) return false;
   if (sz + 1e-12 < ordermin) return false;
@@ -71,20 +78,20 @@ export function decideBook(x) {
   const shortRoom = cap - shortQty * mid;
   const longRoom = cap - longQty * mid;
   const affordable = (usd) => usd / lev <= freeMargin * 0.9 + 1e-9;
-  if (longQty <= 0 && signal === 'short' && !x.askOpen && shortRoom >= minUsd) {
-    let use = Math.min(clip, shortRoom);
-    if (!affordable(use)) use = Math.min(use, freeMargin * lev * 0.9);
-    const sz = clipSize(use, askPx, null, lot, use);
-    if (affordable(sz * askPx) && okSize(sz, askPx, ordermin, minUsd, null)) ask = { price: askPx, size: sz, leverage: lev, marginShort: true, role: 'short' };
-    else why.push(shortQty > 0 ? 'add-below-min' : 'open-below-min');
-  }
-  if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen && longRoom >= minUsd) {
-    let use = Math.min(clip, longRoom);
-    if (!affordable(use)) use = Math.min(use, freeMargin * lev * 0.9);
-    const sz = clipSize(use, bidPx, null, lot, use);
-    if (affordable(sz * bidPx) && okSize(sz, bidPx, ordermin, minUsd, null)) bid = { price: bidPx, size: sz, leverage: lev, marginShort: false, role: 'long' };
-    else why.push('bid-below-min');
-  }
+  const openAskMin = Math.max(minUsd, ordermin * askPx);
+  const openBidMin = Math.max(minUsd, ordermin * bidPx);
+  if (longQty <= 0 && signal === 'short' && !x.askOpen && shortRoom >= openAskMin) {
+    const use = targetUsd(clip, openAskMin, shortRoom, freeMargin, lev);
+    const sz = clipSize(use, askPx, null, lot, null);
+    if (use >= openAskMin && affordable(sz * askPx) && okSize(sz, askPx, ordermin, minUsd, null)) ask = { price: askPx, size: sz, leverage: lev, marginShort: true, role: 'short' };
+    else why.push(use > 0 ? (shortQty > 0 ? 'add-below-min' : 'open-below-min') : 'min-over-cap');
+  } else if (longQty <= 0 && signal === 'short' && !x.askOpen) why.push('min-over-cap');
+  if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen && longRoom >= openBidMin) {
+    const use = targetUsd(clip, openBidMin, longRoom, freeMargin, lev);
+    const sz = clipSize(use, bidPx, null, lot, null);
+    if (use >= openBidMin && affordable(sz * bidPx) && okSize(sz, bidPx, ordermin, minUsd, null)) bid = { price: bidPx, size: sz, leverage: lev, marginShort: false, role: 'long' };
+    else why.push(use > 0 ? 'bid-below-min' : 'min-over-cap');
+  } else if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen) why.push('min-over-cap');
   if (shortQty > 0 && signal !== 'short') why.push('flatten-short');
   if (longQty > 0 && signal === 'short') why.push('flatten-long');
   if (!canLong && signal === 'long' && longQty <= 0) why.push('no-long-margin');
@@ -242,7 +249,14 @@ export async function main() {
           }
         }
         scored.sort((a, b) => b.dayRange - a.dayRange);
-        const top = scored.filter((r) => r.dayRange > 0).slice(0, Math.max(maxPairs * 4, 12));
+        const capUsd = equity * capFrac;
+        const fit = (r) => {
+          const need = Math.max(minUsd, (Number(r.ordermin) || 0) * r.last);
+          return need <= capUsd + 1e-9 && need <= freeMargin * 2 * 0.9 + 1e-9;
+        };
+        const affordable = scored.filter((r) => r.dayRange > 0 && fit(r));
+        const top = affordable.slice(0, Math.max(maxPairs * 4, 12));
+        console.log('  universe affordable=' + affordable.length + ' cap=$' + capUsd.toFixed(2));
         for (const r of book) if (heldSyms.has(r.symbol) && !top.some((t) => t.symbol === r.symbol)) top.push(r);
         ranked = [];
         for (const r of top) {
@@ -299,6 +313,7 @@ export async function main() {
           cancelled = true;
         }
         if (cancelled) continue;
+        if (!q.bid && !q.ask) console.log('  skip ' + r.symbol + ' ' + (q.why || 'no-quote'));
         if (q.ask && !askOpen) await send(ex, r, 'sell', q.ask, live);
         if (q.bid && !bidOpen) await send(ex, r, 'buy', q.bid, live);
       }
