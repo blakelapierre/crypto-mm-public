@@ -1222,7 +1222,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const drop = [...ladder.buys, ...ladder.sells].filter((o) => {
       if (!(o.status === 'open' && Number(o.level) > wantLv)) return false;
       if (o.cover || (o.side === 'sell' && Number(o.level) === 1)) return false;
-      if (String(o.side).toLowerCase() === 'buy' && Number(o.level) <= keepBids) return false;
+      if (String(o.side).toLowerCase() === 'buy') return false;
       return true;
     });
     if (drop.length) {
