@@ -1111,16 +1111,27 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
 export function siblingHasBareBids(pairState, selfPair, live) {
   const names = (liveMmAlloc && liveMmAlloc.length) ? liveMmAlloc : [];
   if (!names.length) return false;
+  const bookLive = live || lastLive;
+  const bidsOf = (a) => {
+    const st = pairState && pairState.get(a.pair);
+    return ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
+  };
+  if (!names.some((a) => bidsOf(a) > 0)) {
+    const ranked = [...names].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
+    let leader = null;
+    for (const a of ranked) {
+      if (bidGate(a, bookLive, { skipSibling: true }).ok) { leader = a.pair; break; }
+    }
+    if (!leader || leader === selfPair) return false;
+    return true;
+  }
   const self = names.find((x) => x.pair === selfPair);
   const wSelf = self ? sizeWeightForSymbol(self.symbol) : 0;
-  const bookLive = live || lastLive;
   for (const a of names) {
     if (a.pair === selfPair) continue;
     if (sizeWeightForSymbol(a.symbol) <= wSelf + 0.05) continue;
     if (!bidGate(a, bookLive, { skipSibling: true }).ok) continue;
-    const st = pairState && pairState.get(a.pair);
-    const n = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
-    if (n === 0) return true;
+    if (bidsOf(a) === 0) return true;
   }
   return false;
 }
