@@ -8,9 +8,9 @@ import { krakenPrivate, krakenPublic } from '../../shared/kraken.js';
 import { noteMid } from '../../shared/mid-ring.js';
 import { formatPrice, normalizeAsset } from '../../shared/sizing.js';
 
-// Kraken directional book. Both sides are 2x spot margin, so a position ties up about
-// half its notional. Up or flat 15m bar: a bid opens or adds a long, an ask only
-// closes it. Down bar: an ask opens or adds a short, a bid only covers it.
+// Kraken directional book. Both sides use max margin, so a position ties up notional/leverage.
+// Up or flat over the trailing 15 minutes: a bid opens or adds a long, an ask only
+// closes it. Down: an ask opens or adds a short, a bid only covers it.
 // A name cannot flip until that position is flat. Spot coins are not inventory.
 // They are sold for USD, which is how an XLM deposit becomes collateral.
 const USERREF = 20261007;
@@ -133,14 +133,21 @@ export function decideBook(x) {
   return { bid, ask, why: why.filter(Boolean).join(',') || 'ok' };
 }
 
-function candleNow(rows) {
-  if (!Array.isArray(rows) || !rows.length) return null;
-  const c = rows[rows.length - 1];
-  const open = Number(c[1]);
-  const high = Number(c[2]);
-  const low = Number(c[3]);
-  const close = Number(c[4]);
-  if (!(open > 0) || !(close > 0)) return null;
+function rolling15(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return null;
+  const start = Math.floor(Date.now() / 1000) - 15 * 60;
+  const window = rows.filter((c) => Number(c[0]) >= start);
+  if (window.length < 2) return null;
+  const open = Number(window[0][1]);
+  const close = Number(window[window.length - 1][4]);
+  let high = 0;
+  let low = Infinity;
+  for (const c of window) {
+    high = Math.max(high, Number(c[2]));
+    const lo = Number(c[3]);
+    if (lo > 0) low = Math.min(low, lo);
+  }
+  if (!(open > 0) || !(close > 0) || !(high >= low) || !Number.isFinite(low)) return null;
   return { ret: (close - open) / open, range: (high - low) / close, mid: close };
 }
 
@@ -162,9 +169,9 @@ async function marginAllowed(cfg, row) {
 }
 
 async function ohlc15(pair) {
-  const data = await krakenPublic('OHLC', { pair, interval: 15 });
+  const data = await krakenPublic('OHLC', { pair, interval: 1 });
   const key = Object.keys(data || {}).find((k) => k !== 'last');
-  return candleNow(key ? data[key] : null);
+  return rolling15(key ? data[key] : null);
 }
 
 async function spotBalances(cfg) {
