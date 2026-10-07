@@ -79,8 +79,11 @@ export function decideBook(x) {
   const lot = x.lotDecimals ?? 8;
   const pxd = x.pairDecimals ?? 5;
   const lev = Number(x.leverage) || 2;
-  const freeMargin = x.freeMargin == null ? Infinity : Math.max(0, Number(x.freeMargin) || 0);
+  const longLev = x.longLeverage == null ? lev : Number(x.longLeverage);
+  const canShort = x.canShort !== false;
+  const freeQuote = x.freeQuote == null ? Infinity : Math.max(0, Number(x.freeQuote) || 0);
   const canLong = x.canLong !== false;
+  const freeMargin = x.freeMargin == null ? Infinity : Math.max(0, Number(x.freeMargin) || 0);
   const signal = x.signal === 'long' || x.signal === 'short' ? x.signal : null;
   if (!(mid > 0) || !(half > 0)) return { bid: null, ask: null, why: 'no-mid' };
   const askPx = formatPrice(mid * (1 + half), pxd);
@@ -95,8 +98,10 @@ export function decideBook(x) {
     else why.push('cover-below-min');
   }
   if (longQty > 0 && shortQty <= 0 && !x.askOpen) {
-    const sz = clipSize(clip, askPx, longQty, lot, null);
-    if (okSize(sz, askPx, ordermin, minUsd, longQty)) ask = { price: askPx, size: sz, leverage: lev, marginClose: true, role: 'close' };
+    const exitLev = longLev >= 2 ? lev : 0;
+    const need = Math.max(clip, ordermin * askPx);
+    const sz = clipSize(Math.min(need, longQty * askPx), askPx, longQty, lot, null);
+    if (okSize(sz, askPx, ordermin, minUsd, longQty)) ask = { price: askPx, size: sz, leverage: exitLev, marginClose: exitLev >= 2, role: 'close' };
     else why.push('close-below-min');
   }
   const shortRoom = cap - shortQty * mid;
@@ -104,16 +109,19 @@ export function decideBook(x) {
   const affordable = (usd) => usd / lev <= freeMargin * 0.9 + 1e-9;
   const openAskMin = Math.max(minUsd, ordermin * askPx);
   const openBidMin = Math.max(minUsd, ordermin * bidPx);
-  if (longQty <= 0 && signal === 'short' && !x.askOpen && shortRoom >= openAskMin) {
+  if (canShort && longQty <= 0 && signal === 'short' && !x.askOpen && shortRoom >= openAskMin) {
     const use = targetUsd(clip, openAskMin, shortRoom, freeMargin, lev);
     const sz = clipSize(use, askPx, null, lot, null);
     if (use >= openAskMin && affordable(sz * askPx) && okSize(sz, askPx, ordermin, minUsd, null)) ask = { price: askPx, size: sz, leverage: lev, marginShort: true, role: 'short' };
     else why.push(use > 0 ? (shortQty > 0 ? 'add-below-min' : 'open-below-min') : 'min-over-cap');
-  } else if (longQty <= 0 && signal === 'short' && !x.askOpen) why.push('min-over-cap');
+  } else if (canShort && longQty <= 0 && signal === 'short' && !x.askOpen) why.push('min-over-cap');
+  else if (!canShort && signal === 'short' && shortQty <= 0 && longQty <= 0) why.push('no-margin');
   if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen && longRoom >= openBidMin) {
-    const use = targetUsd(clip, openBidMin, longRoom, freeMargin, lev);
+    const cash = longLev >= 2 ? freeMargin * lev * 0.9 : freeQuote * 0.98;
+    const use = targetUsd(clip, openBidMin, longRoom, cash, longLev >= 2 ? lev : 1);
     const sz = clipSize(use, bidPx, null, lot, null);
-    if (use >= openBidMin && affordable(sz * bidPx) && okSize(sz, bidPx, ordermin, minUsd, null)) bid = { price: bidPx, size: sz, leverage: lev, marginShort: false, role: 'long' };
+    const fitsCash = longLev >= 2 || sz * bidPx <= freeQuote * 0.98 + 1e-9;
+    if (use >= openBidMin && fitsCash && okSize(sz, bidPx, ordermin, minUsd, null)) bid = { price: bidPx, size: sz, leverage: longLev, marginShort: false, role: 'long' };
     else why.push(use > 0 ? 'bid-below-min' : 'min-over-cap');
   } else if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen) why.push('min-over-cap');
   if (shortQty > 0 && signal !== 'short') why.push('flatten-short');
@@ -175,7 +183,7 @@ async function tradeState(cfg) {
 }
 
 async function sweepSpot(cfg, products, bals, live) {
-  const held = Object.entries(bals).filter(([s, q]) => q > 0 && !CASH.has(s) && products[s]);
+  const held = Object.entries(bals).filter(([s, q]) => q > 0 && s === 'XLM' && products[s]);
   if (!held.length) return;
   let tick = {};
   try { tick = await krakenPublic('Ticker', { pair: held.map(([s]) => products[s].pair).join(',') }); }
@@ -251,12 +259,16 @@ export async function main() {
   const half = (envNum('MAKER_FEE_BPS', 16) + envNum('MIN_EDGE_BPS', 20)) / 10000;
   const minUsd = envNum('MIN_ORDER_USD', 1);
   const reprice = envNum('REQUOTE_BPS', 8) / 10000;
+  const longLev = envNum('MARGIN_LONG', 0);
+  const canShort = envBool('MARGIN_SHORT', false);
+  const useMargin = canShort || longLev >= 2;
   loadBlocked();
   const ex = createExchange(cfg, new Map());
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Missing Kraken keys');
   const products = await ex.getProducts('kraken');
   const book = Object.entries(products).filter(([, r]) => r.shortable).map(([symbol, r]) => ({ ...r, symbol }));
-  console.log('kraken book pairs=' + book.length + ' live=' + live + ' clip=$' + clip + ' long=2x short=2x');
+  console.log('kraken book pairs=' + book.length + ' live=' + live + ' clip=$' + clip + ' long=' + (longLev >= 2 ? longLev + 'x' : 'spot') + ' short=' + (canShort ? '2x' : 'off'));
+  if (!useMargin) console.log('  margin opens are refused on this account (Non-ECP). longs are spot');
   if (!live) console.log('  dry run. set DRY_RUN=0 and SHORT_LIVE=1 to send orders');
   let ranked = [];
   let rankedAt = 0;
@@ -268,11 +280,16 @@ export async function main() {
       const equity = acct.equity;
       const freeMargin = acct.freeMargin;
       const bals = await spotBalances(cfg);
+      let reservedBids = 0;
+      for (const o of orders) if (o.side === 'buy') reservedBids += Number(o.price) * Number(o.size);
+      const freeQuote = Math.max(0, Number(bals.USD || 0) - reservedBids);
       await sweepSpot(cfg, products, bals, live);
       const heldSyms = new Set();
       for (const r of book) {
         const p = posFor(pos, r);
-        if (p.short > 0 || p.long > 0) heldSyms.add(r.symbol);
+        const mark = Number((ranked.find((x) => x.symbol === r.symbol) || {}).mid || 0);
+        const spotUsd = longLev >= 2 ? 0 : Number(bals[r.symbol] || 0) * mark;
+        if (p.short > 0 || p.long > 0 || spotUsd >= minUsd) heldSyms.add(r.symbol);
       }
       if (forceRank || Date.now() - rankedAt > 60000 || !ranked.length) {
         forceRank = false;
@@ -295,9 +312,10 @@ export async function main() {
         const capUsd = equity * capFrac;
         const fit = (r) => {
           const need = Math.max(minUsd, (Number(r.ordermin) || 0) * r.last);
-          return need <= capUsd + 1e-9 && need <= freeMargin * 2 * 0.9 + 1e-9;
+          const budget = useMargin ? freeMargin * 2 * 0.9 : freeQuote;
+          return need <= capUsd + 1e-9 && need <= budget + 1e-9;
         };
-        const affordable = scored.filter((r) => r.dayRange > 0 && fit(r) && !blocked.has(r.symbol));
+        const affordable = scored.filter((r) => r.dayRange > 0 && fit(r) && !(useMargin && blocked.has(r.symbol)));
         const top = affordable.slice(0, Math.max(maxPairs * 4, 12));
         console.log('  universe affordable=' + affordable.length + ' cap=$' + capUsd.toFixed(2));
         for (const r of book) if (heldSyms.has(r.symbol) && !top.some((t) => t.symbol === r.symbol)) top.push(r);
@@ -307,7 +325,7 @@ export async function main() {
           try { bar = await ohlc15(r.pair); } catch (e) { console.warn('ohlc', r.symbol, e.message); }
           await sleep(200);
           if (!bar) continue;
-          if (!(await marginAllowed(cfg, { ...r, last: bar.mid }))) continue;
+          if (useMargin && !(await marginAllowed(cfg, { ...r, last: bar.mid }))) continue;
           noteMid(r.symbol, bar.mid);
           ranked.push({ ...r, ret15: bar.ret, range: bar.range, mid: bar.mid });
         }
@@ -318,7 +336,7 @@ export async function main() {
         console.log('  scan down ' + (previewDn.map((r) => r.symbol + ' ' + (r.ret15 * 100).toFixed(2) + '%').join(', ') || '-'));
       }
       const active = [];
-      const tradable = ranked.filter((r) => !blocked.has(r.symbol) && r.range >= enter && r.ret15 != null).sort((a, b) => b.range - a.range);
+      const tradable = ranked.filter((r) => !(useMargin && blocked.has(r.symbol)) && r.range >= enter && r.ret15 != null).sort((a, b) => b.range - a.range);
       for (const r of tradable) {
         if (active.length >= maxPairs) break;
         active.push(r);
@@ -335,17 +353,20 @@ export async function main() {
         const mid = Number(snap.mid || snap.last || 0);
         if (!(mid > 0)) continue;
         const p = posFor(pos, r);
+        const spotQty = Number(bals[r.symbol] || 0);
+        const longQty = longLev >= 2 ? p.long : spotQty;
         const signal = snap.ret15 == null ? null : (snap.ret15 < openRet ? 'short' : 'long');
         const mine = ordersFor(orders, r);
         const bidOpen = mine.some((o) => o.side === 'buy');
         const askOpen = mine.some((o) => o.side === 'sell');
         const q = decideBook({
-          mid, half, clipUsd: clip, equity, capFrac, freeMargin, canLong: r.longable !== false,
-          shortQty: p.short, longQty: p.long,
+          mid, half, clipUsd: clip, equity, capFrac, freeMargin, freeQuote, longLeverage: longLev, canShort,
+          canLong: longLev >= 2 ? r.longable !== false : true,
+          shortQty: p.short, longQty,
           signal, bidOpen, askOpen, minUsd, ordermin: r.ordermin, lotDecimals: r.lotDecimals, pairDecimals: r.pairDecimals,
         });
         shortUsd += p.short * mid;
-        longUsd += p.long * mid;
+        longUsd += longQty * mid;
         const drifted = (o, px) => !(px > 0) || Math.abs(o.price - px) / px >= reprice;
         let cancelled = false;
         for (const o of mine) {
