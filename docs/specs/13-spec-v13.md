@@ -1,4 +1,4 @@
-# crypto-mm ladder: spec v13 (Oct 7, 2026, 5:05 PM PT)
+# crypto-mm ladder: spec v13 (Oct 7, 2026, 4:55 PM PT)
 
 ## Design intent (read first)
 - **What the bot is:** a **post-only, two-sided spread capturer**. It keeps a bid and an ask per coin outside the fee. After a fill it places another order on the same side and skews the other side.
