@@ -84,8 +84,9 @@ export function createExchange(cfg, orderRegistry) {
         if (qq !== q) continue;
         if (STABLECOINS.has(b) || KEEP_ASSETS.has(b)) continue;
         const base = b === 'XBT' ? 'BTC' : b;
-        if (map[base]) continue;
-        const rec = { venue: 'kraken', pair: k, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0, baseMin: parseFloat(v.ordermin || '0') || 0, baseInc: 10 ** -(v.lot_decimals ?? 8), quoteMin: Number(process.env.MIN_ORDER_USD || 1) };
+        const shortable = Array.isArray(v.leverage_sell) && v.leverage_sell.length > 0;
+        if (map[base] && (map[base].shortable || !shortable)) continue;
+        const rec = { venue: 'kraken', pair: k, altname: v.altname || null, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0, baseMin: parseFloat(v.ordermin || '0') || 0, baseInc: 10 ** -(v.lot_decimals ?? 8), quoteMin: Number(process.env.MIN_ORDER_USD || 1), shortable, leverageSell: v.leverage_sell || [] };
         map[base] = rec; pairMeta.set(k, rec); if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
@@ -262,7 +263,13 @@ export function createExchange(cfg, orderRegistry) {
         heldReserve = null;
         if (keepId) reserveSell(base, volume, keepId);
       };
-      if (isSell) {
+      if (isSell && meta.marginShort) {
+        const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+        const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
+        if (!(Number(volume) > 0) || Number(volume) + 1e-12 < minV0 || Number(volume) * Number(price) + 1e-12 < quoteMin0) {
+          return { skipped: 'belowMin' };
+        }
+      } else if (isSell) {
         const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
         const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
         if (!(Number(volume) > 0) || Number(volume) + 1e-12 < minV0 || Number(volume) * Number(price) + 1e-12 < quoteMin0) {
@@ -403,6 +410,7 @@ export function createExchange(cfg, orderRegistry) {
       try {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
         if (cfg.postOnly) params.oflags = 'post';
+        if (meta.userref) params.userref = String(meta.userref);
         const lev = Number(cfg.marginLeverage || process.env.MARGIN_LEVERAGE || 0);
         if (lev >= 2) params.leverage = String(lev);
         const r = await krakenPrivate(cfg, 'AddOrder', params);
