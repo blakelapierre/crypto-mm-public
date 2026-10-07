@@ -18,6 +18,8 @@ function usd(pnl) {
   pnl.markHoldings(snapLive(20, 20));
   const u0 = pnl.snapshot().unattributed;
   pnl.markHoldings(snapLive(30, 30));
+  check(pnl.snapshot().transfers.length === 0, 'a first mark waits');
+  pnl.markHoldings(snapLive(30, 30));
   const s = pnl.snapshot();
   check(s.transfers.length === 1 && Math.abs(s.transfers[0].usd - 10) < 1e-6, 'a +10 one transfer');
   check(s.unattributed === u0, 'a unattributed unchanged');
@@ -35,6 +37,11 @@ function usd(pnl) {
     AAA: { amount: 1, hold: 0, mid: 2 },
     BBB: { amount: 1, hold: 0, mid: 4 },
   }));
+  check(pnl.snapshot().transfers.length === 0, 'b first mark waits');
+  pnl.markHoldings(snapLive(24, 30, {
+    AAA: { amount: 1, hold: 0, mid: 2 },
+    BBB: { amount: 1, hold: 0, mid: 4 },
+  }));
   const s = pnl.snapshot();
   check(s.transfers.length === 1 && Math.abs(s.transfers[0].usd - 10) < 1e-6, 'b +10 during two fills');
   check(s.unattributed === u0, 'b unattributed unchanged');
@@ -43,6 +50,8 @@ function usd(pnl) {
 {
   const pnl = createPnl();
   pnl.markHoldings(snapLive(20, 20));
+  pnl.markHoldings(snapLive(15, 15));
+  check(pnl.snapshot().transfers.length === 0, 'c first mark waits');
   pnl.markHoldings(snapLive(15, 15));
   const s = pnl.snapshot();
   check(s.transfers.length === 1 && Math.abs(s.transfers[0].usd + 5) < 1e-6, 'c withdrawal -5');
@@ -54,6 +63,14 @@ function usd(pnl) {
   pnl.recordFill({ symbol: 'AAA', side: 'buy', size: 2, price: 3, fee: 0 });
   pnl.markHoldings(snapLive(14, 20, { AAA: { amount: 2, hold: 0, mid: 3 } }));
   check(pnl.snapshot().transfers.length === 0, 'e fill-only cash move is not a transfer');
+}
+
+{
+  const pnl = createPnl();
+  pnl.markHoldings({ freeQuote: 20, quoteHold: 0, totalEquity: 20, positionsValue: 0, positions: {} });
+  pnl.markHoldings({ freeQuote: 18.5, quoteHold: 1.5, totalEquity: 20, positionsValue: 0, positions: {} });
+  pnl.markHoldings({ freeQuote: 20, quoteHold: 0, totalEquity: 20, positionsValue: 0, positions: {} });
+  check(pnl.snapshot().transfers.length === 0, 'f bid placed and cancelled is not a transfer');
 }
 
 if (failed) {

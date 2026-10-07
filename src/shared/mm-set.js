@@ -27,7 +27,7 @@ export function loadMmSet() {
   }
 }
 
-export function saveMmSet(alloc) {
+export function saveMmSet(alloc, setState) {
   if (botName() === 'comp') return;
   const dest = filePath();
   if (!dest || !alloc || !alloc.length) return;
@@ -35,7 +35,13 @@ export function saveMmSet(alloc) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const symbols = [...new Set(alloc.map((a) => String(a.symbol || '').toUpperCase()).filter(Boolean))];
     const pairs = alloc.map((a) => a.pair).filter(Boolean);
-    fs.writeFileSync(dest, JSON.stringify({ ts: new Date().toISOString(), symbols, pairs }, null, 2));
+    const body = { ts: new Date().toISOString(), symbols, pairs };
+    if (setState && setState.version) {
+      body.version = setState.version;
+      body.updatedAt = setState.updatedAt;
+      body.set = setState.pairs || [];
+    }
+    fs.writeFileSync(dest, JSON.stringify(body, null, 2));
   } catch (e) {
     console.warn('mm-set save', e.message);
   }

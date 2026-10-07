@@ -105,6 +105,9 @@ export function createPnl() {
   let lastCash = null;
   let lastPosValue = null;
   let lastCashDelta = 0;
+  let sinceFill = 0;
+  let pendingHits = 0;
+  let pendingUsd = 0;
   function unexplainedCashMove() {
     return Math.abs(lastCashDelta) >= Number(process.env.DEPOSIT_DETECT_USD || 1) && Date.now() - recentTransferAt > 15000;
   }
@@ -157,19 +160,54 @@ export function createPnl() {
         if (midUse > 0) qtyVal += (qb - qa) * midUse;
       }
     }
+    sinceFill += fillCash;
+    fillCash = 0;
+    let commit = true;
     if (prevEq != null && dCash != null && startEquity != null) {
       const step = Number(live.totalEquity) - prevEq;
-      const residual = step - mtm - qtyVal - fillCash;
-      const residualCash = dCash - fillCash;
+      const residual = step - mtm - qtyVal - sinceFill;
+      const residualCash = dCash - sinceFill;
       const minDep = Number(process.env.DEPOSIT_DETECT_USD || 1);
       const tol = Math.max(0.05, Math.abs(residualCash) * 0.02);
-      if (Math.abs(residualCash) >= minDep && Math.abs(residual - residualCash) <= tol) {
-        const bucket = Math.floor(Date.now() / 60000);
-        noteTransfer(residualCash, 'cash-residual', 'cash-residual:' + bucket + ':' + residualCash.toFixed(2));
+      const hit = Math.abs(residualCash) >= minDep && Math.abs(residual - residualCash) <= tol;
+      if (hit) {
+        if (pendingHits > 0 && Math.abs(pendingUsd - residualCash) <= tol) pendingHits += 1;
+        else { pendingHits = 1; pendingUsd = residualCash; }
+        if (pendingHits >= 2) {
+          const bucket = Math.floor(Date.now() / 60000);
+          noteTransfer(pendingUsd, 'cash-residual', 'cash-residual:' + bucket + ':' + pendingUsd.toFixed(2));
+          pendingHits = 0;
+          pendingUsd = 0;
+          sinceFill = 0;
+        } else {
+          commit = false;
+          lastEquity = prevEq;
+        }
+      } else {
+        pendingHits = 0;
+        pendingUsd = 0;
+        sinceFill = 0;
       }
+    } else {
+      sinceFill = 0;
     }
-    fillCash = 0;
-    if (prevEq != null && dCash != null && startEquity != null) {
+    if (!commit) {
+      for (const [raw, p] of Object.entries(live.positions || {})) {
+        const sym = key(raw);
+        const mid = Number(p.mid) || 0;
+        const qty = Number(p.amount || 0) + Number(p.hold || 0);
+        if (!primed) {
+          inv.set(sym, qty);
+          if (mid > 0) lastMid.set(sym, mid);
+        } else {
+          accruePrice(sym, mid);
+          inv.set(sym, qty);
+        }
+      }
+      primed = true;
+      return;
+    }
+    if (prevEq != null && dCash != null && startEquity != null && pendingHits === 0) {
       const step = Number(live.totalEquity) - prevEq;
       const tol = Math.max(0.05, Math.abs(step) * 0.01);
       const noFill = Date.now() - lastFillAt > 60000;

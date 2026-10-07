@@ -154,7 +154,27 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     if (liveVol) (async () => {
       const enteredAt = new Map();
       const watch = new Map();
-      for (const a of mmAlloc) enteredAt.set(a.pair, Date.now());
+      runMm._entered = enteredAt;
+      runMm._watch = watch;
+      function commitSet(reason) {
+        runMm._setVersion = (runMm._setVersion || 0) + 1;
+        runMm._setAt = Date.now();
+        const pairs = mmAlloc.map((a) => ({
+          symbol: a.symbol, pair: a.pair, role: 'in',
+          enteredAt: enteredAt.get(a.pair) || Date.now(),
+          rangePct: a.rangePct != null ? a.rangePct : null,
+          ret15: a.ret15 != null ? a.ret15 : null,
+          selectedBy: a.selectedBy || 'scanner',
+        }));
+        runMm._setPairs = pairs;
+        saveMmSet(mmAlloc, { version: runMm._setVersion, updatedAt: runMm._setAt, pairs });
+        if (reason) console.log('  SET v' + runMm._setVersion + ' ' + pairs.map((p) => p.symbol).join(',') + ' ' + reason);
+      }
+      for (const a of mmAlloc) {
+        a.selectedBy = a.selectedBy || 'scanner';
+        enteredAt.set(a.pair, Date.now());
+      }
+      commitSet('start');
       const enterPct = Number(process.env.VOL_ENTER_PCT || 2);
       const exitPct = Number(process.env.VOL_EXIT_PCT || 1.5);
       const maxPairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_MAX_PAIRS || cfg.mmMaxPairs || 4));
@@ -181,7 +201,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const cash = live ? Number(live.freeQuote || 0) : 0;
           const inv = live ? Math.max(0, Number(live.totalEquity || 0) - cash) : 0;
           const minUsd = Math.max(cfg.minOrderUsd || 1, 1);
-          const effPairs = Math.max(1, Math.min(Number(process.env.MM_MAX_PAIRS || 5), Math.floor((cash + inv) / (minUsd * Number(process.env.PAIR_CASH_K || 2.5)))));
+          const effPairs = Math.max(1, Math.min(Number(process.env.MM_MAX_PAIRS || 6), Math.floor((cash + inv) / (minUsd * Number(process.env.PAIR_CASH_K || 2.5)))));
           if (effPairs !== planRotation.eff) { planRotation.eff = effPairs; console.log('effPairs=' + effPairs); }
           process.env.MM_MAX_PAIRS_HARD = String(effPairs);
           selection.effPairs = effPairs;
@@ -248,8 +268,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               }
             }
           }
-          let { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs } });
-          if (typeof strat.previewGate === 'function') additions = additions.filter((r) => strat.previewGate(r.symbol));
+          let { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs, preview: (sym) => (typeof strat.previewGate === 'function' ? strat.previewGate(sym) : true) } });
           for (const a of leaving) {
             if (!idlePairs.has(a.pair)) continue;
             const nxt = additions.map((x) => x.symbol).join(',') || '-';
@@ -294,10 +313,17 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             const next = [...keep, ...additions];
             const invEach = next[0] && keep[0] ? keep[0].invTargetQuote : 0;
             for (const a of next) {
-              mmAlloc.push({ ...a, weight: 1 / next.length, invTargetQuote: a.invTargetQuote || invEach });
+              mmAlloc.push({
+                ...a,
+                selectedBy: a.selectedBy || 'scanner',
+                ret15: a.ret15,
+                rangePct: a.rangePct,
+                weight: 1 / next.length,
+                invTargetQuote: a.invTargetQuote || invEach,
+              });
               if (!enteredAt.has(a.pair)) { enteredAt.set(a.pair, now); clearExit(a.symbol); }
             }
-            saveMmSet(mmAlloc);
+            commitSet('rotate');
             setSizeUniverse(mmAlloc.map((x) => x.symbol));
             if (cfg.exchange === 'coinbase' && (leaveSyms.length || additions.length)) {
               try {
@@ -318,7 +344,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           sweepStranded(exitLive, mmAlloc);
           await tickExits(ex, orderRegistry, exitLive, getLive);
         } catch (e) { console.warn('exit tick', e.message); }
-        await sleep(cfg.volRotateMs || Number(process.env.VOL_ROTATE_MS) || 60000);
+        await sleep(Number(process.env.VOL_SCAN_MS) || cfg.volScanMs || 60000);
       }
     })();
     setInterval(() => {
@@ -337,6 +363,35 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  function rebuildSelection(now) {
+    const enteredAt = runMm._entered || new Map();
+    const watch = runMm._watch || new Map();
+    const stopLine = Number(process.env.ROTATE_STOP_RET || -0.04) + Number(process.env.STOP_MARGIN || 0.01);
+    const inSet = new Set(mmAlloc.map((a) => a.symbol));
+    const rows = mmAlloc.map((a) => {
+      const age = Math.round((now - (enteredAt.get(a.pair) || now)) / 60000);
+      return {
+        symbol: a.symbol, state: 'in', role: 'in',
+        why: 'quoting, held ' + age + 'm',
+        rangePct: a.rangePct, ret15: a.ret15,
+        selectedBy: a.selectedBy || 'scanner',
+      };
+    });
+    const cool = Number(process.env.REENTER_COOLDOWN_MS || 1800000);
+    for (const r of topVolatiles(8)) {
+      if (!r || inSet.has(r.symbol)) continue;
+      const ret15 = Number(r.ret || 0);
+      let why = 'out: vol ' + Number(r.rangePct || 0).toFixed(2) + '%';
+      const left = [...watch.values()].find((w) => w && (w.symbol === r.symbol || w.pair === r.pair));
+      if (left && now - (left.leftAt || 0) < cool) why = 'out: watch ' + Math.max(1, Math.round((cool - (now - left.leftAt)) / 60000)) + 'm';
+      else if (!(ret15 > stopLine)) why = 'out: ret15 ' + (ret15 * 100).toFixed(1) + '% < stop+margin';
+      else if (typeof strat.previewGate === 'function' && !strat.previewGate(r.symbol)) why = 'out: veto';
+      rows.push({ symbol: r.symbol, state: 'out', role: 'out', why, rangePct: r.rangePct, ret15 });
+    }
+    selection.rows = rows;
+    selection.version = runMm._setVersion || 0;
+    selection.updatedAt = runMm._setAt || 0;
+  }
   async function emitStatus() {
     if (emitStatus.busy) return;
     emitStatus.busy = true;
@@ -359,6 +414,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       } else emitStatus.alerted = false;
       const bankUsd = (bankHoldings() || []).reduce((s, h) => s + Number(h.value || 0), 0);
       console.log('  -- markets --');
+      try { rebuildSelection(Date.now()); } catch { /* ignore */ }
       const marketRows = [];
       for (const a of mmAlloc) {
         const st = pairState.get(a.pair);
@@ -428,8 +484,32 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           rising: midReturn(a.symbol) > 0,
           quote: quoteSnap(a, (pairState.get(a.pair) || {}).ladder, liveSnap),
           sellableQty: sellable(a.symbol),
-          why: (selection.rows.find((r) => r.symbol === a.symbol) || {}).why || 'in set',
+          role: 'in',
+          selectedBy: a.selectedBy || 'scanner',
+          rangePct: a.rangePct != null ? a.rangePct : (vs && vs.rangePct),
+          ret15: a.ret15 != null ? a.ret15 : null,
+          why: ((selection.rows.find((r) => r.symbol === a.symbol && r.state === 'in') || {}).why) || 'in',
         });
+      }
+      const seenM = new Set(marketRows.map((m) => m.symbol));
+      for (const e of exitBook()) {
+        if (!e || seenM.has(e.symbol)) continue;
+        seenM.add(e.symbol);
+        marketRows.push({ symbol: e.symbol, role: 'exit', mid: e.mid || 'n/a', bids: 0, asks: e.orderId ? 1 : 0, bidUsd: 0, askUsd: Number(e.value || 0), w: '0', wNum: 0, orders: [], why: 'exit' });
+      }
+      for (const d of (dustList().untradeable || [])) {
+        if (!d || seenM.has(d.symbol)) continue;
+        seenM.add(d.symbol);
+        marketRows.push({ symbol: d.symbol, role: 'dust', mid: 'n/a', bids: 0, asks: 0, bidUsd: 0, askUsd: 0, w: '0', wNum: 0, orders: [], why: 'dust', vol: '-', fee: '-', buyUsd: 0, sellUsd: 0 });
+      }
+      for (const rec of orderRegistry.values()) {
+        if (!rec || rec.status !== 'open') continue;
+        const sym = String(rec.symbol || String(rec.pair || '').split(/[-/]/)[0] || '').toUpperCase();
+        if (!sym || seenM.has(sym)) continue;
+        seenM.add(sym);
+        const usd = Number(rec.price) * Number(rec.size);
+        const buy = String(rec.side).toLowerCase() === 'buy';
+        marketRows.push({ symbol: sym, role: 'orphan', mid: 'n/a', bids: buy ? 1 : 0, asks: buy ? 0 : 1, bidUsd: buy ? usd : 0, askUsd: buy ? 0 : usd, w: '0', wNum: 0, orders: [], why: 'orphan', vol: '-', fee: '-', buyUsd: 0, sellUsd: 0 });
       }
       marketRows.sort((a, b) => (Number(b.wNum) || 0) - (Number(a.wNum) || 0));
       for (const m of marketRows) {
@@ -440,12 +520,21 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           (m.spreadBps != null ? '  spr=' + Number(m.spreadBps).toFixed(1) + 'bps' : '') +
           (m.edgeBps != null ? '  edge=' + Number(m.edgeBps).toFixed(0) + 'bps' : ''));
       }
-      const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
-      const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
+      const workingBids = marketRows.filter((m) => m.role === 'in').reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
+      const workingAsks = marketRows.filter((m) => m.role === 'in').reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
+      let regBids = 0;
+      let regAsks = 0;
+      for (const rec of orderRegistry.values()) {
+        if (!rec || rec.status !== 'open') continue;
+        const usd = Number(rec.price) * Number(rec.size);
+        if (!(usd > 0)) continue;
+        if (String(rec.side).toLowerCase() === 'buy') regBids += usd;
+        else regAsks += usd;
+      }
       const exitNotional = exitBook().filter((e) => e.orderId).reduce((s, e) => s + Number(e.size || e.qty || 0) * Number(e.price || e.mid || e.sinceMid || 0), 0);
       if (liveSnap && typeof strat.planBook === 'function') strat.planBook(liveSnap, mmAlloc, exitNotional);
       const plan = (typeof strat.bookPlan === 'function' && strat.bookPlan()) || {};
-      const bookNotional = workingBids + workingAsks + exitNotional;
+      const bookNotional = regBids + regAsks;
       const bookTargetFrac = Number(process.env.BOOK_TARGET_FRAC || 0.90);
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
@@ -453,6 +542,52 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       const eqNow = Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd));
       const bookTarget = plan.bookTarget != null ? Number(plan.bookTarget) : eqNow * bookTargetFrac;
       const bookGap = Math.max(0, bookTarget - bookNotional);
+      const tradableEq = Number(plan.tradableEq != null ? plan.tradableEq : eqNow);
+      const bookPct = tradableEq > 0 ? bookNotional / tradableEq : 0;
+      const hist = emitStatus.bookHist = emitStatus.bookHist || [];
+      const nowMs = Date.now();
+      hist.push({ t: nowMs, pct: bookPct, elig: ((plan.eligible || []).length > 0) });
+      while (hist.length && nowMs - hist[0].t > 3600000) hist.shift();
+      let wSum = 0;
+      let acc = 0;
+      for (let i = 1; i < hist.length; i++) {
+        const dt = hist[i].t - hist[i - 1].t;
+        acc += Number(hist[i - 1].pct) * dt;
+        wSum += dt;
+      }
+      const bookPct1h = wSum > 0 ? acc / wSum : bookPct;
+      let baseHold = 0;
+      const posMap = (liveSnap && liveSnap.positions) || {};
+      for (const [sym, p0] of Object.entries(posMap)) baseHold += Number(p0.hold || 0) * Number(p0.mid || mids[sym] || 0);
+      const venueBook = quoteHold + baseHold;
+      const clip = Number(process.env.CLIP_MAX_USD || 1.5);
+      if (Math.abs(bookNotional - venueBook) > clip) {
+        if (!emitStatus._driftAt) emitStatus._driftAt = nowMs;
+        else if (nowMs - emitStatus._driftAt > 60000 && nowMs - (emitStatus._driftLog || 0) > 60000) {
+          emitStatus._driftLog = nowMs;
+          console.log('  BOOK DRIFT tracked=$' + bookNotional.toFixed(2) + ' venue=$' + venueBook.toFixed(2));
+        }
+      } else emitStatus._driftAt = 0;
+      const needPairs = Number(plan.needPairs || 0);
+      const bidTarget = Number(plan.bidTarget != null ? plan.bidTarget : plan.bidBudget || 0);
+      const allocSum = Number(plan.allocSum || 0);
+      let shortReason = '';
+      if (bookTarget > 0 && bookNotional < bookTarget * 0.95) {
+        if ((plan.eligible || []).length < needPairs) shortReason = 'pairs';
+        else if (Number(plan.quoteTotal || 0) * Number(process.env.CASH_DEPLOY_FRAC || 0.97) + 0.05 < Math.max(0, bookTarget - Number(plan.askBook || 0))) shortReason = 'cash';
+        else if (bidTarget > 0 && allocSum + 0.05 < bidTarget * 0.95) shortReason = 'cap';
+        else if (regBids + clip < allocSum) shortReason = 'clips';
+        else shortReason = 'veto';
+        if (nowMs - (emitStatus._shortLog || 0) > 60000) {
+          emitStatus._shortLog = nowMs;
+          console.log('  BOOK SHORT reason=' + shortReason + ' have=$' + bookNotional.toFixed(2) + ' need=$' + bookTarget.toFixed(2));
+        }
+      }
+      const xferN = (snap.transfers || []).length;
+      if (emitStatus._xferN != null && xferN > emitStatus._xferN) {
+        try { await refreshAlloc(); } catch { /* ignore */ }
+      }
+      emitStatus._xferN = xferN;
       const fillCount = (snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
       const wallet = [];
       const qAmt = cashUsd + quoteHold;
@@ -467,14 +602,15 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       wallet.sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
         '  book=$' + bookNotional.toFixed(2) + ' / target=$' + bookTarget.toFixed(2) +
-        '  budget=$' + Number(plan.bidBudget || 0).toFixed(2) +
+        '  pct=' + (bookPct * 100).toFixed(0) + '%  budget=$' + Number(plan.bidBudget || 0).toFixed(2) +
         '  eligible=' + ((plan.eligible || []).join(',') || '-') +
+        '  need=' + needPairs + (shortReason ? '  short=' + shortReason : '') +
         '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
         '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + eqNow.toFixed(2) +
         '  fills=' + fillCount);
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
       try { await refreshFeeTier(cfg); } catch {}
-      saveMmSet(mmAlloc);
+      saveMmSet(mmAlloc, { version: runMm._setVersion || 0, updatedAt: runMm._setAt || 0, pairs: runMm._setPairs || [] });
       const notional = marketRows.reduce((s, m) => s + Number(m.buyUsd || 0) + Number(m.sellUsd || 0), 0);
       emitStatus.gaps = emitStatus.gaps || [];
       emitStatus.gaps.push({ t: Date.now(), gap });
@@ -498,8 +634,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
           equity: eqNow,
           bookNotional, bookTarget, bookGap, bookTargetFrac,
-          tradableEq: plan.tradableEq, askBook: plan.askBook, bidBudget: plan.bidBudget,
-          eligible: plan.eligible || [], alloc: plan.alloc || {},
+          bookPct, bookPct1h, venueBook, shortReason, needPairs,
+          setVersion: runMm._setVersion || 0,
+          tradableEq: plan.tradableEq, askBook: plan.askBook, bidBudget: plan.bidBudget, bidTarget,
+          eligible: plan.eligible || [], alloc: plan.alloc || {}, allocSum,
           bankEquity: null, fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),

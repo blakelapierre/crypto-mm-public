@@ -62,13 +62,16 @@ export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg
   }
   if (keep.length > hardMax) console.log('  rotate hold cap ' + keep.length + ' > ' + hardMax + ' names under min hold');
   const have = new Set(keep.map((a) => a.pair));
+  const stopMargin = Number(process.env.STOP_MARGIN || 0.01);
   const additions = [];
   const cool = Number(process.env.REENTER_COOLDOWN_MS || 1800000);
-  const scored = ranked.map((r) => ({ ...r, ret15: Number(r.ret != null ? r.ret : midReturn(r.symbol)), pick: scoreOf(r) }))
+  const scored = ranked.map((r) => ({ ...r, ret15: Number(r.ret != null ? r.ret : midReturn(r.symbol, 15 * 60 * 1000)), pick: scoreOf(r) }))
     .filter((r) => Number(r.rangePct || 0) >= enterPct)
     .sort((a, b) => b.pick - a.pick);
   for (const r of scored) {
     if (have.has(r.pair) || have.has(r.symbol)) continue;
+    if (!(Number(r.ret15) > stopRet + stopMargin)) continue;
+    if (cfg && typeof cfg.preview === 'function' && !cfg.preview(r.symbol)) continue;
     const left = watch.get(r.pair);
     if (left && now - (left.leftAt || 0) < cool) continue;
     if (keep.length + additions.length >= hardMax) {

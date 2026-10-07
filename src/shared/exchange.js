@@ -263,6 +263,11 @@ export function createExchange(cfg, orderRegistry) {
         if (keepId) reserveSell(base, volume, keepId);
       };
       if (isSell) {
+        const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+        const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
+        if (!(Number(volume) > 0) || Number(volume) + 1e-12 < minV0 || Number(volume) * Number(price) + 1e-12 < quoteMin0) {
+          return { skipped: 'belowMin', sellable: sellable(base), reserved: reserved(base) };
+        }
         const free = sellable(base);
         if (Number.isFinite(free) && Number(volume) > free + 1e-12) {
           const next = formatVolume(free, info && info.lotDecimals);
@@ -340,8 +345,24 @@ export function createExchange(cfg, orderRegistry) {
             order_configuration: { limit_limit_gtc: { base_size: String(volume), limit_price: String(price), post_only: cfg.postOnly } },
           });
           if (res.success === false || res.error_response) {
-            failCtx(res.error_response || res);
             const msg = JSON.stringify(res.error_response || res);
+            if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+              releaseReserve(null);
+              await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
+              invalidateLiveCache();
+              const fresh = sellable(base);
+              const next = formatVolume(Math.min(Number(volume), Number(fresh)), info && info.lotDecimals);
+              const quoteMin = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+              const minV = Number((info && (info.baseMin || info.ordermin)) || 0);
+              console.log('  SELL RETRY ' + base + ' ' + volume + ' -> ' + next + ' free=' + fresh);
+              if (Number(next) > 0 && Number(next) + 1e-12 >= minV && Number(next) * Number(price) + 1e-12 >= quoteMin) {
+                return this.limitOrder(pair, side, price, next, Object.assign({}, meta, { _settleRetry: true }), venue);
+              }
+              coolSide(pair, 'sell');
+              noteLimitFail(msg);
+              return { skipped: 'belowMin', sellable: fresh, reserved: reserved(base), error: msg };
+            }
+            failCtx(res.error_response || res);
             if (cfg.postOnly && !meta._retried && /POST_ONLY|INVALID_LIMIT_PRICE/i.test(msg) && bookSnap) {
               const retryPx = side.toLowerCase() === 'buy' ? snapToIncrement(bookSnap.bid - inc, inc) : snapToIncrement(bookSnap.ask + inc, inc);
               console.log('  post-only retry ' + side + ' ' + pair + ' ' + price + ' -> ' + retryPx);
@@ -358,7 +379,26 @@ export function createExchange(cfg, orderRegistry) {
             }
           } else releaseReserve(null);
           return { order_id: oid };
-        } catch (e) { failCtx(e.message); return { error: String(e.message || e) }; }
+        } catch (e) {
+        const msg = String(e.message || e);
+        if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+          releaseReserve(null);
+          await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
+          invalidateLiveCache();
+          const fresh = sellable(base);
+          const next = formatVolume(Math.min(Number(volume), Number(fresh)), info && info.lotDecimals);
+          const quoteMin = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+          const minV = Number((info && (info.baseMin || info.ordermin)) || 0);
+          if (Number(next) > 0 && Number(next) + 1e-12 >= minV && Number(next) * Number(price) + 1e-12 >= quoteMin) {
+            return this.limitOrder(pair, side, price, next, Object.assign({}, meta, { _settleRetry: true }), venue);
+          }
+          coolSide(pair, 'sell');
+          noteLimitFail(msg);
+          return { error: msg, skipped: 'belowMin', sellable: fresh };
+        }
+        failCtx(msg);
+        return { error: msg };
+      }
       }
       try {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
@@ -372,7 +412,26 @@ export function createExchange(cfg, orderRegistry) {
           if (isSell) releaseReserve(oid);
         } else releaseReserve(null);
         return { order_id: oid };
-      } catch (e) { failCtx(e.message); return { error: String(e.message || e) }; }
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+          releaseReserve(null);
+          await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
+          invalidateLiveCache();
+          const fresh = sellable(base);
+          const next = formatVolume(Math.min(Number(volume), Number(fresh)), info && info.lotDecimals);
+          const quoteMin = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+          const minV = Number((info && (info.baseMin || info.ordermin)) || 0);
+          if (Number(next) > 0 && Number(next) + 1e-12 >= minV && Number(next) * Number(price) + 1e-12 >= quoteMin) {
+            return this.limitOrder(pair, side, price, next, Object.assign({}, meta, { _settleRetry: true }), venue);
+          }
+          coolSide(pair, 'sell');
+          noteLimitFail(msg);
+          return { error: msg, skipped: 'belowMin', sellable: fresh };
+        }
+        failCtx(msg);
+        return { error: msg };
+      }
     },
     async getOrderStatus(orderId, venue = name) {
       if (!orderId) return null;

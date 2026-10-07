@@ -144,14 +144,17 @@ function cashFloorBlocks(live) {
   if (bookTargetFor(eq) - deployBookUsd() > 0 && free >= clip) return false;
   return true;
 }
-function costHeld(live, symbol) {
+function inventoryCost(live, symbol) {
   const pos = live && live.positions && live.positions[symbol];
   const qty = Number((pos && pos.amount) || 0) + Number((pos && pos.hold) || 0);
   const basis = holdBasis(symbol);
   const px = basis > 0 ? basis : Number((pos && pos.mid) || 0);
+  return qty * (px > 0 ? px : 0);
+}
+function costHeld(live, symbol) {
   const open = openBidUsd(symbol);
   const pend = pendingBidUsd(symbol);
-  return qty * (px > 0 ? px : 0) + open + (open > 0 ? 0 : pend);
+  return inventoryCost(live, symbol) + open + (open > 0 ? 0 : pend);
 }
 function ret5m(symbol) { return midReturn(symbol, 5 * 60 * 1000); }
 function offHigh15(symbol) {
@@ -193,7 +196,7 @@ export function hardBidVeto(a, live) {
   if (offHigh15(sym) >= Number(process.env.PEAK_OFF_PCT || 0.015) && midReturn(sym, 60000) <= 0 && invUsd >= clip) return 'peak';
   if (live) {
     const cap = capFor(live, sym);
-    if (cap > 0 && costHeld(live, sym) >= cap) return 'cap';
+    if (cap > 0 && inventoryCost(live, sym) >= cap) return 'cap';
   }
   if (inRipCooldown(sym)) return 'rip';
   return '';
@@ -334,7 +337,7 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const gate = symbol ? bidGate({ symbol, pair }, live) : { ok: true };
   const clipUsd = Number(process.env.CLIP_MAX_USD || 1.5);
   const budget = allocFor(symbol);
-  const clips = Math.min(Number(process.env.BID_CLIPS_MAX || 3), budget > 0 ? Math.max(1, Math.ceil(budget / clipUsd)) : 0);
+  const clips = Math.min(Number(process.env.BID_CLIPS_MAX || 8), budget > 0 ? Math.max(1, Math.ceil(budget / clipUsd)) : 0);
   const buyLevels = gate.ok ? clips : 0;
   const sellLevels = 1;
   const n = Math.max(buyLevels, sellLevels, 1);
@@ -402,22 +405,14 @@ function resizeLeg(cfg, a, o, live) {
     const pairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || 4));
     const rank = liveMmAlloc ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol)) : [];
     if (rank.length && rank.findIndex((x) => x.symbol === a.symbol) >= pairs) return 0;
-    let reservedCash = 0;
-    if (livePairState) {
-      for (const [p, st] of livePairState) {
-        if (p === a.pair) continue;
-        for (const b of (st.ladder && st.ladder.buys) || []) {
-          if (b.status === 'open' && b.price && b.size) reservedCash += Number(b.price) * Number(b.size);
-        }
-      }
-    }
-    const cashLeft = Math.max(0, live.freeQuote - reservedCash - allPendingBidUsd()) * (cfg.capitalSafetyMargin || 0.92) * hair;
+    const cashLeft = Math.max(0, Number(live.freeQuote || 0) * 0.98);
     const clipMax = Number(process.env.CLIP_MAX_USD || 1.5);
     const budget = allocFor(a.symbol);
     const already = openBidUsd(a.symbol) + pendingBidUsd(a.symbol);
     const remain = Math.max(0, budget - already);
     const shape = bidShape(a.symbol, live);
-    const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashLeft;
+    const invCost = inventoryCost(live, a.symbol);
+    const nameRoom = cap > 0 ? Math.max(0, cap * hard - invCost - already) : cashLeft;
     let useUsd = Math.min(cashLeft, nameRoom, clipMax, remain) * (shape.sizeMult || 1);
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
     if (useUsd < minUsd) {
@@ -937,6 +932,40 @@ async function softStop(cfg, ex, a, state, book, live, getLive = null) {
   }
 }
 
+async function shapeBidDepth(cfg, ex, a, ladder, book, getLive) {
+  if (!a || !ladder || !book || !(Number(book.mid) > 0)) return;
+  const clip = Number(process.env.CLIP_MAX_USD || 1.5);
+  const maxClips = Number(process.env.BID_CLIPS_MAX || 8);
+  const alloc = allocFor(a.symbol);
+  const open = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
+  const openUsd = open.reduce((s, o) => s + Number(o.price) * Number(o.size), 0);
+  if (openUsd - alloc >= clip && open.length) {
+    const deep = open.reduce((b, o) => (Number(o.price) < Number(b.price) ? o : b));
+    try { await ex.cancelOrder(deep.orderId); } catch { /* ignore */ }
+    deep.status = 'cancelled';
+    console.log('  TRIM BID ' + a.symbol + ' L' + deep.level);
+    return;
+  }
+  if (!(alloc - openUsd >= clip) || !open.length || open.length >= maxClips) return;
+  const live = typeof getLive === 'function' ? await getLive() : null;
+  if (!live || !bidAllowed(a, live).ok) return;
+  const deep = open.reduce((b, o) => (Number(o.price) < Number(b.price) ? o : b));
+  const step = gridStep(cfg, a.pair, a.symbol);
+  const mid = Number(book.mid);
+  const px = clampAwayFromMid(mid, Number(deep.price) * (1 - step), 'buy', l1HalfFrac(cfg, a.pair), a.pairDecimals);
+  if (!quoteClear(mid, px, 'buy', l1HalfFrac(cfg, a.pair))) return;
+  const level = Math.max(...open.map((o) => Number(o.level) || 1)) + 1;
+  const size = resizeLeg(cfg, a, { side: 'buy', price: px, size: 0, level }, live);
+  if (!(Number(size) > 0) || Number(size) * Number(px) < Math.max(Number(cfg.minOrderUsd) || 1, 1)) return;
+  notePendingBid(a.symbol, Number(px) * Number(size));
+  const r = await ex.limitOrder(a.pair, 'buy', px, size, { level });
+  clearPendingBid(a.symbol);
+  if (r && r.order_id) {
+    ladder.buys.push({ level, side: 'buy', price: px, size, orderId: r.order_id, status: 'open' });
+    console.log('  ADD BID ' + a.symbol + ' L' + level + ' ' + size + ' @ ' + px);
+  }
+}
+
 export function planBook(live, mmAlloc, exitNotional = 0) {
   const eq = Number(live && live.totalEquity || 0);
   let dustUsd = 0;
@@ -954,23 +983,55 @@ export function planBook(live, mmAlloc, exitNotional = 0) {
   const bookTarget = tradableEq * Number(process.env.BOOK_TARGET_FRAC || 0.90);
   const askBook = openOrderNotional().asks + Number(exitNotional || 0);
   const freeCash = Number(live && live.freeQuote || 0);
-  const bidBudget = Math.min(freeCash * 0.95, Math.max(0, bookTarget - askBook));
+  const quoteTotal = freeCash + Number(live && live.quoteHold || 0);
+  const deploy = Number(process.env.CASH_DEPLOY_FRAC || 0.97);
+  const bidTarget = Math.min(quoteTotal * deploy, Math.max(0, bookTarget - askBook));
+  const invFrac = Number(process.env.INV_NAME_MAX_FRAC || 0.25);
+  const needPairs = Math.max(1, Math.ceil(Number(process.env.BOOK_TARGET_FRAC || 0.90) / Math.max(invFrac, 0.05)) + 1);
   const rows = [];
   for (const a of mmAlloc || []) {
     const pst = livePairState && livePairState.get(a.pair);
     if (pst && pst.parked) continue;
     if (hardBidVeto(a, live)) continue;
     const w = Math.max(0.01, sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair));
-    const cap = live ? capFor(live, a.symbol) : bidBudget;
-    const held = live ? costHeld(live, a.symbol) : 0;
-    const room = cap > 0 ? Math.max(0, cap - held) : bidBudget;
+    const cap = live ? capFor(live, a.symbol) : bidTarget;
+    const inv = live ? inventoryCost(live, a.symbol) : 0;
+    const room = cap > 0 ? Math.max(0, cap - inv) : bidTarget;
     rows.push({ a, w, room });
   }
-  const wSum = rows.reduce((s, r) => s + r.w, 0) || 1;
-  const alloc = {};
-  for (const r of rows) alloc[r.a.symbol] = Math.max(0, Math.min(r.room, bidBudget * r.w / wSum));
-  allocPlan = { tradableEq, bookTarget, askBook, bidBudget, eligible: rows.map((r) => r.a.symbol), alloc, dustUsd };
+  const alloc = waterFill(rows, bidTarget);
+  const allocSum = Object.values(alloc).reduce((s, n) => s + n, 0);
+  allocPlan = {
+    tradableEq, bookTarget, askBook, bidBudget: bidTarget, bidTarget, quoteTotal,
+    eligible: rows.map((r) => r.a.symbol), alloc, allocSum, dustUsd, needPairs,
+    capRoom: rows.reduce((s, r) => s + r.room, 0),
+  };
   return allocPlan;
+}
+function waterFill(rows, budget) {
+  const alloc = {};
+  let left = Math.max(0, Number(budget) || 0);
+  let open = rows.map((r) => ({ ...r }));
+  let guard = 0;
+  while (open.length && left > 0.005 && guard++ < 8) {
+    const wSum = open.reduce((s, r) => s + r.w, 0) || 1;
+    const tent = open.map((r) => ({ r, share: left * r.w / wSum }));
+    const capped = tent.filter((t) => t.share >= t.r.room - 1e-9);
+    if (!capped.length) {
+      for (const t of tent) alloc[t.r.a.symbol] = t.share;
+      left = 0;
+      break;
+    }
+    const next = [];
+    for (const t of tent) {
+      if (t.share >= t.r.room - 1e-9) {
+        alloc[t.r.a.symbol] = t.r.room;
+        left -= t.r.room;
+      } else next.push(t.r);
+    }
+    open = next;
+  }
+  return alloc;
 }
 const blockedSince = new Map();
 export function blockedLeave(mmAlloc, live) {
@@ -1061,6 +1122,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   const stAsk = pairState.get(a.pair);
   if (stAsk && stAsk.ladder) {
     try { await ensureAsk(cfg, ex, a, stAsk.ladder, book, getLive); } catch (e) { console.warn('ask', a.symbol, e.message); }
+    try { await shapeBidDepth(cfg, ex, a, stAsk.ladder, book, getLive); } catch (e) { console.warn('depth', a.symbol, e.message); }
   }
   const forced = (cfg.symbols || []).includes(a.symbol);
   const focusN = effectiveFocusN();

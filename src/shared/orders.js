@@ -5,6 +5,16 @@ import { postFill } from './status-client.js';
 import { consumeHoldSale } from './hold-pnl.js';
 import { midRing } from './mid-ring.js';
 import { noteStrandedFee } from './exit-book.js';
+import { noteSellFill, dropReservation } from './free-qty.js';
+import { invalidateLiveCache } from './portfolio.js';
+
+function onSellFill(rec, orderId) {
+  if (!rec || String(rec.side).toLowerCase() !== 'sell') return;
+  dropReservation(orderId);
+  const sym = rec.symbol || String(rec.pair || '').split(/[-/]/)[0];
+  noteSellFill(sym, rec.size);
+  try { invalidateLiveCache(); } catch { /* ignore */ }
+}
 
 export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = null, detail = null) {
   const st = String(statusRaw || '').toUpperCase();
@@ -31,6 +41,7 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       rec.feeAccounted = Number(rec.fee || 0);
       console.log('  FILL ' + String(orderId).slice(0, 8) + ' ' + rec.side + ' ' + rec.pair + ' fee=' + Number(rec.fee || 0).toFixed(4) + (venueFee > 0 ? '' : ' est'));
       if (pnl) pnl.recordFill(rec);
+      onSellFill(rec, orderId);
       if (String(rec.side).toLowerCase()==='sell') consumeHoldSale(rec.symbol || (rec.pair||'').split(/[-/]/)[0], rec.price, rec.size, rec.fee, rec.pair);
       logFill(rec, { orderId, venueFee, feeSource: venueFee > 0 ? 'venue' : 'est' });
       rec.pnlRecorded = true;
@@ -62,6 +73,7 @@ export function markOrderFromExchange(orderRegistry, orderId, statusRaw, pnl = n
       if (detail.avgPrice) rec.price = detail.avgPrice;
       if (detail.fee) rec.fee = Number(detail.fee);
       if (pnl) pnl.recordFill(rec);
+      onSellFill(rec, orderId);
       logFill(rec, { orderId, venueFee: Number(rec.fee || 0), feeSource: rec.fee > 0 ? 'venue' : 'est' });
     } else rec.status = 'cancelled';
   }
