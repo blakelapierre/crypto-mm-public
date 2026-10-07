@@ -90,6 +90,8 @@ export function createPnl() {
     const n = Number(usd);
     if (!Number.isFinite(n) || !n || startEquity == null) return false;
     if (id && transferIds.has(String(id))) return false;
+    const tol = Math.max(0.05, Math.abs(n) * 0.01);
+    if (transfers.some((t) => Math.abs(t.usd - n) <= tol && Date.now() - t.ts < 600000)) return false;
     if (id) transferIds.add(String(id));
     startEquity += n;
     recentTransfer += n;
@@ -100,6 +102,10 @@ export function createPnl() {
   }
   let lastCash = null;
   let lastPosValue = null;
+  let lastCashDelta = 0;
+  function unexplainedCashMove() {
+    return Math.abs(lastCashDelta) >= Number(process.env.DEPOSIT_DETECT_USD || 1) && Date.now() - recentTransferAt > 15000;
+  }
   function markWallet(equity) {
     const n = Number(equity);
     if (!Number.isFinite(n)) return;
@@ -112,13 +118,43 @@ export function createPnl() {
     const cash = Number(live.freeQuote || 0) + Number(live.quoteHold || 0);
     const prevEq = lastEquity;
     const prevCash = lastCash;
-    if (lastCash != null) {
-      const d = cash - lastCash;
+    const dCash = prevCash == null ? null : cash - prevCash;
+    markWallet(live.totalEquity);
+    const nowMap = new Map();
+    for (const [sym, p] of Object.entries(live.positions || {})) {
+      nowMap.set(sym, { qty: Number(p.amount || 0) + Number(p.hold || 0), mid: Number(p.mid || 0) });
+    }
+    function qtyStable() {
+      if (!lastPosMap) return true;
+      const dustUsd = Number(process.env.DUST_EXIT_USD || 0.15);
+      const keys = new Set([...lastPosMap.keys(), ...nowMap.keys()]);
+      for (const k of keys) {
+        const a = lastPosMap.get(k);
+        const b = nowMap.get(k);
+        const qa = a ? a.qty : 0;
+        const qb = b ? b.qty : 0;
+        if (Math.abs(qa - qb) <= 1e-8) continue;
+        const mid = (b && b.mid) || (a && a.mid) || 0;
+        if (!(mid > 0) || Math.abs(qa - qb) * mid > dustUsd) return false;
+      }
+      return true;
+    }
+    if (prevEq != null && dCash != null && startEquity != null) {
+      const step = Number(live.totalEquity) - prevEq;
+      const tol = Math.max(0.05, Math.abs(step) * 0.01);
+      const noFill = Date.now() - lastFillAt > 60000;
+      const minDep = Number(process.env.DEPOSIT_DETECT_USD || 1);
+      if (noFill && qtyStable() && Math.abs(Math.abs(dCash) - Math.abs(step)) <= tol && Math.sign(dCash) === Math.sign(step) && Math.abs(step) >= minDep) {
+        const bucket = Math.floor(Date.now() / 60000);
+        noteTransfer(step, 'equity-step', 'equity-step:' + bucket + ':' + step.toFixed(2));
+      }
+    }
+    lastCashDelta = dCash == null ? 0 : dCash;
+    if (dCash != null) {
       const recentFill = Date.now() - lastFillAt < 20000;
       const recentXfer = Date.now() - recentTransferAt < 120000;
-      if (!recentFill && !recentXfer && Math.abs(d) > Math.max(0.5, Math.abs(lastCash) * 0.05)) console.log('CASH JUMP unconfirmed ' + d.toFixed(2) + ' not booked');
+      if (!recentFill && !recentXfer && Math.abs(dCash) > Math.max(0.5, Math.abs(prevCash) * 0.05)) console.log('CASH JUMP unconfirmed ' + dCash.toFixed(2) + ' not booked');
     }
-    markWallet(live.totalEquity);
     if (prevEq != null && Date.now() - lastFillAt > 60000) {
       const step = Number(live.totalEquity) - prevEq;
       const explained = Date.now() - recentTransferAt < 120000 ? recentTransfer : 0;
@@ -127,20 +163,16 @@ export function createPnl() {
       if (Math.abs(residual) > Math.max(0.5, Math.abs(prevEq) * 0.05)) {
         unattributed += residual;
         const bits = [];
-        const nowMap = new Map();
-        for (const [sym, p] of Object.entries(live.positions || {})) {
-          const qty = Number(p.amount || 0) + Number(p.hold || 0);
-          const mid = Number(p.mid || 0);
-          nowMap.set(sym, { qty, mid });
+        for (const [sym, row] of nowMap) {
           const prev = lastPosMap && lastPosMap.get(sym);
-          if (!prev || Math.abs((prev.qty || 0) - qty) > 1e-8) bits.push(sym + ' ' + (prev ? prev.qty : 0) + '->' + qty);
+          if (!prev || Math.abs((prev.qty || 0) - row.qty) > 1e-8) bits.push(sym + ' ' + (prev ? prev.qty : 0) + '->' + row.qty);
         }
-        lastPosMap = nowMap;
-        console.log('EQUITY STEP ' + residual.toFixed(2) + ' unattributed cash ' + (prevCash == null ? '' : (cash - prevCash).toFixed(2)) + ' ' + bits.slice(0, 6).join(' '));
+        console.log('EQUITY STEP ' + residual.toFixed(2) + ' unattributed cash ' + (dCash == null ? '' : dCash.toFixed(2)) + ' ' + bits.slice(0, 6).join(' '));
       }
     }
     lastCash = cash;
     lastPosValue = pos;
+    lastPosMap = nowMap;
     for (const [raw, p] of Object.entries(live.positions || {})) {
       const sym = key(raw);
       const mid = Number(p.mid) || 0;
@@ -154,11 +186,6 @@ export function createPnl() {
       }
     }
     primed = true;
-    const nowMap = new Map();
-    for (const [sym, p] of Object.entries(live.positions || {})) {
-      nowMap.set(sym, { qty: Number(p.amount || 0) + Number(p.hold || 0), mid: Number(p.mid || 0) });
-    }
-    if (!lastPosMap) lastPosMap = nowMap;
   }
   function fmt(n) {
     if (n == null || !Number.isFinite(n)) return 'n/a';
@@ -214,5 +241,5 @@ export function createPnl() {
     if (!b || !(b.boughtQty > 0)) return 0;
     return b.boughtCost / b.boughtQty;
   }
-  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee, avgBuy, noteTransfer };
+  return { recordFill, markWallet, markHoldings, snapshot, print, adjustFee, avgBuy, noteTransfer, unexplainedCashMove };
 }

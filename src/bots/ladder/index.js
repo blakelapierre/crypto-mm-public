@@ -202,12 +202,27 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             return minUsd * 2;
           }
           const idlePairs = new Set();
+          let openBook = 0;
+          for (const a of mmAlloc) {
+            const st = pairState.get(a.pair);
+            const legs = [...((st && st.ladder && st.ladder.buys) || []), ...((st && st.ladder && st.ladder.sells) || [])];
+            for (const o of legs) if (o.status === 'open') openBook += Number(o.price) * Number(o.size);
+          }
+          const eqLive = live ? Number(live.totalEquity || 0) : 0;
+          const bookTargetLive = eqLive * Number(process.env.BOOK_TARGET_FRAC || 0.90);
+          const thinBook = !(eqLive > 0) || openBook < bookTargetLive * 0.5;
+          const freeCash = live ? Number(live.freeQuote || 0) : 0;
           for (const a of mmAlloc) {
             const st = pairState.get(a.pair);
             const bids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open');
             const pos = live && live.positions && live.positions[a.symbol];
             const usd = Number((pos && pos.valueQuote) || 0);
-            if (!bids.length && usd < Math.max(cfg.minOrderUsd || 1, 1)) idlePairs.add(a.pair);
+            if (bids.length || usd >= Math.max(cfg.minOrderUsd || 1, 1)) continue;
+            const why = (quoteSnap(a, st && st.ladder, live).bidWhy) || '';
+            if (!why || why === 'park') continue;
+            if (thinBook && freeCash >= Math.max(cfg.minOrderUsd || 1, 1) && why === 'cash') continue;
+            a._idleWhy = why;
+            idlePairs.add(a.pair);
           }
           const { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs } });
           if (leaving.length || additions.length) {
@@ -394,9 +409,14 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
+      const bookNotional = workingBids + workingAsks;
+      const bookTargetFrac = Number(process.env.BOOK_TARGET_FRAC || 0.90);
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
       const quoteHold = liveSnap ? Number(liveSnap.quoteHold || 0) : 0;
+      const eqNow = Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd));
+      const bookTarget = eqNow * bookTargetFrac;
+      const bookGap = Math.max(0, bookTarget - bookNotional);
       const fillCount = (snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
       const wallet = [];
       const qAmt = cashUsd + quoteHold;
@@ -410,8 +430,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
       wallet.sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
+        '  book=$' + bookNotional.toFixed(2) + ' / target=$' + bookTarget.toFixed(2) +
         '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
-        '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd)).toFixed(2) +
+        '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + eqNow.toFixed(2) +
         '  fills=' + fillCount);
       try { logKpi(snap, { cash: cashUsd, inv: invUsd, fills: fillCount }); } catch {}
       try { await refreshFeeTier(cfg); } catch {}
@@ -437,7 +458,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         pnl: snap, markets: marketRows, wallet, proj,
         working: {
           bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
-          equity: Number((liveSnap && liveSnap.totalEquity) || 0),
+          equity: eqNow,
+          bookNotional, bookTarget, bookGap, bookTargetFrac,
           bankEquity: null, fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),

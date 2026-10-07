@@ -97,6 +97,47 @@ function notePendingBid(symbol, usd) {
   row.at = Date.now();
   pendingBids.set(k, row);
 }
+function allPendingBidUsd() {
+  let s = 0;
+  const now = Date.now();
+  for (const [k, row] of pendingBids) {
+    if (!row || now - row.at > 15000) { pendingBids.delete(k); continue; }
+    s += Number(row.usd) || 0;
+  }
+  return s;
+}
+function openOrderNotional() {
+  let bids = 0;
+  let asks = 0;
+  if (livePairState) {
+    for (const st of livePairState.values()) {
+      for (const b of (st.ladder && st.ladder.buys) || []) {
+        if (b.status === 'open') bids += Number(b.price) * Number(b.size);
+      }
+      for (const s of (st.ladder && st.ladder.sells) || []) {
+        if (s.status === 'open') asks += Number(s.price) * Number(s.size);
+      }
+    }
+  }
+  return { bids, asks, book: bids + asks };
+}
+function deployBookUsd() {
+  return openOrderNotional().book + allPendingBidUsd();
+}
+function bookTargetFor(eq) {
+  return Math.max(0, Number(eq) || 0) * Number(process.env.BOOK_TARGET_FRAC || 0.90);
+}
+// Account deploy goal is book ≈ equity. Cash floor yields when the book is short and one clip of cash is free.
+function cashFloorBlocks(live) {
+  const eq = Number(live && live.totalEquity || 0);
+  const free = Number(live && live.freeQuote || 0);
+  if (!(eq > 0)) return false;
+  const floor = Number(process.env.CASH_FLOOR_FRAC || 0.10);
+  if (free / eq >= floor) return false;
+  const clip = Number(process.env.CLIP_MAX_USD || 1.5);
+  if (bookTargetFor(eq) - deployBookUsd() > 0 && free >= clip) return false;
+  return true;
+}
 function costHeld(live, symbol) {
   const pos = live && live.positions && live.positions[symbol];
   const qty = Number((pos && pos.amount) || 0) + Number((pos && pos.hold) || 0);
@@ -120,7 +161,9 @@ function offHigh15(symbol) {
 }
 const bidWhyAt = new Map();
 const bidClearSince = new Map();
-export function bidGate(a, live) {
+export function bidGate(a, live, opt) {
+  // Deploy goal is account-level (open bids+asks near BOOK_TARGET_FRAC * equity).
+  // Gates here are per-name risk. `park` means parked on this tick, not earlier in the session.
   const sym = a && a.symbol;
   if (!sym) return { ok: true, reason: '' };
   const st = livePairState && [...livePairState.values()].find((s) => s.symbol === sym);
@@ -133,11 +176,10 @@ export function bidGate(a, live) {
   if (live) {
     const cap = capFor(live, sym);
     if (cap > 0 && costHeld(live, sym) >= cap) return { ok: false, reason: 'cap' };
-    const eq = Number(live.totalEquity || 0);
-    if (eq > 0 && Number(live.freeQuote || 0) / eq < Number(process.env.CASH_FLOOR_FRAC || 0.35)) return { ok: false, reason: 'cash' };
+    if (cashFloorBlocks(live)) return { ok: false, reason: 'cash' };
   }
   if (inRipCooldown(sym)) return { ok: false, reason: 'rip' };
-  if (a.pair && siblingHasBareBids(livePairState || new Map(), a.pair)) return { ok: false, reason: 'sibling' };
+  if (!(opt && opt.skipSibling) && a.pair && siblingHasBareBids(livePairState || new Map(), a.pair, live)) return { ok: false, reason: 'sibling' };
   return { ok: true, reason: '' };
 }
 function bidAllowed(a, live) {
@@ -199,7 +241,7 @@ function exitStep(cfg, pair, symbol) {
 export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ordermin, book = null, pair = null, symbol = null, live = null) {
   const hint = rungHint(pair, symbol);
   const step = gridStep(cfg, pair, symbol);
-  const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
+  const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 4));
   const levels = (pair && isTopWeight(pair, focusN))
     ? ladderLevelCount(cfg, rangeFrac(symbol), hint, symbol)
     : 1;
@@ -297,7 +339,6 @@ function resizeLeg(cfg, a, o, live) {
       return 0;
     }
     const eq = Number(live.totalEquity || 0);
-    const cashFrac = eq > 0 ? Number(live.freeQuote || 0) / eq : 1;
     const bookInv = liveMmAlloc
       ? liveMmAlloc.reduce((s, x) => s + Number((live.positions && live.positions[x.symbol] && live.positions[x.symbol].valueQuote) || 0), 0)
       : 0;
@@ -309,9 +350,10 @@ function resizeLeg(cfg, a, o, live) {
         }
       }
     }
-    const bookCap = eq * Number(process.env.INV_BOOK_MAX_FRAC || 0.45);
+    const bookFrac = Math.max(Number(process.env.INV_BOOK_MAX_FRAC || 0.95), Number(process.env.BOOK_TARGET_FRAC || 0.90));
+    const bookCap = eq * bookFrac;
     if (bookCap > 0 && bookInv + openBids >= bookCap) return 0;
-    if (cashFrac < Number(process.env.CASH_FLOOR_FRAC || 0.35)) return 0;
+    if (cashFloorBlocks(live)) return 0;
     const pairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || 4));
     const rank = liveMmAlloc ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol)) : [];
     if (rank.length && rank.findIndex((x) => x.symbol === a.symbol) >= pairs) return 0;
@@ -325,7 +367,7 @@ function resizeLeg(cfg, a, o, live) {
         }
       }
     }
-    const cashLeft = Math.max(0, live.freeQuote - reserved) * (cfg.capitalSafetyMargin || 0.92) * hair;
+    const cashLeft = Math.max(0, live.freeQuote - reserved - allPendingBidUsd()) * (cfg.capitalSafetyMargin || 0.92) * hair;
     let wSum = 0;
     if (liveMmAlloc && liveMmAlloc.length) {
       for (const x of liveMmAlloc) wSum += sizeWeightForSymbol(x.symbol) * tapeSizeMult(x.pair);
@@ -348,8 +390,11 @@ function resizeLeg(cfg, a, o, live) {
     }
     if (o.price <= 0 || useUsd <= 0) return 0;
     let size = useUsd / o.price;
-    if (size + 1e-12 < minV) return (minV * o.price <= cashLeft && nameRoom >= minUsd) ? formatVolume(minV, a.lotDecimals) : 0;
-    return formatVolume(size, a.lotDecimals);
+    const out = size + 1e-12 < minV
+      ? ((minV * o.price <= cashLeft && nameRoom >= minUsd) ? formatVolume(minV, a.lotDecimals) : 0)
+      : formatVolume(size, a.lotDecimals);
+    if (Number(out) > 0 && Number(o.price) > 0) notePendingBid(a.symbol, Number(out) * Number(o.price));
+    return out;
   }
   if (cooled(a.pair, 'sell')) return 0;
   const heldRaw = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
@@ -628,8 +673,20 @@ function liveTapeReady(symbol) {
 }
 let focusLocked = [];
 let focusLockUntil = 0;
-function isTopWeight(selfPair, n = 2) {
+function configuredFocusN() {
+  return Math.max(1, Number(process.env.LIVE_FOCUS_N || 4));
+}
+function effectiveFocusN() {
+  const n = configuredFocusN();
+  const allocN = (liveMmAlloc && liveMmAlloc.length) || 0;
+  const eq = lastLive ? Number(lastLive.totalEquity || 0) : 0;
+  const allEq = Number(process.env.FOCUS_ALL_EQ_USD || 25);
+  if (!(eq > 0) || eq < allEq) return Math.max(n, allocN || n);
+  return n;
+}
+function isTopWeight(selfPair, n = 4) {
   if (!liveMmAlloc.length) return false;
+  if (n >= liveMmAlloc.length && liveMmAlloc.some((a) => a.pair === selfPair)) return true;
   const ready = liveMmAlloc.filter((a) => liveTapeReady(a.symbol));
   if (!ready.length) return false;
   const ranked = [...ready].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol));
@@ -672,7 +729,7 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
       o.status = 'pending';
       return;
     }
-    if (Number(o.level) > 1 && (heavierBare(pair) || !isTopWeight(pair, 2))) {
+    if (Number(o.level) > 1 && (heavierBare(pair) || !isTopWeight(pair, Math.max(1, Number(process.env.LIVE_FOCUS_N || 4))))) {
       o.status = 'pending';
       return;
     }
@@ -690,7 +747,6 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
     if (r && r.order_id) {
       o.orderId = r.order_id; o.status = 'open';
-      if (o.side === 'buy') notePendingBid(a && a.symbol, Number(o.price) * Number(o.size));
       logEvent('place', { pair, symbol: a && a.symbol, side: o.side, level: o.level, price: o.price, size: o.size, orderId: r.order_id, mid: (livePairState && livePairState.get(pair) && livePairState.get(pair).lastMid) || o.price });
     } else o.status = 'failed';
     if (a) publishOrders(a, ladder, o.price);
@@ -822,7 +878,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   if (!book) return;
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
   const forced = (cfg.symbols || []).includes(a.symbol);
-  const focusN = Math.max(1, Number(process.env.LIVE_FOCUS_N || 2));
+  const focusN = effectiveFocusN();
   const focused = isTopWeight(a.pair, focusN);
   const risingNow = midReturn(a.symbol) > 0;
   if (!forced && !focused && !risingNow) {
@@ -834,7 +890,7 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const ladder = st.ladder;
     const buys = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
     if (buys.length) {
-      console.log('  PARK ' + a.symbol + ' not in top ' + focusN + ' 1m — pull bids');
+      console.log('  PARK flat ' + a.symbol + ' not in top ' + focusN + ' 1m — pull bids');
       try {
         const liveP = getLive ? await getLive() : null;
         const pos = liveP && liveP.positions && liveP.positions[a.symbol];
@@ -850,6 +906,10 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     await coverInventory(cfg, ex, a, ladder, book, getLive);
     publishOrders(a, ladder, book.mid);
     return;
+  }
+  {
+    const stClear = pairState.get(a.pair);
+    if (stClear && stClear.parked) stClear.parked = false;
   }
   if (!forced && !liveTapeReady(a.symbol)) return;
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
@@ -1048,13 +1108,16 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   }
 }
 
-export function siblingHasBareBids(pairState, selfPair) {
-  const self = (liveMmAlloc || []).find((x) => x.pair === selfPair);
-  const wSelf = self ? sizeWeightForSymbol(self.symbol) : 0;
+export function siblingHasBareBids(pairState, selfPair, live) {
   const names = (liveMmAlloc && liveMmAlloc.length) ? liveMmAlloc : [];
+  if (!names.length) return false;
+  const self = names.find((x) => x.pair === selfPair);
+  const wSelf = self ? sizeWeightForSymbol(self.symbol) : 0;
+  const bookLive = live || lastLive;
   for (const a of names) {
     if (a.pair === selfPair) continue;
     if (sizeWeightForSymbol(a.symbol) <= wSelf + 0.05) continue;
+    if (!bidGate(a, bookLive, { skipSibling: true }).ok) continue;
     const st = pairState && pairState.get(a.pair);
     const n = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open').length;
     if (n === 0) return true;

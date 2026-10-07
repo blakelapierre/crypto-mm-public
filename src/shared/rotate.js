@@ -40,7 +40,7 @@ export function planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg
     const idleMs = Number(process.env.IDLE_RELEASE_MS || 900000);
     const idle = cfg && cfg.idlePairs;
     if (idle && idle.has(a.pair) && age >= idleMs) {
-      console.log('  ROTATE idle ' + a.symbol + ' ' + Math.round(age / 60000) + 'm');
+      console.log('  ROTATE idle ' + a.symbol + (a._idleWhy ? ' ' + a._idleWhy : '') + ' ' + Math.round(age / 60000) + 'm');
       leaving.push(a);
       continue;
     }

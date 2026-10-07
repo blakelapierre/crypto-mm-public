@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
 import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement, formatVolume } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
-import { reserveSell, coolSide, sellable } from './free-qty.js';
+import { reserveSell, coolSide, sellable, dropReservation } from './free-qty.js';
 import { noteLimitFail } from './exit-book.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 import { invalidateLiveCache } from './portfolio.js';
@@ -246,14 +246,25 @@ export function createExchange(cfg, orderRegistry) {
     },
     async limitOrder(pair, side, price, volume, meta = {}, venue = name) {
       const info = pairMeta.get(pair);
-      if (String(side).toLowerCase() === 'sell') {
-        const base = String(pair).split(/[-/]/)[0].toUpperCase();
+      const isSell = String(side).toLowerCase() === 'sell';
+      const base = String(pair).split(/[-/]/)[0].toUpperCase();
+      let heldReserve = null;
+      const releaseReserve = (keepId) => {
+        if (!heldReserve) return;
+        dropReservation(heldReserve);
+        heldReserve = null;
+        if (keepId) reserveSell(base, volume, keepId);
+      };
+      if (isSell) {
         const free = sellable(base);
         if (Number.isFinite(free) && Number(volume) > free + 1e-12) {
           const next = formatVolume(free, info && info.lotDecimals);
           const minUsd = Number(process.env.MIN_ORDER_USD || 1);
+          const dustFloor = Number(process.env.DUST_EXIT_USD || 0.15);
           const minV = (info && info.ordermin) || 0;
-          if (!(Number(next) > 0) || Number(next) + 1e-12 < minV || Number(next) * Number(price) < minUsd) {
+          const notional = Number(next) * Number(price);
+          const allowDustExit = meta && meta.why === 'exit' && notional + 1e-12 >= dustFloor;
+          if (!(Number(next) > 0) || Number(next) + 1e-12 < minV || (notional < minUsd && !allowDustExit)) {
             const k = pair;
             const now = Date.now();
             if (now - (this._clampAt && this._clampAt[k] || 0) > 20000) {
@@ -265,6 +276,8 @@ export function createExchange(cfg, orderRegistry) {
           }
           volume = next;
         }
+        heldReserve = 'pend-' + randomUUID();
+        reserveSell(base, volume, heldReserve);
       }
       const inc = (info && info.quoteIncrement) || (info && info.pairDecimals != null ? 10 ** -info.pairDecimals : 0.01);
       let px = snapToIncrement(price, inc);
@@ -280,6 +293,7 @@ export function createExchange(cfg, orderRegistry) {
       }
       price = px;
       const failCtx = (err) => {
+        releaseReserve(null);
         const msg = String(err && err.message || err || '');
         const k = venue + ':' + pair + ':' + side;
         const now = Date.now();
@@ -295,6 +309,7 @@ export function createExchange(cfg, orderRegistry) {
       };
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
+        if (isSell) releaseReserve(id);
         orderRegistry.set(id, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
         return { order_id: id };
       }
@@ -316,13 +331,12 @@ export function createExchange(cfg, orderRegistry) {
           }
           const oid = (res.success_response && res.success_response.order_id) || res.order_id;
           if (oid) {
-            const base = String(pair).split(/[-/]/)[0];
             orderRegistry.set(oid, { pair, symbol: base, side, level: meta.level, status: 'open', price, size: volume, venue, placedAt: Date.now() });
-            if (String(side).toLowerCase() === 'sell') {
-              reserveSell(base, volume, oid);
+            if (isSell) {
+              releaseReserve(oid);
               invalidateLiveCache();
             }
-          }
+          } else releaseReserve(null);
           return { order_id: oid };
         } catch (e) { failCtx(e.message); return null; }
       }
@@ -333,7 +347,10 @@ export function createExchange(cfg, orderRegistry) {
         if (lev >= 2) params.leverage = String(lev);
         const r = await krakenPrivate(cfg, 'AddOrder', params);
         const oid = r.txid && r.txid[0];
-        if (oid) orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
+        if (oid) {
+          orderRegistry.set(oid, { pair, side, level: meta.level, status: 'open', price, size: volume, venue });
+          if (isSell) releaseReserve(oid);
+        } else releaseReserve(null);
         return { order_id: oid };
       } catch (e) { failCtx(e.message); return null; }
     },

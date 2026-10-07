@@ -106,10 +106,15 @@ export async function runVenueRecon(cfg, orderRegistry, pnl) {
     const acct = (accts.data || []).find((a) => String((a.currency && a.currency.code) || '').toUpperCase() === quote);
     if (acct && acct.id) {
       const tx = await coinbaseRequest(cfg, 'GET', '/v2/accounts/' + acct.id + '/transactions?limit=25');
-      for (const t of tx.data || []) {
+      const list = tx.data || [];
+      if (!list.length && pnl && typeof pnl.unexplainedCashMove === 'function' && pnl.unexplainedCashMove() && !runVenueRecon.emptyTx) {
+        runVenueRecon.emptyTx = true;
+        console.warn('transfer history empty while cash moved');
+      }
+      for (const t of list) {
         const type = String(t.type || '');
-        if (!/deposit|withdraw|transfer|send|receive/i.test(type)) continue;
-        if (/buy|sell|trade|advanced/i.test(type)) continue;
+        if (/buy|sell|trade|advanced_trade|\bfill\b/i.test(type)) continue;
+        if (!/deposit|withdraw|transfer|send|receive|funding/i.test(type)) continue;
         if (!t.id || seenTx.has(t.id)) continue;
         const raw = Number(t.amount && t.amount.amount);
         if (!raw) continue;
