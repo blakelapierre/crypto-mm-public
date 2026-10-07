@@ -86,8 +86,10 @@ export function decideBook(x) {
   const freeMargin = x.freeMargin == null ? Infinity : Math.max(0, Number(x.freeMargin) || 0);
   const signal = x.signal === 'long' || x.signal === 'short' ? x.signal : null;
   if (!(mid > 0) || !(half > 0)) return { bid: null, ask: null, why: 'no-mid' };
-  const askPx = formatPrice(mid * (1 + half), pxd);
-  const bidPx = formatPrice(mid * (1 - half), pxd);
+  // The US book rounds to the nearest cent. A buy that rounds up crosses and is canceled.
+  const tick = 0.01;
+  const bidPx = formatPrice(Math.floor((mid * (1 - half)) / tick + 1e-8) * tick, 8);
+  const askPx = formatPrice(Math.ceil((mid * (1 + half)) / tick - 1e-8) * tick, 8);
   const why = [];
   let bid = null;
   let ask = null;
