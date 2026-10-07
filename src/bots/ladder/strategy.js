@@ -536,18 +536,24 @@ function quoteClear(mid, px, side, half) {
 
 async function cancelHighestToFree(ex, pairState, keepPair, keepSide) {
   if (!pairState) return false;
+  const clip = Number(process.env.CLIP_MAX_USD || 1.5);
   const rows = [];
   for (const [p, st] of pairState) {
     const lad = st && st.ladder;
     if (!lad) continue;
-    for (const o of [...(lad.buys || []), ...(lad.sells || [])]) {
-      if (o.status !== 'open' || !o.orderId) continue;
-      if (Number(o.level) <= 1) continue;
-      rows.push({ p, o });
+    let openUsd = 0;
+    for (const o of (lad.buys || [])) {
+      if (o.status === 'open' && o.orderId) openUsd += Number(o.price) * Number(o.size);
+    }
+    const over = openUsd - allocFor(st.symbol);
+    if (over < clip) continue;
+    for (const o of (lad.buys || [])) {
+      if (o.status !== 'open' || !o.orderId || Number(o.level) <= 1) continue;
+      rows.push({ p, o, over });
     }
   }
-  rows.sort((x, y) => Number(y.o.level) - Number(x.o.level) || (x.p === keepPair ? 1 : -1));
   if (!rows.length) return false;
+  rows.sort((x, y) => y.over - x.over || Number(y.o.level) - Number(x.o.level) || (x.p === keepPair ? 1 : -1));
   const row = rows[0];
   console.log('  FREE L' + row.o.level + ' ' + row.o.side + ' ' + row.p + ' @ ' + row.o.price);
   try { await ex.cancelOrder(row.o.orderId); } catch { /* ignore */ }
@@ -940,6 +946,11 @@ async function shapeBidDepth(cfg, ex, a, ladder, book, getLive) {
   const open = (ladder.buys || []).filter((o) => o.status === 'open' && o.orderId);
   const openUsd = open.reduce((s, o) => s + Number(o.price) * Number(o.size), 0);
   if (openUsd - alloc >= clip && open.length) {
+    if (!(alloc > 0)) {
+      const live0 = typeof getLive === 'function' ? await getLive() : null;
+      const veto = live0 ? hardBidVeto(a, live0) : '';
+      if (!veto || veto === 'tape') return;
+    }
     const deep = open.reduce((b, o) => (Number(o.price) < Number(b.price) ? o : b));
     try { await ex.cancelOrder(deep.orderId); } catch { /* ignore */ }
     deep.status = 'cancelled';
@@ -1192,6 +1203,9 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol);
   const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
+  const clipUsd = Number(process.env.CLIP_MAX_USD || 1.5);
+  const allocUsd = allocFor(a.symbol);
+  const keepBids = Math.min(Number(process.env.BID_CLIPS_MAX || 8), allocUsd > 0 ? Math.max(1, Math.ceil(allocUsd / clipUsd)) : 0);
   const tooNew = Date.now() - (state.bornAt || 0) < 120000;
   if (wantLv > haveLv && !tooNew) {
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
@@ -1205,7 +1219,12 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     }
   }
   if (wantLv < haveLv) {
-    const drop = [...ladder.buys, ...ladder.sells].filter((o) => o.status === 'open' && Number(o.level) > wantLv && !(o.cover || (o.side === 'sell' && Number(o.level) === 1)));
+    const drop = [...ladder.buys, ...ladder.sells].filter((o) => {
+      if (!(o.status === 'open' && Number(o.level) > wantLv)) return false;
+      if (o.cover || (o.side === 'sell' && Number(o.level) === 1)) return false;
+      if (String(o.side).toLowerCase() === 'buy' && Number(o.level) <= keepBids) return false;
+      return true;
+    });
     if (drop.length) {
       console.log('  COLLAPSE ' + a.symbol + ' L' + haveLv + ' -> L' + wantLv);
       await Promise.all(drop.map(async (o) => {
@@ -1272,7 +1291,8 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
     const tickN = Number(tick) || 0;
     const stepNow = gridStep(cfg, a.pair, a.symbol);
-    const band = Math.max(tickN / (book.mid || 1), stepNow * (ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol) + 0.25));
+    const depthLv = Math.max(ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol), keepBids);
+    const band = Math.max(tickN / (book.mid || 1), stepNow * (depthLv + 0.25));
     const keepBuy = new Set(ladder.buys.filter((o) => {
       if (!(o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN)) return false;
       return (book.mid - Number(o.price)) / book.mid <= band;
