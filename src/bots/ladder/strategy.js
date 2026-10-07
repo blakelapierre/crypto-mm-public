@@ -584,38 +584,33 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     : clampAwayFromMid(mid, mid * (1 - bidFloor), 'buy', bidFloor, a.pairDecimals);
   const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
-  function stillGood(side, px) {
-    const p = Number(px);
-    if (!(p > 0)) return false;
-    if (side === 'sell') {
-      const off = (p - mid) / mid;
-      return off >= half * 0.8 && off <= half * 2.2 && p > mid;
-    }
-    const off = (mid - p) / mid;
-    return off >= half * 0.8 && off <= half * 2.2 && p < mid;
-  }
   async function pin(side, target) {
     const key = a.pair + ':' + side;
     if (Date.now() - (pinAt.get(key) || 0) < cool) return;
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
-    const l1 = open.filter((o) => Number(o.level) === 1);
-    const move = Number(process.env.L1_REQUOTE_BPS || cfg.requoteMoveBps || 8) / 10000;
-    const lastM = pinMid.get(key);
-    const midMoved = lastM > 0 && Math.abs(mid - lastM) / lastM >= move;
-    if (open.length && !midMoved) {
-      const atTouch = side === 'buy' && rising && Math.abs(Number(l1[0] && l1[0].price) - Number(target)) / mid < 0.0008;
-      const good = l1.find((o) => stillGood(side, o.price) || formatPrice(Number(o.price), a.pairDecimals) === String(target) || atTouch);
-      if (good) return;
-      if (l1.length && !(side === 'buy' && rising)) return;
+    const step = Math.max(gridStep(cfg, a.pair, a.symbol), l1HalfFrac(cfg, a.pair));
+    const prices = open.map((o) => Number(o.price)).filter((p) => p > 0);
+    const nearest = prices.length ? (side === 'buy' ? Math.max(...prices) : Math.min(...prices)) : 0;
+    const targetN = Number(target);
+    const gap = !nearest || !(mid > 0) ? Infinity : (side === 'buy' ? (targetN - nearest) / mid : (nearest - targetN) / mid);
+    if (prices.length && gap < step * 0.75) {
+      pinAt.set(key, Date.now());
+      return;
     }
-    const prevSell = side === 'sell' ? l1.map((o) => ({ price: o.price, size: o.size })) : [];
-    if (midMoved && l1.length) {
-      for (const o of l1) {
-        try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-        o.status = 'cancelled';
+    const clipUsd = Number(process.env.CLIP_MAX_USD || 1.5);
+    const allocUsd = allocFor(a.symbol);
+    const maxOpen = side === 'buy'
+      ? Math.min(Number(process.env.BID_CLIPS_MAX || 8), allocUsd > 0 ? Math.max(1, Math.ceil(allocUsd / clipUsd)) : Number(process.env.BID_CLIPS_MAX || 8))
+      : 1;
+    if (open.length >= maxOpen) {
+      if (side !== 'buy') {
+        pinAt.set(key, Date.now());
+        return;
       }
-      if (side === 'sell') { try { invalidateLiveCache(); } catch { /* ignore */ } }
+      const far = open.slice().sort((a1, b1) => Number(a1.price) - Number(b1.price))[0];
+      console.log('  SCALE drop far bid ' + a.symbol + ' @ ' + far.price);
+      await cancelSide(ex, [far], 'scale');
     }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
@@ -626,13 +621,6 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       }
     }
     if (!size) {
-      if (side === 'sell' && prevSell[0]) {
-        const r0 = await ex.limitOrder(a.pair, 'sell', prevSell[0].price, prevSell[0].size, { level: 1, why: 'repost' });
-        if (r0 && r0.order_id) {
-          legs.push({ level: 1, side: 'sell', price: prevSell[0].price, size: prevSell[0].size, orderId: r0.order_id, status: 'open' });
-          console.log('  REPOST ask ' + a.symbol + ' ' + prevSell[0].size + ' @ ' + prevSell[0].price);
-        }
-      }
       pinAt.set(key, Date.now());
       return;
     }
@@ -642,27 +630,19 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       if (Number(size) > held * 0.97) size = formatVolume(held * 0.9, a.lotDecimals);
       if (!(Number(size) > 0)) { pinAt.set(key, Date.now()); return; }
     }
-    console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
+    console.log('  SCALE ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' stack=' + open.length);
     if (side === 'buy') notePendingBid(a.symbol, Number(target) * Number(size));
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
     if (side === 'buy') clearPendingBid(a.symbol);
     if (!(r && r.order_id)) {
-      if (side === 'sell' && prevSell[0]) {
-        const r0 = await ex.limitOrder(a.pair, 'sell', prevSell[0].price, prevSell[0].size, { level: 1, why: 'repost' });
-        if (r0 && r0.order_id) legs.push({ level: 1, side: 'sell', price: prevSell[0].price, size: prevSell[0].size, orderId: r0.order_id, status: 'open' });
-      }
       pinAt.set(key, Date.now() + Number(process.env.FUNDS_COOL_MS || 45000));
       return;
     }
     logEvent('place', { pair: a.pair, symbol: a.symbol, side, level: 1, price: target, size, orderId: r.order_id, mid });
     pinAt.set(key, Date.now());
     pinMid.set(key, mid);
-    for (const o of l1) {
-      try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-      o.status = 'cancelled';
-    }
     legs.push({
-      level: 1, side, price: target, size,
+      level: open.length + 1, side, price: target, size,
       orderId: r.order_id,
       status: 'open',
     });
@@ -1203,9 +1183,6 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   const wantLv = ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol);
   const haveLv = Math.max(0, ...[...ladder.buys, ...ladder.sells].map((o) => o.level || 0));
-  const clipUsd = Number(process.env.CLIP_MAX_USD || 1.5);
-  const allocUsd = allocFor(a.symbol);
-  const keepBids = Math.min(Number(process.env.BID_CLIPS_MAX || 8), allocUsd > 0 ? Math.max(1, Math.ceil(allocUsd / clipUsd)) : 0);
   const tooNew = Date.now() - (state.bornAt || 0) < 120000;
   if (wantLv > haveLv && !tooNew) {
     const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
@@ -1287,35 +1264,11 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     publishOrders(a, ladder, book.mid);
   }
   if ((needRequote && !filledNow) || pulled) {
-    console.log('  REQUOTE ' + a.symbol + ' mid ' + Number(lastMid).toFixed(6) + ' -> ' + book.mid.toFixed(6) + (pulled ? ' pulled=' + pulled : '') + (needResize ? ' w ' + wOld.toFixed(2) + 'x->' + wNow.toFixed(2) + 'x' : ''));
-    const next = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
-    const tickN = Number(tick) || 0;
-    const stepNow = gridStep(cfg, a.pair, a.symbol);
-    const depthLv = Math.max(ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol), keepBids);
-    const band = Math.max(tickN / (book.mid || 1), stepNow * (depthLv + 0.25));
-    const keepBuy = new Set(ladder.buys.filter((o) => {
-      if (!(o.status === 'open' && o.orderId && Number(o.price) < book.mid - tickN)) return false;
-      return (book.mid - Number(o.price)) / book.mid <= band;
-    }).map((o) => o.orderId));
-    const keepSell = new Set(ladder.sells.filter((o) => {
-      if (!(o.status === 'open' && o.orderId && Number(o.price) > book.mid + tickN)) return false;
-      return (Number(o.price) - book.mid) / book.mid <= band;
-    }).map((o) => o.orderId));
-    await cancelSide(ex, ladder.buys.filter((o) => o.status === 'open' && !keepBuy.has(o.orderId)));
-    await cancelSide(ex, ladder.sells.filter((o) => o.status === 'open' && !keepSell.has(o.orderId)));
-    const keptB = ladder.buys.filter((o) => keepBuy.has(o.orderId));
-    const keptS = ladder.sells.filter((o) => keepSell.has(o.orderId));
-    if (keptB.length) next.buys = [...keptB, ...next.buys.filter((n) => !keptB.some((k) => k.level === n.level))];
-    if (keptS.length) next.sells = [...keptS, ...next.sells.filter((n) => !keptS.some((k) => k.level === n.level))];
-    state.ladder = next;
     state.lastMid = book.mid;
-    state.lastRequoteAt = Date.now();
     state.lastWeight = wNow;
     state.rungKey = hintKey;
     if (needRungs) state.lastRungAt = Date.now();
-    publishOrders(a, next, book.mid);
-    await placeLadder(cfg, ex, a.pair, next, a, getLive, book.mid >= lastMid ? 'buy' : 'sell');
-    printLadder(a.symbol, a.pair, state.ladder, book);
+    publishOrders(a, ladder, book.mid);
     return;
   }
   state.lastMid = book.mid;
