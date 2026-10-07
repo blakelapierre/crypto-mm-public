@@ -2,9 +2,9 @@ const reservations = [];
 const balances = new Map();
 const cool = new Map();
 let haveBalances = false;
+let snapshotAt = 0;
 
 export function noteBalances(positions, asOf) {
-  const prev = new Map(balances);
   const seen = new Set();
   for (const [sym, p] of Object.entries(positions || {})) {
     const key = String(sym || '').toUpperCase();
@@ -14,31 +14,29 @@ export function noteBalances(positions, asOf) {
   }
   for (const k of [...balances.keys()]) if (!seen.has(k)) balances.set(k, 0);
   haveBalances = true;
-  const cut = asOf || Date.now();
-  const grace = Number(process.env.RESERVE_GRACE_MS || 15000);
+  snapshotAt = asOf || Date.now();
+  // Available already includes holds for orders placed before this snapshot.
+  for (let i = reservations.length - 1; i >= 0; i--) {
+    if (!(reservations[i].at > snapshotAt)) reservations.splice(i, 1);
+  }
+}
+
+export function snapshotAgeMs() {
+  return snapshotAt ? Date.now() - snapshotAt : Infinity;
+}
+
+export function reservationSnap() {
+  const qty = {};
+  const nBy = {};
+  let oldest = 0;
   const now = Date.now();
-  const bySym = new Map();
   for (const r of reservations) {
-    if (!bySym.has(r.sym)) bySym.set(r.sym, []);
-    bySym.get(r.sym).push(r);
+    qty[r.sym] = (qty[r.sym] || 0) + r.size;
+    nBy[r.sym] = (nBy[r.sym] || 0) + 1;
+    const age = (now - r.at) / 1000;
+    if (age > oldest) oldest = age;
   }
-  for (const [sym, rows] of bySym) {
-    const before = prev.has(sym) ? Number(prev.get(sym)) : null;
-    const after = Number(balances.get(sym) || 0);
-    let left = before == null ? 0 : Math.max(0, before - after);
-    rows.sort((a, b) => a.at - b.at);
-    for (const r of rows) {
-      if (r.at >= cut) continue;
-      const i = reservations.indexOf(r);
-      if (i < 0) continue;
-      if (left + 1e-9 >= r.size * 0.5) {
-        left -= r.size;
-        reservations.splice(i, 1);
-        continue;
-      }
-      if (now - Math.max(r.at, cut) >= grace) reservations.splice(i, 1);
-    }
-  }
+  return { count: reservations.length, qty, nBy, oldestSec: reservations.length ? oldest : 0, snapshotAt };
 }
 
 export function reserveSell(symbol, size, orderId) {
@@ -57,16 +55,22 @@ export function dropReservation(orderId) {
 
 export function dropSymbolReservations(symbol) {
   const sym = String(symbol || '').toUpperCase();
-  if (!sym) return;
+  if (!sym) return 0;
+  let n = 0;
   for (let i = reservations.length - 1; i >= 0; i--) {
-    if (reservations[i].sym === sym) reservations.splice(i, 1);
+    if (reservations[i].sym === sym) { reservations.splice(i, 1); n += 1; }
   }
+  return n;
+}
+
+export function clearReservations() {
+  reservations.length = 0;
 }
 
 export function reserved(symbol) {
   const sym = String(symbol || '').toUpperCase();
   let s = 0;
-  for (const r of reservations) if (r.sym === sym) s += r.size;
+  for (const r of reservations) if (r.sym === sym && r.at > snapshotAt) s += r.size;
   return s;
 }
 

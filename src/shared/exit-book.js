@@ -1,4 +1,5 @@
 import { invalidateLiveCache } from './portfolio.js';
+import { sellable } from './free-qty.js';
 
 const book = new Map();
 const fails = { insufficient: [], decimals: [], postOnly: [], other: [] };
@@ -19,7 +20,11 @@ export function noteStrandedFee(orderId, fee) {
   const row = [...takerLog].reverse().find((t) => t.orderId === orderId);
   if (row) row.fee = Number(fee) || 0;
 }
-export function dustList() { return lastDust; }
+export function dustList() {
+  const untradeable = lastDust;
+  const untradeableUsd = untradeable.reduce((s, d) => s + Number(d.usd || d.value || 0), 0);
+  return { untradeable, untradeableUsd };
+}
 export function strandedTakerSnap() {
   const hour = Date.now() - 3600000;
   const recent = takerLog.filter((t) => t.ts >= hour);
@@ -52,6 +57,7 @@ export function queueExit(symbol, pair, qty, mid, meta = {}) {
     symbol, pair, qty: Number(qty), since: Date.now(), sinceMid: Number(mid) || 0,
     lastPostAt: 0, steps: 0, lotDecimals: meta.lotDecimals, pairDecimals: meta.pairDecimals,
     lastErr: '', price: 0, size: 0, taker: false, atTouchAt: 0,
+    quoteMin: meta.quoteMin, baseMin: meta.baseMin,
   });
   console.log('  EXIT queue ' + symbol + ' ' + qty);
 }
@@ -59,26 +65,23 @@ export function queueExit(symbol, pair, qty, mid, meta = {}) {
 export function sweepStranded(live, mmAlloc) {
   const keep = new Set((mmAlloc || []).map((a) => a.symbol));
   const dust = [];
-  const minUsd = Number(process.env.MIN_ORDER_USD || 1);
-  const dustFloor = Number(process.env.DUST_EXIT_USD || 0.15);
   for (const [sym, pos] of Object.entries((live && live.positions) || {})) {
     if (keep.has(sym)) continue;
     const qty = Number(pos.amount || 0) + Number(pos.hold || 0);
-    const mid = Number(pos.mid || 0);
-    const value = qty * mid;
+    const free = sellable(sym, Number(pos.amount || 0));
+    const bid = Number(pos.bestBid || pos.mid || 0);
+    const quoteMin = Number(pos.quoteMin || 1);
+    const baseMin = Number(pos.baseMin || pos.ordermin || 0);
+    const value = qty * bid;
     if (!(qty > 0)) continue;
-    if (!pos.pair || !(value >= dustFloor)) {
-      dust.push({ symbol: sym, qty, value });
-      continue;
-    }
-    if (value < minUsd) {
-      dust.push({ symbol: sym, qty, value, lastErr: 'below venue min' });
-      if (!book.has(sym)) queueExit(sym, pos.pair, qty, mid, { lotDecimals: pos.lotDecimals, pairDecimals: pos.pairDecimals });
+    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid + 1e-12 >= quoteMin;
+    if (!pos.pair || !tradable) {
+      dust.push({ symbol: sym, qty, usd: value, quoteMin });
       const row = book.get(sym);
-      if (row && !row.orderId) row.lastErr = 'below venue min';
+      if (row && !row.orderId) book.delete(sym);
       continue;
     }
-    queueExit(sym, pos.pair, qty, mid, { lotDecimals: pos.lotDecimals, pairDecimals: pos.pairDecimals });
+    queueExit(sym, pos.pair, free, bid, { lotDecimals: pos.lotDecimals, pairDecimals: pos.pairDecimals, quoteMin, baseMin });
   }
   lastDust = dust;
   return dust;
@@ -103,7 +106,6 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
   const stepMs = Number(process.env.EXIT_STEP_MS || 120000);
   const maxAge = Number(process.env.EXIT_MAX_AGE_MS || 3600000);
   const minUsd = Number(process.env.MIN_ORDER_USD || 1);
-  const dustFloor = Number(process.env.DUST_EXIT_USD || 0.15);
   for (const row of [...book.values()]) {
     if (row.error) continue;
     const rec = row.orderId && orderRegistry.get(row.orderId);
@@ -113,11 +115,12 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
     const amount = Number(pos && pos.amount || 0);
     const hold = Number(pos && pos.hold || 0);
     const total = amount + hold;
-    const midPx = Number((pos && pos.mid) || row.sinceMid || 0);
+    const midPx = Number((pos && (pos.bestBid || pos.mid)) || row.sinceMid || 0);
+    const quoteMin = Number(row.quoteMin || minUsd);
     row.mid = midPx;
     const posValue = total * midPx;
-    if (midPx > 0 && posValue < dustFloor && !open) { book.delete(row.symbol); continue; }
-    if (!open && row.lastErr === 'below venue min' && posValue < minUsd) continue;
+    if (midPx > 0 && posValue + 1e-12 < quoteMin && !open) { book.delete(row.symbol); continue; }
+    if (!open && row.lastErr === 'belowMin' && posValue < quoteMin) continue;
     if (open && Date.now() - row.lastPostAt < stepMs && Date.now() - row.since < maxAge) continue;
     try {
       const b = await ex.getBook(row.pair);
@@ -158,12 +161,8 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
       }
       const openSize = open ? Number(row.size || (rec && rec.size) || 0) : 0;
       const target = floorVol(openSize + amount, lotDec(row));
-      if (!(target > 0) || target * px < dustFloor) {
+      if (!(target > 0) || target * px + 1e-12 < quoteMin) {
         if (!open) book.delete(row.symbol);
-        continue;
-      }
-      if (target * px < minUsd) {
-        row.lastErr = 'below venue min';
         continue;
       }
       if (open && row.size && target + (10 ** -lotDec(row)) < Number(row.size)) {
@@ -181,8 +180,7 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
       }
       const p3 = live && live.positions && live.positions[row.symbol];
       const size = floorVol(Number(p3 && p3.amount || target), lotDec(row));
-      if (!(size > 0) || size * px < dustFloor) continue;
-      if (size * px < minUsd) { row.lastErr = 'below venue min'; continue; }
+      if (!(size > 0) || size * px + 1e-12 < quoteMin) { row.lastErr = 'belowMin'; continue; }
       let r = await ex.limitOrder(row.pair, 'sell', px, size, { level: 1, why: 'exit' });
       if (!r || !r.order_id) {
         const retryPx = ceilPx(ask + inc, pxDec(row));
@@ -198,7 +196,13 @@ export async function tickExits(ex, orderRegistry, live, getLive) {
         row.lastErr = '';
         orderRegistry.set(r.order_id, { orderId: r.order_id, pair: row.pair, symbol: row.symbol, side: 'sell', price: px, size, status: 'open', why: 'exit', mid: b.mid, placedAt: Date.now() });
         console.log('  EXIT sell ' + row.symbol + ' ' + size + ' @ ' + px);
-      } else row.lastErr = 'no id';
+      } else if (r && r.skipped) {
+        row.lastErr = 'clamp sellable=' + Number(r.sellable || 0) + ' reserved=' + Number(r.reserved || 0);
+      } else if (r && /post.only|INVALID_LIMIT/i.test(String(r.error || ''))) {
+        row.lastErr = 'postOnly';
+      } else {
+        row.lastErr = 'venue:' + String((r && r.error) || 'no id').slice(0, 80);
+      }
     } catch (e) {
       row.lastErr = e.message;
       noteLimitFail(e.message);

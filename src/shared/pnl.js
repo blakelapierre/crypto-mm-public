@@ -61,6 +61,7 @@ export function createPnl() {
     inv.set(sym, (inv.get(sym) || 0) + (buy ? qty : -qty));
     const b = book(sym);
     const notional = rec.filledValue > 0 ? Number(rec.filledValue) : qty * px;
+    fillCash += buy ? -(notional + fee) : (notional - fee);
     b.fills += 1;
     b.fees += fee;
     if (buy) b.buyVolUsd = (b.buyVolUsd || 0) + notional; else b.sellVolUsd = (b.sellVolUsd || 0) + notional;
@@ -82,6 +83,7 @@ export function createPnl() {
   const transfers = [];
   let unattributed = 0;
   let lastFillAt = 0;
+  let fillCash = 0;
   let lastPosMap = null;
   const transferIds = new Set();
   let recentTransfer = 0;
@@ -139,6 +141,34 @@ export function createPnl() {
       }
       return true;
     }
+    let mtm = 0;
+    let qtyVal = 0;
+    if (lastPosMap) {
+      const keys = new Set([...lastPosMap.keys(), ...nowMap.keys()]);
+      for (const k of keys) {
+        const a = lastPosMap.get(k);
+        const b = nowMap.get(k);
+        const qa = a ? a.qty : 0;
+        const qb = b ? b.qty : 0;
+        const midPrev = a && a.mid > 0 ? a.mid : 0;
+        const midNow = b && b.mid > 0 ? b.mid : 0;
+        const midUse = midNow > 0 ? midNow : midPrev;
+        if (qa && midPrev > 0 && midNow > 0) mtm += qa * (midNow - midPrev);
+        if (midUse > 0) qtyVal += (qb - qa) * midUse;
+      }
+    }
+    if (prevEq != null && dCash != null && startEquity != null) {
+      const step = Number(live.totalEquity) - prevEq;
+      const residual = step - mtm - qtyVal - fillCash;
+      const residualCash = dCash - fillCash;
+      const minDep = Number(process.env.DEPOSIT_DETECT_USD || 1);
+      const tol = Math.max(0.05, Math.abs(residualCash) * 0.02);
+      if (Math.abs(residualCash) >= minDep && Math.abs(residual - residualCash) <= tol) {
+        const bucket = Math.floor(Date.now() / 60000);
+        noteTransfer(residualCash, 'cash-residual', 'cash-residual:' + bucket + ':' + residualCash.toFixed(2));
+      }
+    }
+    fillCash = 0;
     if (prevEq != null && dCash != null && startEquity != null) {
       const step = Number(live.totalEquity) - prevEq;
       const tol = Math.max(0.05, Math.abs(step) * 0.01);

@@ -84,6 +84,12 @@ function capFor(live, symbol) {
   return Math.max(0, eq * frac);
 }
 const pendingBids = new Map();
+let allocPlan = null;
+function allocFor(symbol) {
+  if (!allocPlan || !allocPlan.alloc) return 0;
+  return Number(allocPlan.alloc[symbol] || 0);
+}
+export function bookPlan() { return allocPlan; }
 function pendingBidUsd(symbol) {
   const row = pendingBids.get(String(symbol || '').toUpperCase());
   if (!row) return 0;
@@ -92,10 +98,10 @@ function pendingBidUsd(symbol) {
 }
 function notePendingBid(symbol, usd) {
   const k = String(symbol || '').toUpperCase();
-  const row = pendingBids.get(k) || { usd: 0, at: 0 };
-  row.usd += Number(usd) || 0;
-  row.at = Date.now();
-  pendingBids.set(k, row);
+  pendingBids.set(k, { usd: Number(usd) || 0, at: Date.now() });
+}
+function clearPendingBid(symbol) {
+  pendingBids.delete(String(symbol || '').toUpperCase());
 }
 function allPendingBidUsd() {
   let s = 0;
@@ -143,7 +149,9 @@ function costHeld(live, symbol) {
   const qty = Number((pos && pos.amount) || 0) + Number((pos && pos.hold) || 0);
   const basis = holdBasis(symbol);
   const px = basis > 0 ? basis : Number((pos && pos.mid) || 0);
-  return qty * (px > 0 ? px : 0) + openBidUsd(symbol) + pendingBidUsd(symbol);
+  const open = openBidUsd(symbol);
+  const pend = pendingBidUsd(symbol);
+  return qty * (px > 0 ? px : 0) + open + (open > 0 ? 0 : pend);
 }
 function ret5m(symbol) { return midReturn(symbol, 5 * 60 * 1000); }
 function offHigh15(symbol) {
@@ -161,26 +169,45 @@ function offHigh15(symbol) {
 }
 const bidWhyAt = new Map();
 const bidClearSince = new Map();
-export function bidGate(a, live, opt) {
-  // Deploy goal is account-level (open bids+asks near BOOK_TARGET_FRAC * equity).
-  // Gates here are per-name risk. `park` means parked on this tick, not earlier in the session.
+function bidShape(symbol, live) {
+  let offMult = 1;
+  let sizeMult = 1;
+  const clip = Number(process.env.CLIP_MAX_USD || 1.5);
+  const inv = live ? inventoryUsd(live, symbol) : 0;
+  const r5 = ret5m(symbol);
+  const veto = Number(process.env.TREND_VETO_5M || -0.025);
+  const shapeAt = Number(process.env.TREND_BID_MIN_5M || -0.01);
+  const mult = Number(process.env.TREND_SHAPE_MULT || 2);
+  if (r5 < shapeAt && r5 >= veto) { offMult *= mult; sizeMult *= 0.5; }
+  const peaked = offHigh15(symbol) >= Number(process.env.PEAK_OFF_PCT || 0.015) && midReturn(symbol, 60000) <= 0;
+  if (peaked && inv < clip) { offMult *= mult; sizeMult *= 0.5; }
+  return { offMult, sizeMult };
+}
+export function hardBidVeto(a, live) {
   const sym = a && a.symbol;
-  if (!sym) return { ok: true, reason: '' };
-  const st = livePairState && [...livePairState.values()].find((s) => s.symbol === sym);
-  if (st && st.parked) return { ok: false, reason: 'park' };
-  if (!liveTapeReady(sym)) return { ok: false, reason: 'tape' };
-  if (ret5m(sym) < Number(process.env.TREND_BID_MIN_5M || -0.01)) return { ok: false, reason: 'trend' };
+  if (!sym) return '';
+  if (!liveTapeReady(sym)) return 'tape';
+  if (ret5m(sym) < Number(process.env.TREND_VETO_5M || -0.025)) return 'trend';
   const clip = Number(process.env.CLIP_MAX_USD || 1.5);
   const invUsd = live ? inventoryUsd(live, sym) : 0;
-  if (offHigh15(sym) >= Number(process.env.PEAK_OFF_PCT || 0.015) && midReturn(sym, 60000) <= 0 && invUsd >= clip) return { ok: false, reason: 'peak' };
+  if (offHigh15(sym) >= Number(process.env.PEAK_OFF_PCT || 0.015) && midReturn(sym, 60000) <= 0 && invUsd >= clip) return 'peak';
   if (live) {
     const cap = capFor(live, sym);
-    if (cap > 0 && costHeld(live, sym) >= cap) return { ok: false, reason: 'cap' };
-    if (cashFloorBlocks(live)) return { ok: false, reason: 'cash' };
+    if (cap > 0 && costHeld(live, sym) >= cap) return 'cap';
   }
-  if (inRipCooldown(sym)) return { ok: false, reason: 'rip' };
-  if (!(opt && opt.skipSibling) && a.pair && siblingHasBareBids(livePairState || new Map(), a.pair, live)) return { ok: false, reason: 'sibling' };
-  return { ok: true, reason: '' };
+  if (inRipCooldown(sym)) return 'rip';
+  return '';
+}
+export function bidGate(a, live) {
+  // Hard vetoes only. Trend/peak otherwise shape price and size. Sibling and cash are not vetoes.
+  const sym = a && a.symbol;
+  const shape = bidShape(sym, live);
+  if (!sym) return { ok: true, reason: '', shape };
+  const st = livePairState && [...livePairState.values()].find((s) => s.symbol === sym);
+  if (st && st.parked) return { ok: false, reason: 'park', shape };
+  const reason = hardBidVeto(a, live);
+  if (reason) return { ok: false, reason, shape };
+  return { ok: true, reason: '', shape };
 }
 function bidAllowed(a, live) {
   const g = bidGate(a, live);
@@ -205,12 +232,39 @@ export function quoteSnap(a, ladder, live) {
   const sells = ((ladder && ladder.sells) || []).filter((o) => o.status === 'open');
   const g = a ? bidGate(a, live) : { ok: true, reason: '' };
   let askWhy = '';
-  if (!sells.length) {
-    const amt = Number(live && live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount || 0);
-    if (!(amt > 0)) askWhy = 'noInv';
-    else if (a && cooled(a.pair, 'sell')) askWhy = 'cooled';
-    else if (riseHoldFrac(a.symbol) > 0) askWhy = 'riseHold';
-    else askWhy = 'dust';
+  if (!sells.length && a) {
+    const pos = live && live.positions && live.positions[a.symbol];
+    const amt = Number((pos && pos.amount) || 0) + Number((pos && pos.hold) || 0);
+    const free = freeQty(a.symbol, Number((pos && pos.amount) || 0));
+    const bid = Number((pos && pos.mid) || 0);
+    const quoteMin = Number((pos && pos.quoteMin) || (a && a.quoteMin) || 1);
+    const baseMin = Number((pos && (pos.baseMin || pos.ordermin)) || (a && a.ordermin) || 0);
+    const inc = Number((pos && pos.baseInc) || (a && a.baseInc) || 0);
+    const qty = inc > 0 ? Math.floor((free + 1e-12) / inc) * inc : free;
+    const bidPx = Number((pos && pos.bestBid) || bid || 0);
+    const tradable = qty + 1e-12 >= baseMin && (bidPx > 0 ? qty * bidPx + 1e-12 >= quoteMin : false);
+    const raw = Number((pos && pos.amount) || 0) + Number((pos && pos.hold) || 0);
+    const rawQty = inc > 0 ? Math.floor((raw + 1e-12) / inc) * inc : raw;
+    const rawTradable = rawQty + 1e-12 >= baseMin && bidPx > 0 && rawQty * bidPx + 1e-12 >= quoteMin;
+    if (!(amt > 0) && !(free > 0)) askWhy = 'noInv';
+    else if (cooled(a.pair, 'sell')) askWhy = 'cooled';
+    else if (!tradable && rawTradable && free + 1e-8 < raw * 0.5) askWhy = 'clamp';
+    else if (!tradable) askWhy = 'belowMin';
+    else {
+      askWhy = 'pending';
+      const k = a.symbol;
+      const now = Date.now();
+      quoteSnap._miss = quoteSnap._miss || {};
+      if (!quoteSnap._miss[k]) quoteSnap._miss[k] = now;
+      const ensure = Number(process.env.ASK_ENSURE_MS || 60000);
+      if (now - quoteSnap._miss[k] > ensure && now - (quoteSnap._at && quoteSnap._at[k] || 0) > 60000) {
+        quoteSnap._at = quoteSnap._at || {};
+        quoteSnap._at[k] = now;
+        console.log('  ASK MISSING ' + a.symbol);
+      }
+    }
+  } else if (a) {
+    if (quoteSnap._miss) delete quoteSnap._miss[a.symbol];
   }
   return { bids: buys.length, asks: sells.length, bidWhy: buys.length ? '' : g.reason, askWhy };
 }
@@ -250,8 +304,9 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const kBid = Number(process.env.INV_SKEW_BID_K || 1);
   const kAsk = Number(process.env.INV_SKEW_ASK_K || 0.4);
   const qq = nnQuote({ symbol, buy: 0.5, level: 1, sizeUsd });
-  sizeUsd = Number(sizeUsd) * qq.sizeMult * Math.max(0, 1 - u);
-  const bidOff = step * (1 + kBid * u) + (qq.bidAddBps || 0) / 10000;
+  const shape = bidShape(symbol, live);
+  sizeUsd = Number(sizeUsd) * qq.sizeMult * Math.max(0, 1 - u) * (shape.sizeMult || 1);
+  const bidOff = step * (1 + kBid * u) * (shape.offMult || 1) + (qq.bidAddBps || 0) / 10000;
   const askOff = step * Math.max(0.35, 1 - kAsk * u) + (qq.askAddBps || 0) / 10000;
   const rising = symbol && midReturn(symbol) > 0;
   const sellHalf = rising ? riseSellHalf(cfg, pair, symbol) : l1HalfFrac(cfg, pair);
@@ -277,13 +332,18 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   }
   const buys = []; const sells = [];
   const gate = symbol ? bidGate({ symbol, pair }, live) : { ok: true };
-  const buyLevels = gate.ok ? levels : 0;
-  for (let i = 1; i <= levels; i++) {
-    const size = calculateVolume(cfg, mid, sizeUsd, ordermin, lotDecimals);
+  const clipUsd = Number(process.env.CLIP_MAX_USD || 1.5);
+  const budget = allocFor(symbol);
+  const clips = Math.min(Number(process.env.BID_CLIPS_MAX || 3), budget > 0 ? Math.max(1, Math.ceil(budget / clipUsd)) : 0);
+  const buyLevels = gate.ok ? clips : 0;
+  const sellLevels = 1;
+  const n = Math.max(buyLevels, sellLevels, 1);
+  for (let i = 1; i <= n; i++) {
+    const size = calculateVolume(cfg, mid, Math.min(sizeUsd, clipUsd), ordermin, lotDecimals);
     const buyPx = i === 1 ? bid1 : bid1 * (1 - (i - 1) * step);
     const sellPx = i === 1 ? ask1 : ask1 * (1 + (i - 1) * step);
     if (i <= buyLevels) buys.push({ level: i, side: 'buy', price: formatPrice(buyPx, pairDecimals), size, orderId: null, status: 'pending' });
-    sells.push({ level: i, side: 'sell', price: formatPrice(sellPx, pairDecimals), size, orderId: null, status: 'pending' });
+    if (i <= sellLevels) sells.push({ level: i, side: 'sell', price: formatPrice(sellPx, pairDecimals), size, orderId: null, status: 'pending' });
   }
   return { buys, sells, mid };
 }
@@ -339,53 +399,29 @@ function resizeLeg(cfg, a, o, live) {
       return 0;
     }
     const eq = Number(live.totalEquity || 0);
-    const bookInv = liveMmAlloc
-      ? liveMmAlloc.reduce((s, x) => s + Number((live.positions && live.positions[x.symbol] && live.positions[x.symbol].valueQuote) || 0), 0)
-      : 0;
-    let openBids = 0;
-    if (livePairState) {
-      for (const st of livePairState.values()) {
-        for (const b of (st.ladder && st.ladder.buys) || []) {
-          if (b.status === 'open') openBids += Number(b.price) * Number(b.size);
-        }
-      }
-    }
-    const bookFrac = Math.max(Number(process.env.INV_BOOK_MAX_FRAC || 0.95), Number(process.env.BOOK_TARGET_FRAC || 0.90));
-    const bookCap = eq * bookFrac;
-    if (bookCap > 0 && bookInv + openBids >= bookCap) return 0;
-    if (cashFloorBlocks(live)) return 0;
     const pairs = Math.max(1, Number(process.env.MM_MAX_PAIRS_HARD || process.env.MM_LIVE_PAIRS || cfg.mmMaxPairs || 4));
     const rank = liveMmAlloc ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol)) : [];
     if (rank.length && rank.findIndex((x) => x.symbol === a.symbol) >= pairs) return 0;
-    const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
-    let reserved = 0;
+    let reservedCash = 0;
     if (livePairState) {
       for (const [p, st] of livePairState) {
         if (p === a.pair) continue;
         for (const b of (st.ladder && st.ladder.buys) || []) {
-          if (b.status === 'open' && b.price && b.size) reserved += Number(b.price) * Number(b.size);
+          if (b.status === 'open' && b.price && b.size) reservedCash += Number(b.price) * Number(b.size);
         }
       }
     }
-    const cashLeft = Math.max(0, live.freeQuote - reserved - allPendingBidUsd()) * (cfg.capitalSafetyMargin || 0.92) * hair;
-    let wSum = 0;
-    if (liveMmAlloc && liveMmAlloc.length) {
-      for (const x of liveMmAlloc) wSum += sizeWeightForSymbol(x.symbol) * tapeSizeMult(x.pair);
-    }
-    const wFrac = wSum > 0 ? w / wSum : 1 / pairs;
-    const cashShare = cashLeft * (isL1 ? Math.max(wFrac, 0.15) : wFrac);
-    const room = cap > 0 ? Math.max(0, cap * hard - held) : cashShare;
-    const wantUsd = Number(o.size) > 0 && o.price > 0 ? o.price * o.size : cashShare;
-    const top = liveMmAlloc && liveMmAlloc.length
-      ? [...liveMmAlloc].sort((x, y) => sizeWeightForSymbol(y.symbol) - sizeWeightForSymbol(x.symbol))[0]
-      : null;
-    const isTop = top && top.symbol === a.symbol;
+    const cashLeft = Math.max(0, live.freeQuote - reservedCash - allPendingBidUsd()) * (cfg.capitalSafetyMargin || 0.92) * hair;
+    const clipMax = Number(process.env.CLIP_MAX_USD || 1.5);
+    const budget = allocFor(a.symbol);
+    const already = openBidUsd(a.symbol) + pendingBidUsd(a.symbol);
+    const remain = Math.max(0, budget - already);
+    const shape = bidShape(a.symbol, live);
     const nameRoom = cap > 0 ? Math.max(0, cap * hard - held) : cashLeft;
-    const clipMax = Number(process.env.CLIP_MAX_USD || 2);
-    let useUsd = Math.min(cashLeft, nameRoom, clipMax, cashShare || clipMax);
+    let useUsd = Math.min(cashLeft, nameRoom, clipMax, remain) * (shape.sizeMult || 1);
     const minUsd = Math.max(cfg.minOrderUsd || 0, minV * (o.price || 0));
     if (useUsd < minUsd) {
-      if (nameRoom >= minUsd && cashLeft >= minUsd) useUsd = minUsd;
+      if (nameRoom >= minUsd && cashLeft >= minUsd && remain + 1e-9 >= minUsd) useUsd = minUsd;
       else return 0;
     }
     if (o.price <= 0 || useUsd <= 0) return 0;
@@ -393,7 +429,6 @@ function resizeLeg(cfg, a, o, live) {
     const out = size + 1e-12 < minV
       ? ((minV * o.price <= cashLeft && nameRoom >= minUsd) ? formatVolume(minV, a.lotDecimals) : 0)
       : formatVolume(size, a.lotDecimals);
-    if (Number(out) > 0 && Number(o.price) > 0) notePendingBid(a.symbol, Number(out) * Number(o.price));
     return out;
   }
   if (cooled(a.pair, 'sell')) return 0;
@@ -417,8 +452,13 @@ function resizeLeg(cfg, a, o, live) {
     try { noteHoldExit(a.symbol, h.mid, h.usd); } catch { /* ignore */ }
     holdStart.delete(key);
   }
-  const budget = (held * hair * (1 - riseHold)) / nSell;
+  const quoteMin = Number(a.quoteMin || process.env.MIN_ORDER_USD || 1);
+  const pxNow = Number(o.price) || midPx;
+  let riseFrac = riseHold;
+  if (riseFrac > 0 && pxNow > 0 && held * riseFrac * pxNow < quoteMin) riseFrac = 0;
+  const budget = (held * hair * (1 - riseFrac)) / nSell;
   let size = Number(o.size) > 0 ? Math.min(o.size, budget) : budget;
+  if (pxNow > 0 && (held - size) * pxNow < quoteMin && held * pxNow >= quoteMin) size = held * hair;
   if (size + 1e-12 < minV) {
     const floor = a.ordermin || 0;
     if (held >= minV) return formatVolume(Math.min(held * hair, size || held * hair), a.lotDecimals);
@@ -535,10 +575,12 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       inv0 = Number((pinLive.positions && pinLive.positions[a.symbol] && (Number(pinLive.positions[a.symbol].amount || 0) + Number(pinLive.positions[a.symbol].hold || 0))) || 0);
     } catch { inv0 = 0; }
   }
+  const shape = pinLive ? bidShape(a.symbol, pinLive) : { offMult: 1, sizeMult: 1 };
   const falling = pinLive && !bidAllowed(a, pinLive).ok;
+  const bidFloor = l1HalfFrac(cfg, a.pair) * (shape.offMult || 1);
   const bidT = falling
     ? null
-    : clampAwayFromMid(mid, mid * (1 - l1HalfFrac(cfg, a.pair)), 'buy', l1HalfFrac(cfg, a.pair), a.pairDecimals);
+    : clampAwayFromMid(mid, mid * (1 - bidFloor), 'buy', bidFloor, a.pairDecimals);
   const askT = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const cool = Number(process.env.L1_PIN_MS || 20000);
   function stillGood(side, px) {
@@ -554,7 +596,6 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   async function pin(side, target) {
     const key = a.pair + ':' + side;
     if (Date.now() - (pinAt.get(key) || 0) < cool) return;
-    if (side === 'buy' && siblingHasBareBids(pairState || livePairState || new Map(), a.pair)) return;
     const legs = side === 'buy' ? ladder.buys : ladder.sells;
     const open = legs.filter((o) => o.status === 'open' && o.orderId);
     const l1 = open.filter((o) => Number(o.level) === 1);
@@ -567,11 +608,13 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       if (good) return;
       if (l1.length && !(side === 'buy' && rising)) return;
     }
+    const prevSell = side === 'sell' ? l1.map((o) => ({ price: o.price, size: o.size })) : [];
     if (midMoved && l1.length) {
       for (const o of l1) {
         try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
         o.status = 'cancelled';
       }
+      if (side === 'sell') { try { invalidateLiveCache(); } catch { /* ignore */ } }
     }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
@@ -582,6 +625,13 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       }
     }
     if (!size) {
+      if (side === 'sell' && prevSell[0]) {
+        const r0 = await ex.limitOrder(a.pair, 'sell', prevSell[0].price, prevSell[0].size, { level: 1, why: 'repost' });
+        if (r0 && r0.order_id) {
+          legs.push({ level: 1, side: 'sell', price: prevSell[0].price, size: prevSell[0].size, orderId: r0.order_id, status: 'open' });
+          console.log('  REPOST ask ' + a.symbol + ' ' + prevSell[0].size + ' @ ' + prevSell[0].price);
+        }
+      }
       pinAt.set(key, Date.now());
       return;
     }
@@ -592,8 +642,14 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       if (!(Number(size) > 0)) { pinAt.set(key, Date.now()); return; }
     }
     console.log('  PIN L1 ' + side.toUpperCase() + ' ' + a.symbol + ' @ ' + target + ' half=' + (half * 10000).toFixed(0) + 'bps');
+    if (side === 'buy') notePendingBid(a.symbol, Number(target) * Number(size));
     const r = await ex.limitOrder(a.pair, side, target, size, { level: 1 });
+    if (side === 'buy') clearPendingBid(a.symbol);
     if (!(r && r.order_id)) {
+      if (side === 'sell' && prevSell[0]) {
+        const r0 = await ex.limitOrder(a.pair, 'sell', prevSell[0].price, prevSell[0].size, { level: 1, why: 'repost' });
+        if (r0 && r0.order_id) legs.push({ level: 1, side: 'sell', price: prevSell[0].price, size: prevSell[0].size, orderId: r0.order_id, status: 'open' });
+      }
       pinAt.set(key, Date.now() + Number(process.env.FUNDS_COOL_MS || 45000));
       return;
     }
@@ -725,14 +781,6 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
       const sideLegs = o.side === 'buy' ? buys : sells;
       if (sideLegs.some((x) => x !== o && x.status === 'open' && x.orderId && Number(x.level) === 1)) return;
     }
-    if (o.side === 'buy' && livePairState && siblingHasBareBids(livePairState, pair)) {
-      o.status = 'pending';
-      return;
-    }
-    if (Number(o.level) > 1 && (heavierBare(pair) || !isTopWeight(pair, Math.max(1, Number(process.env.LIVE_FOCUS_N || 4))))) {
-      o.status = 'pending';
-      return;
-    }
     if (getLive && a) {
       const live = await getLive();
       const resized = resizeLeg(cfg, a, o, live);
@@ -744,7 +792,9 @@ export async function placeLadder(cfg, ex, pair, ladder, a = null, getLive = nul
     const halfNow = l1HalfFrac(cfg, pair);
     o.price = clampAwayFromMid(midNow, o.price, o.side, halfNow, a ? a.pairDecimals : 6);
     if (!quoteClear(midNow, o.price, o.side, halfNow)) { o.status = 'pending'; return; }
+    if (o.side === 'buy') notePendingBid(a && a.symbol, Number(o.price) * Number(o.size));
     const r = await ex.limitOrder(pair, o.side, o.price, o.size, { level: o.level });
+    if (o.side === 'buy') clearPendingBid(a && a.symbol);
     if (r && r.order_id) {
       o.orderId = r.order_id; o.status = 'open';
       logEvent('place', { pair, symbol: a && a.symbol, side: o.side, level: o.level, price: o.price, size: o.size, orderId: r.order_id, mid: (livePairState && livePairState.get(pair) && livePairState.get(pair).lastMid) || o.price });
@@ -827,7 +877,7 @@ async function skewOtherSide(cfg, ex, a, ladder, filledLeg) {
   others.push({ level: best.level, side: otherSide, price: newPx, size: skewSize, orderId: r && r.order_id || null, status: r && r.order_id ? 'open' : 'failed' });
 }
 
-async function softStop(cfg, ex, a, state, book, live) {
+async function softStop(cfg, ex, a, state, book, live, getLive = null) {
   if (!state || !state.ladder || !live || !book) return;
   if (Date.now() - (state.lastSoft || 0) < 20000) return;
   const clip = Number(process.env.CLIP_MAX_USD || 1.5);
@@ -844,27 +894,160 @@ async function softStop(cfg, ex, a, state, book, live) {
     try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
     o.status = 'cancelled';
   }
-  const qty = Number(live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount || 0);
+  const rawAmt = Number(live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount || 0);
+  const qty = freeQty(a.symbol, rawAmt);
   const mid = Number(book.mid);
-  const sellQty = qty - clip / Math.max(mid, 1e-12);
-  if (!(sellQty * mid >= Number(process.env.MIN_ORDER_USD || 1))) {
+  const bidPx = Number(book.bid || mid);
+  const quoteMin = Number(a.quoteMin || 1);
+  const baseMin = Number(a.baseMin || a.ordermin || 0);
+  if (!(qty + 1e-12 >= baseMin) || !(qty * bidPx + 1e-12 >= quoteMin)) {
     console.log('  SOFT STOP ' + a.symbol + ' off=' + (off * 100).toFixed(2) + '% ret5=' + (r5 * 100).toFixed(2) + '% sell=0');
     return;
   }
+  const prev = (ladder.sells || []).filter((x) => x.status === 'open' && x.orderId).map((o) => ({ price: o.price, size: o.size }));
   for (const o of (ladder.sells || []).filter((x) => x.status === 'open' && x.orderId)) {
     try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
     o.status = 'cancelled';
   }
+  try { invalidateLiveCache(); } catch { /* ignore */ }
+  let live2 = live;
+  if (getLive) { try { live2 = await getLive(); } catch { live2 = live; } }
+  const qty2 = freeQty(a.symbol, Number(live2 && live2.positions && live2.positions[a.symbol] && live2.positions[a.symbol].amount || rawAmt));
   const half = l1HalfFrac(cfg, a.pair);
   const basis = holdBasis(a.symbol) || 0;
   const feeBps = Number(realizedFeeBps(a.pair) != null ? realizedFeeBps(a.pair) : assumedMakerFeeBps(cfg));
   let px = clampAwayFromMid(mid, Math.max(Number(book.ask || mid), mid * (1 + half)), 'sell', half, a.pairDecimals);
   const floor = basis > 0 ? basis * (1 + feeBps / 10000) : 0;
   if (floor > Number(px)) px = formatPrice(floor, a.pairDecimals);
-  const size = formatVolume(sellQty, a.lotDecimals);
+  const size = formatVolume(qty2, a.lotDecimals);
+  if (!(Number(size) > 0) || Number(size) * bidPx < quoteMin) {
+    if (prev[0]) {
+      const r0 = await ex.limitOrder(a.pair, 'sell', prev[0].price, prev[0].size, { level: 1, why: 'repost' });
+      if (r0 && r0.order_id) ladder.sells.push({ level: 1, side: 'sell', price: prev[0].price, size: prev[0].size, orderId: r0.order_id, status: 'open' });
+    }
+    console.log('  SOFT STOP ' + a.symbol + ' sell=0 kept ask');
+    return;
+  }
   console.log('  SOFT STOP ' + a.symbol + ' off=' + (off * 100).toFixed(2) + '% ret5=' + (r5 * 100).toFixed(2) + '% sell=' + size);
   const r = await ex.limitOrder(a.pair, 'sell', px, size, { level: 1, why: 'soft' });
   if (r && r.order_id) ladder.sells.push({ level: 1, side: 'sell', price: px, size, orderId: r.order_id, status: 'open' });
+  else if (prev[0]) {
+    const r0 = await ex.limitOrder(a.pair, 'sell', prev[0].price, prev[0].size, { level: 1, why: 'repost' });
+    if (r0 && r0.order_id) ladder.sells.push({ level: 1, side: 'sell', price: prev[0].price, size: prev[0].size, orderId: r0.order_id, status: 'open' });
+  }
+}
+
+export function planBook(live, mmAlloc, exitNotional = 0) {
+  const eq = Number(live && live.totalEquity || 0);
+  let dustUsd = 0;
+  for (const [sym, pos] of Object.entries((live && live.positions) || {})) {
+    const qty = Number(pos.amount || 0) + Number(pos.hold || 0);
+    const bid = Number(pos.bestBid || pos.mid || 0);
+    const quoteMin = Number(pos.quoteMin || 1);
+    const baseMin = Number(pos.baseMin || pos.ordermin || 0);
+    const inc = Number(pos.baseInc || 0);
+    const free0 = freeQty(sym, Number(pos.amount || 0));
+    const free = inc > 0 ? Math.floor((free0 + 1e-12) / inc) * inc : free0;
+    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid + 1e-12 >= quoteMin;
+    if (!tradable && qty > 0) dustUsd += Number(pos.valueQuote || qty * bid || 0);
+  }
+  const tradableEq = Math.max(0, eq - dustUsd);
+  const bookTarget = tradableEq * Number(process.env.BOOK_TARGET_FRAC || 0.90);
+  const askBook = openOrderNotional().asks + Number(exitNotional || 0);
+  const freeCash = Number(live && live.freeQuote || 0);
+  const bidBudget = Math.min(freeCash * 0.95, Math.max(0, bookTarget - askBook));
+  const rows = [];
+  for (const a of mmAlloc || []) {
+    const pst = livePairState && livePairState.get(a.pair);
+    if (pst && pst.parked) continue;
+    if (hardBidVeto(a, live)) continue;
+    const w = Math.max(0.01, sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair));
+    const cap = live ? capFor(live, a.symbol) : bidBudget;
+    const held = live ? costHeld(live, a.symbol) : 0;
+    const room = cap > 0 ? Math.max(0, cap - held) : bidBudget;
+    rows.push({ a, w, room });
+  }
+  const wSum = rows.reduce((s, r) => s + r.w, 0) || 1;
+  const alloc = {};
+  for (const r of rows) alloc[r.a.symbol] = Math.max(0, Math.min(r.room, bidBudget * r.w / wSum));
+  allocPlan = { tradableEq, bookTarget, askBook, bidBudget, eligible: rows.map((r) => r.a.symbol), alloc, dustUsd };
+  return allocPlan;
+}
+const blockedSince = new Map();
+export function blockedLeave(mmAlloc, live) {
+  const windowMs = Number(process.env.SET_BLOCKED_MS || 600000);
+  if (!mmAlloc || !mmAlloc.length) return null;
+  const livePairs = new Set(mmAlloc.map((a) => a.pair));
+  for (const p of [...blockedSince.keys()]) if (!livePairs.has(p)) blockedSince.delete(p);
+  let all = true;
+  let oldest = null;
+  for (const a of mmAlloc) {
+    const why = hardBidVeto(a, live);
+    const pos = live && live.positions && live.positions[a.symbol];
+    const qty = Number(pos && pos.amount || 0);
+    const bid = Number((pos && (pos.bestBid || pos.mid)) || 0);
+    const quoteMin = Number((pos && pos.quoteMin) || a.quoteMin || 1);
+    const baseMin = Number((pos && (pos.baseMin || pos.ordermin)) || a.ordermin || 0);
+    const inc = Number((pos && pos.baseInc) || a.baseInc || 0);
+    const free0 = freeQty(a.symbol, qty);
+    const free = inc > 0 ? Math.floor((free0 + 1e-12) / inc) * inc : free0;
+    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid >= quoteMin;
+    if (!why || tradable) { blockedSince.delete(a.pair); all = false; continue; }
+    if (!blockedSince.has(a.pair)) blockedSince.set(a.pair, Date.now());
+    const age = Date.now() - blockedSince.get(a.pair);
+    if (!oldest || age > oldest.age) oldest = { a, age, why };
+  }
+  if (!all || !oldest || oldest.age < windowMs) return null;
+  return oldest;
+}
+export function previewGate(symbol) {
+  if (!symbol) return false;
+  if (inRipCooldown(symbol)) return false;
+  const vs = volStatsForSymbol(symbol);
+  const tape = liveTapeReady(symbol) || (vs && Number(vs.rangePct) >= 0.05 && Number(vs.samples || 0) >= 3);
+  if (!tape) return false;
+  if (ret5m(symbol) < Number(process.env.TREND_VETO_5M || -0.025)) return false;
+  return true;
+}
+async function ensureAsk(cfg, ex, a, ladder, book, getLive) {
+  if (!a || !ladder || !book || !(Number(book.mid) > 0)) return;
+  const st = livePairState && livePairState.get(a.pair);
+  const every = Number(process.env.ASK_ENSURE_MS || 60000);
+  const openSells = (ladder.sells || []).filter((o) => o.status === 'open' && o.orderId);
+  if (st && openSells.length && Date.now() - (st.lastAskEnsure || 0) < every) return;
+  if (st) st.lastAskEnsure = Date.now();
+  if (getLive) { try { lastLive = await getLive() || lastLive; } catch { /* keep */ } }
+  const pos = lastLive && lastLive.positions && lastLive.positions[a.symbol];
+  const avail = freeQty(a.symbol, Number(pos && pos.amount || 0));
+  const bid = Number(book.bid || book.mid);
+  const quoteMin = Number(a.quoteMin || (pos && pos.quoteMin) || 1);
+  const baseMin = Number(a.baseMin || a.ordermin || 0);
+  if (!(avail + 1e-12 >= baseMin) || !(avail * bid >= quoteMin)) return;
+  const openSz = openSells.reduce((s, o) => s + Number(o.size || 0), 0);
+  if (openSz + 1e-8 >= avail * 0.9) return;
+  const mid = Number(book.mid);
+  const holdFrac = riseHoldFrac(a.symbol);
+  const half = l1HalfFrac(cfg, a.pair);
+  const riseHalf = riseSellHalf(cfg, a.pair, a.symbol) * Number(process.env.RISE_HOLD_ASK_MULT || 2);
+  const heldQty = avail * holdFrac;
+  const rest = Math.max(0, avail - heldQty);
+  const risePx = clampAwayFromMid(mid, mid * (1 + Math.max(half, riseHalf)), 'sell', half, a.pairDecimals);
+  const normPx = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
+  const parts = [];
+  const need = Math.max(0, avail - openSz);
+  if (holdFrac > 0 && heldQty * Number(risePx) >= quoteMin && rest * Number(normPx) >= quoteMin && heldQty >= baseMin && rest >= baseMin && !openSells.length) {
+    parts.push({ px: normPx, size: formatVolume(rest, a.lotDecimals), level: 1 });
+    parts.push({ px: risePx, size: formatVolume(heldQty, a.lotDecimals), level: 2, riseHold: true });
+  } else if (need * bid >= quoteMin) {
+    const px = holdFrac > 0 ? risePx : normPx;
+    parts.push({ px, size: formatVolume(need, a.lotDecimals), level: 1, riseHold: holdFrac > 0 });
+  }
+  for (const p of parts) {
+    if (!(Number(p.size) > 0) || Number(p.size) * bid < quoteMin) continue;
+    console.log('  ASK ' + a.symbol + ' ' + p.size + ' @ ' + p.px);
+    const r = await ex.limitOrder(a.pair, 'sell', p.px, p.size, { level: p.level, why: 'ask' });
+    if (r && r.order_id) ladder.sells.push({ level: p.level, side: 'sell', price: p.px, size: p.size, orderId: r.order_id, status: 'open', riseHold: !!p.riseHold });
+  }
 }
 
 export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive = null) {
@@ -877,6 +1060,10 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
   }
   if (!book) return;
   if (a.symbol && book.mid) noteMid(a.symbol, book.mid);
+  const stAsk = pairState.get(a.pair);
+  if (stAsk && stAsk.ladder) {
+    try { await ensureAsk(cfg, ex, a, stAsk.ladder, book, getLive); } catch (e) { console.warn('ask', a.symbol, e.message); }
+  }
   const forced = (cfg.symbols || []).includes(a.symbol);
   const focusN = effectiveFocusN();
   const focused = isTopWeight(a.pair, focusN);
@@ -911,12 +1098,20 @@ export async function processPair(cfg, ex, orderRegistry, pairState, a, orderSiz
     const stClear = pairState.get(a.pair);
     if (stClear && stClear.parked) stClear.parked = false;
   }
-  if (!forced && !liveTapeReady(a.symbol)) return;
+  if (!forced && !liveTapeReady(a.symbol)) {
+    if (!pairState.has(a.pair)) {
+      pairState.set(a.pair, { ladder: { buys: [], sells: [] }, symbol: a.symbol, lastMid: book.mid, bornAt: Date.now() });
+    }
+    const stTape = pairState.get(a.pair);
+    try { await ensureAsk(cfg, ex, a, stTape.ladder, book, getLive); } catch (e) { console.warn('ask', a.symbol, e.message); }
+    publishOrders(a, stTape.ladder, book.mid);
+    return;
+  }
   const wNow = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
   const sized = orderSizeUsd * wNow;
   const live0 = getLive ? await getLive() : null;
   lastLive = live0 || lastLive;
-  if (live0 && book) await softStop(cfg, ex, a, pairState.get(a.pair), book, live0);
+  if (live0 && book) await softStop(cfg, ex, a, pairState.get(a.pair), book, live0, getLive);
   const tick = Number((10 ** -a.pairDecimals).toFixed(a.pairDecimals));
   if (!pairState.has(a.pair)) {
     const ladder = generateLadder(cfg, book.mid, sized, a.pairDecimals, a.lotDecimals, a.ordermin, book, a.pair, a.symbol, live0);
@@ -1098,13 +1293,16 @@ export async function coverInventory(cfg, ex, a, ladder, book, getLive) {
   if (floor > 0 && Number(px) + 1e-12 < floor) px = formatPrice(floor, a.pairDecimals);
   const off = (Number(px) - mid) / mid;
   if (off < half * 0.98) return;
+  const quoteMin = Number(a.quoteMin || process.env.MIN_ORDER_USD || 1);
   const size = formatVolume(need, a.lotDecimals);
-  if (!(Number(size) >= minV) || Number(size) * mid < Number(process.env.MIN_ORDER_USD || 1)) return;
-  console.log('  COVER SELL ' + a.symbol + ' ' + size + ' @ ' + px + ' avail=' + available.toFixed(4));
-  const r = await ex.limitOrder(a.pair, 'sell', px, size, { level: 1 });
+  const left = Math.max(0, available - Number(size));
+  const full = left * mid < quoteMin && available * mid >= quoteMin ? formatVolume(available, a.lotDecimals) : size;
+  if (!(Number(full) >= minV) || Number(full) * mid < quoteMin) return;
+  console.log('  COVER SELL ' + a.symbol + ' ' + full + ' @ ' + px + ' avail=' + available.toFixed(4));
+  const r = await ex.limitOrder(a.pair, 'sell', px, full, { level: 1 });
   if (r && r.order_id) {
-    ladder.sells.push({ level: 1, side: 'sell', price: px, size, orderId: r.order_id, status: 'open', cover: true });
-    logEvent('place', { pair: a.pair, symbol: a.symbol, side: 'sell', level: 1, price: px, size, orderId: r.order_id, mid });
+    ladder.sells.push({ level: 1, side: 'sell', price: px, size: full, orderId: r.order_id, status: 'open', cover: true });
+    logEvent('place', { pair: a.pair, symbol: a.symbol, side: 'sell', level: 1, price: px, size: full, orderId: r.order_id, mid });
   }
 }
 
@@ -1136,41 +1334,6 @@ export function siblingHasBareBids(pairState, selfPair, live) {
   return false;
 }
 
-export async function harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive) {
-  if (!mmAlloc || mmAlloc.length < 2) return;
-  const rows = mmAlloc.map((a) => {
-    const st = pairState.get(a.pair);
-    const w = sizeWeightForSymbol(a.symbol) * tapeSizeMult(a.pair);
-    const mid = Number((st && st.lastMid) || 0);
-    const buys = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open' && o.orderId);
-    const sells = ((st && st.ladder && st.ladder.sells) || []).filter((o) => o.status === 'open' && o.orderId);
-    const bidUsd = buys.reduce((s, o) => s + Number(o.price) * Number(o.size), 0);
-    return { a, w, buys, sells, st, mid, bidUsd };
-  });
-  const ranked = [...rows].sort((x, y) => y.w - x.w);
-  const heavy = ranked[0];
-  const top2 = new Set(ranked.slice(0, 2).map((r) => r.a.pair));
-  if (!heavy) return;
-  const jobs = [];
-  for (const r of rows) {
-    if (top2.has(r.a.pair)) continue;
-    for (const o of r.buys) {
-      const far = r.mid > 0 && (r.mid - Number(o.price)) / r.mid > 0.012;
-      if (Number(o.level) > 1 || far || !heavy.buys.length) jobs.push({ r, o, why: far ? 'far' : 'light' });
-    }
-  }
-  if (!jobs.length && !heavy.buys.length) {
-    const donor = ranked.slice(1).find((r) => r.buys.length);
-    if (donor) jobs.push({ r: donor, o: donor.buys[donor.buys.length - 1], why: 'feed-top' });
-  }
-  if (!jobs.length) return;
-  console.log('  HARVEST n=' + jobs.length + ' -> ' + heavy.a.symbol + ' w=' + heavy.w.toFixed(2) + ' bids=' + heavy.buys.length);
-  await Promise.all(jobs.map(async ({ o }) => {
-    try { await ex.cancelOrder(o.orderId); } catch { /* ignore */ }
-    o.status = 'cancelled';
-  }));
-  if (heavy.st && getLive) {
-    const book = { mid: heavy.st.lastMid, bid: heavy.st.lastBid || heavy.st.lastMid, ask: heavy.st.lastAsk || heavy.st.lastMid };
-    if (book.mid) await pinL1(cfg, ex, heavy.a, heavy.st.ladder, book, getLive, pairState);
-  }
+export async function harvestLowWeightBids() {
+  return;
 }

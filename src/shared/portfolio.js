@@ -90,6 +90,7 @@ export async function fetchLivePortfolio(cfg, ex, productMap, venue = cfg.exchan
     fetchLivePortfolio._lastMid = fetchLivePortfolio._lastMid || new Map();
     fetchLivePortfolio._lastMid.set(sym, mid);
     pos.mid = mid;
+    pos.bestBid = Number((book && book.bid) || 0) || mid;
     pos.valueQuote = (Number(pos.amount || 0) + Number(pos.hold || 0)) * mid;
     Object.assign(pos, info);
     positionsValue += pos.valueQuote;

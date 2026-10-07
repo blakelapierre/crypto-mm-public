@@ -11,9 +11,9 @@ import {
   fetchLivePortfolio, waitForSettlement, buildLists, getMmOrderSizeUsd,
   rebalanceCombined, rebalanceBuysAfterSettle, ensureQuoteForBids, invalidateLiveCache,
 } from '../../shared/portfolio.js';
-import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo, quoteSnap } from './strategy.js';
+import { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo, quoteSnap, planBook, bookPlan, blockedLeave, previewGate, hardBidVeto } from './strategy.js';
 import { pathToFileURL } from 'url';
-let strat = { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo };
+let strat = { processPair, harvestLowWeightBids, setLiveMmAlloc, setLivePairState, holdInfo, quoteSnap, planBook, bookPlan, blockedLeave, previewGate, hardBidVeto };
 async function reloadStrategy() {
   const href = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'strategy.js')).href + '?t=' + Date.now();
   const next = await import(href);
@@ -30,7 +30,8 @@ import { queueExit, tickExits, exitBook, clearExit, sweepStranded, limitFails, d
 import { postStatus, postMids, pullLiveConfig, postVenueScan } from '../../shared/status-client.js';
 import { logSession, logKpi } from '../../shared/fill-log.js';
 import { planRotation } from '../../shared/rotate.js';
-import { noteMid, midReturn } from '../../shared/mid-ring.js';
+import { noteMid, midReturn, remember, seedPxLog } from '../../shared/mid-ring.js';
+import { sellable, reservationSnap } from '../../shared/free-qty.js';
 import { holdRealizedUsd, holdFills } from '../../shared/hold-pnl.js';
 import { bindLiveConfig, liveConfigSnap, applyLiveConfig, persistLiveConfig } from '../../shared/live-config.js';
 import { refreshFeeTier, feeTierSnap, etaNextTierHours, feeTierNextAt } from '../../shared/fee-tier.js';
@@ -128,6 +129,15 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         }))
       : productMap;
     const volScan = createVolScan(cfg, Object.keys(scanMap).length ? scanMap : productMap);
+    seedPxLog(15 * 60 * 1000);
+    {
+      const cut = Date.now() - 15 * 60 * 1000;
+      for (const a of mmAlloc) {
+        for (const x of midHistory(a.symbol) || []) {
+          if (x && x.t >= cut && Number(x.mid) > 0) remember(a.symbol, x.mid, x.t);
+        }
+      }
+    }
     const rotateMin = Number(process.env.ROTATE_MIN_HOLD_MS || 1800000);
     console.log('vol scan every ' + ((cfg.volScanMs || 60000) / 1000) + 's window=' + (cfg.volWindowMin || 15) + 'm hold=' + (rotateMin / 60000) + 'm');
     (async () => {
@@ -202,29 +212,50 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
             return minUsd * 2;
           }
           const idlePairs = new Set();
-          let openBook = 0;
-          for (const a of mmAlloc) {
-            const st = pairState.get(a.pair);
-            const legs = [...((st && st.ladder && st.ladder.buys) || []), ...((st && st.ladder && st.ladder.sells) || [])];
-            for (const o of legs) if (o.status === 'open') openBook += Number(o.price) * Number(o.size);
+          const hardWhy = new Set(['cap', 'rip', 'tape', 'trend', 'peak']);
+          function heldTradable(a) {
+            const pos = live && live.positions && live.positions[a.symbol];
+            const qty = Number(pos && pos.amount || 0);
+            const bidPx = Number((pos && (pos.bestBid || pos.mid)) || 0);
+            const quoteMin = Number((pos && pos.quoteMin) || a.quoteMin || 1);
+            const baseMin = Number((pos && (pos.baseMin || pos.ordermin)) || a.ordermin || 0);
+            const free = sellable(a.symbol, qty);
+            return free + 1e-12 >= baseMin && bidPx > 0 && free * bidPx + 1e-12 >= quoteMin;
           }
-          const eqLive = live ? Number(live.totalEquity || 0) : 0;
-          const bookTargetLive = eqLive * Number(process.env.BOOK_TARGET_FRAC || 0.90);
-          const thinBook = !(eqLive > 0) || openBook < bookTargetLive * 0.5;
-          const freeCash = live ? Number(live.freeQuote || 0) : 0;
           for (const a of mmAlloc) {
             const st = pairState.get(a.pair);
             const bids = ((st && st.ladder && st.ladder.buys) || []).filter((o) => o.status === 'open');
-            const pos = live && live.positions && live.positions[a.symbol];
-            const usd = Number((pos && pos.valueQuote) || 0);
-            if (bids.length || usd >= Math.max(cfg.minOrderUsd || 1, 1)) continue;
-            const why = (quoteSnap(a, st && st.ladder, live).bidWhy) || '';
-            if (!why || why === 'park') continue;
-            if (thinBook && freeCash >= Math.max(cfg.minOrderUsd || 1, 1) && why === 'cash') continue;
+            if (bids.length || heldTradable(a)) continue;
+            const why = typeof strat.hardBidVeto === 'function' ? strat.hardBidVeto(a, live) : '';
+            if (!hardWhy.has(why)) continue;
             a._idleWhy = why;
+            a._idleMs = Number(process.env.IDLE_RELEASE_MS || 900000);
+            a._blockedMin = Math.round((now - (enteredAt.get(a.pair) || now)) / 60000);
             idlePairs.add(a.pair);
           }
-          const { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs } });
+          const blocked = typeof strat.blockedLeave === 'function' ? strat.blockedLeave(mmAlloc, live) : null;
+          if (blocked && blocked.a) {
+            blocked.a._idleWhy = blocked.why;
+            blocked.a._idleMs = Number(process.env.SET_BLOCKED_MS || 600000);
+            blocked.a._blockedMin = Math.round(blocked.age / 60000);
+            idlePairs.add(blocked.a.pair);
+          }
+          if (Date.now() - (runMm._seedAt || 0) > 30000) {
+            runMm._seedAt = Date.now();
+            const cut = Date.now() - 15 * 60 * 1000;
+            for (const r of ranked.slice(0, 16)) {
+              for (const x of midHistory(r.symbol) || []) {
+                if (x && x.t >= cut && Number(x.mid) > 0) remember(r.symbol, x.mid, x.t);
+              }
+            }
+          }
+          let { keep, leaving, additions } = planRotation({ mmAlloc, ranked, now, enteredAt, watch, live, cfg: { ...cfg, idlePairs } });
+          if (typeof strat.previewGate === 'function') additions = additions.filter((r) => strat.previewGate(r.symbol));
+          for (const a of leaving) {
+            if (!idlePairs.has(a.pair)) continue;
+            const nxt = additions.map((x) => x.symbol).join(',') || '-';
+            console.log('  ROTATE blocked ' + a.symbol + ' ' + (a._idleWhy || '') + ' ' + (a._blockedMin || 0) + 'm -> ' + nxt);
+          }
           if (leaving.length || additions.length) {
             if (leaving.length) console.log('MM exit ' + leaving.map((a) => a.symbol).join(',') + ' (>=' + (rotateMin / 60000) + 'm)');
             if (additions.length) console.log('MM enter ' + additions.map((a) => a.symbol + ' ' + Number(a.rangePct).toFixed(2) + '% ret=' + ((a.ret15 || 0) * 100).toFixed(2) + '%').join(', '));
@@ -248,7 +279,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               const pos = live && live.positions && live.positions[a.symbol];
               const qty = Number(pos && pos.amount || 0) + Number(pos && pos.hold || 0);
               if (ret15 < Number(process.env.ROTATE_STOP_RET || -0.04) && qty > 0) {
-                queueExit(a.symbol, a.pair, qty, Number(pos && pos.mid || 0), { lotDecimals: a.lotDecimals, pairDecimals: a.pairDecimals });
+                queueExit(a.symbol, a.pair, qty, Number((pos && (pos.bestBid || pos.mid)) || 0), { lotDecimals: a.lotDecimals, pairDecimals: a.pairDecimals, quoteMin: a.quoteMin || (pos && pos.quoteMin), baseMin: a.baseMin || a.ordermin || (pos && pos.baseMin) });
               }
               invalidateLiveCache();
               for (const rec of orderRegistry.values()) {
@@ -321,7 +352,9 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       for (const st of pairState.values()) if (st.symbol && st.lastMid) mids[st.symbol] = st.lastMid;
       const snap = pnl.print(mids);
       const gap = Number(snap && snap.otherPnl || 0);
-      if (Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05)) {
+      const dustUsd = Number((dustList().untradeableUsd) || 0);
+      const reconFloor = Math.max(Number(process.env.RECON_GAP_USD || 0.05), dustUsd);
+      if (Math.abs(gap) > reconFloor) {
         if (!emitStatus.alerted) console.log('  RECON ALERT gap=' + gap.toFixed(4));
         emitStatus.alerted = true;
       } else emitStatus.alerted = false;
@@ -395,6 +428,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           heldGain: holdInfo(a.symbol, Number(mid) || 0).gain,
           rising: midReturn(a.symbol) > 0,
           quote: quoteSnap(a, (pairState.get(a.pair) || {}).ladder, liveSnap),
+          sellableQty: sellable(a.symbol),
           why: (selection.rows.find((r) => r.symbol === a.symbol) || {}).why || 'in set',
         });
       }
@@ -409,13 +443,16 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       }
       const workingBids = marketRows.reduce((s, m) => s + (Number(m.bidUsd) || 0), 0);
       const workingAsks = marketRows.reduce((s, m) => s + (Number(m.askUsd) || 0), 0);
-      const bookNotional = workingBids + workingAsks;
+      const exitNotional = exitBook().filter((e) => e.orderId).reduce((s, e) => s + Number(e.size || e.qty || 0) * Number(e.price || e.mid || e.sinceMid || 0), 0);
+      if (liveSnap && typeof strat.planBook === 'function') strat.planBook(liveSnap, mmAlloc, exitNotional);
+      const plan = (typeof strat.bookPlan === 'function' && strat.bookPlan()) || {};
+      const bookNotional = workingBids + workingAsks + exitNotional;
       const bookTargetFrac = Number(process.env.BOOK_TARGET_FRAC || 0.90);
       const invUsd = liveSnap ? Number(liveSnap.positionsValue || 0) : 0;
       const cashUsd = liveSnap ? Number(liveSnap.freeQuote || 0) : 0;
       const quoteHold = liveSnap ? Number(liveSnap.quoteHold || 0) : 0;
       const eqNow = Number((liveSnap && liveSnap.totalEquity) || (cashUsd + quoteHold + invUsd));
-      const bookTarget = eqNow * bookTargetFrac;
+      const bookTarget = plan.bookTarget != null ? Number(plan.bookTarget) : eqNow * bookTargetFrac;
       const bookGap = Math.max(0, bookTarget - bookNotional);
       const fillCount = (snap.rows || []).reduce((s, r) => s + Number(r.fills || 0), 0);
       const wallet = [];
@@ -431,6 +468,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
       wallet.sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
       console.log('  WORKING bids=$' + workingBids.toFixed(2) + ' asks=$' + workingAsks.toFixed(2) +
         '  book=$' + bookNotional.toFixed(2) + ' / target=$' + bookTarget.toFixed(2) +
+        '  budget=$' + Number(plan.bidBudget || 0).toFixed(2) +
+        '  eligible=' + ((plan.eligible || []).join(',') || '-') +
         '  inventory=$' + invUsd.toFixed(2) + '  cash=$' + cashUsd.toFixed(2) +
         '  onBids=$' + quoteHold.toFixed(2) + '  equity=$' + eqNow.toFixed(2) +
         '  fills=' + fillCount);
@@ -460,6 +499,8 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           bids: workingBids, asks: workingAsks, inventory: invUsd, cash: cashUsd, cashHold: quoteHold,
           equity: eqNow,
           bookNotional, bookTarget, bookGap, bookTargetFrac,
+          tradableEq: plan.tradableEq, askBook: plan.askBook, bidBudget: plan.bidBudget,
+          eligible: plan.eligible || [], alloc: plan.alloc || {},
           bankEquity: null, fills: fillCount,
           holdUsd: marketRows.reduce((s, m) => s + Number(m.heldUsd || 0), 0),
           holdGain: marketRows.reduce((s, m) => s + Number(m.heldGain || 0), 0),
@@ -470,9 +511,10 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
         fees: Object.assign(feeReport(), { pending: [...orderRegistry.values()].filter((r) => r.needFee).length }),
         scanner: scannerSnap(),
         edgeBps: bookEdgeBps(),
-        recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, notional || 1), gap1hUsd: gap1h, alert: Math.abs(gap) > Number(process.env.RECON_GAP_USD || 0.05), transfers: (snap && snap.transfers) || [], unattributed: snap && snap.unattributed },
+        recon: { gapUsd: gap, gapPct: Math.abs(gap) / Math.max(1, notional || 1), gap1hUsd: gap1h, alert: Math.abs(gap) > reconFloor, transfers: (snap && snap.transfers) || [], unattributed: snap && snap.unattributed },
         exits: exitBook(),
         dust: dustList(),
+        reservations: reservationSnap(),
         strandedTaker: strandedTakerSnap(),
         limitFails: limitFails(),
         selection,
@@ -500,9 +542,16 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
     }
   })();
   const gap = Number(process.env.ORDER_STAGGER_MS || cfg.rateLimitMs || 150);
+  async function refreshAlloc() {
+    let live = null;
+    try { live = await getLive(); } catch { live = null; }
+    const exitN = exitBook().filter((e) => e.orderId).reduce((s, e) => s + Number(e.size || e.qty || 0) * Number(e.price || e.mid || e.sinceMid || 0), 0);
+    if (typeof strat.planBook === 'function') strat.planBook(live, mmAlloc, exitN);
+  }
   const fresh = sortAllocByWeight(mmAlloc.filter((a) => !pairState.has(a.pair)));
   if (fresh.length) {
     console.log('initial ladders high-w first n=' + fresh.length + ' ' + fresh.map((a) => a.symbol).join(','));
+    await refreshAlloc();
     for (const a of fresh) {
       try { await strat.processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive); }
       catch (e) { console.error(a.symbol, e.message); }
@@ -511,6 +560,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
   while (true) {
     sortAllocByWeight(mmAlloc);
     setLiveMmAlloc(mmAlloc);
+    try { await refreshAlloc(); } catch (e) { console.warn('alloc', e.message); }
     try { await strat.harvestLowWeightBids(cfg, ex, mmAlloc, pairState, getLive); } catch (e) { console.warn('harvest', e.message); }
     await Promise.all(mmAlloc.map((a, i) => sleep(i * Math.min(gap, 40)).then(() =>
       strat.processPair(cfg, ex, orderRegistry, pairState, a, orderSizeUsd, getLive).catch((e) => console.error(a.symbol, e.message))

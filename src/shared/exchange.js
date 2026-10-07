@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
 import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement, formatVolume } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
-import { reserveSell, coolSide, sellable, dropReservation } from './free-qty.js';
+import { reserveSell, coolSide, sellable, dropReservation, dropSymbolReservations, clearReservations, reserved, reservationSnap, snapshotAgeMs } from './free-qty.js';
 import { noteLimitFail } from './exit-book.js';
 import { krakenPrivate, krakenPublic } from './kraken.js';
 import { invalidateLiveCache } from './portfolio.js';
@@ -62,7 +62,14 @@ export function createExchange(cfg, orderRegistry) {
           if (!base || STABLECOINS.has(base)) continue;
           const bi = p.base_increment || '0.00000001';
           const qi = p.price_increment || p.quote_increment || '0.01';
-          const rec = { venue: 'coinbase', pair: p.product_id || (base + '-' + q), quoteIncrement: parseFloat(qi) || 0.01, pairDecimals: incrementDecimals(qi), lotDecimals: incrementDecimals(bi), ordermin: parseFloat(p.base_min_size || '0') || 0 };
+          const rec = {
+            venue: 'coinbase', pair: p.product_id || (base + '-' + q),
+            quoteIncrement: parseFloat(qi) || 0.01, pairDecimals: incrementDecimals(qi), lotDecimals: incrementDecimals(bi),
+            ordermin: parseFloat(p.base_min_size || '0') || 0,
+            baseMin: parseFloat(p.base_min_size || '0') || 0,
+            baseInc: parseFloat(bi) || 0,
+            quoteMin: parseFloat(p.quote_min_size || '1') || 1,
+          };
           map[base] = rec; pairMeta.set(rec.pair, rec);
         }
         return map;
@@ -78,7 +85,7 @@ export function createExchange(cfg, orderRegistry) {
         if (STABLECOINS.has(b) || KEEP_ASSETS.has(b)) continue;
         const base = b === 'XBT' ? 'BTC' : b;
         if (map[base]) continue;
-        const rec = { venue: 'kraken', pair: k, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0 };
+        const rec = { venue: 'kraken', pair: k, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0, baseMin: parseFloat(v.ordermin || '0') || 0, baseInc: 10 ** -(v.lot_decimals ?? 8), quoteMin: Number(process.env.MIN_ORDER_USD || 1) };
         map[base] = rec; pairMeta.set(k, rec); if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
@@ -259,12 +266,25 @@ export function createExchange(cfg, orderRegistry) {
         const free = sellable(base);
         if (Number.isFinite(free) && Number(volume) > free + 1e-12) {
           const next = formatVolume(free, info && info.lotDecimals);
-          const minUsd = Number(process.env.MIN_ORDER_USD || 1);
-          const dustFloor = Number(process.env.DUST_EXIT_USD || 0.15);
-          const minV = (info && info.ordermin) || 0;
+          const quoteMin = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
+          const minV = Number((info && (info.baseMin || info.ordermin)) || 0);
           const notional = Number(next) * Number(price);
-          const allowDustExit = meta && meta.why === 'exit' && notional + 1e-12 >= dustFloor;
-          if (!(Number(next) > 0) || Number(next) + 1e-12 < minV || (notional < minUsd && !allowDustExit)) {
+          if (!(Number(next) > 0) || Number(next) + 1e-12 < minV || notional + 1e-12 < quoteMin) {
+            const openSell = [...orderRegistry.values()].some((rec) => {
+              if (!rec || rec.status !== 'open' || String(rec.side || '').toLowerCase() !== 'sell') return false;
+              const sym = String(rec.symbol || String(rec.pair || '').split(/[-/]/)[0] || '').toUpperCase();
+              return sym === base;
+            });
+            if (!meta._reset && snapshotAgeMs() < 10000 && !openSell) {
+              const snap = reservationSnap();
+              const n = (snap.nBy && snap.nBy[base]) || 0;
+              const q = (snap.qty && snap.qty[base]) || 0;
+              if (n > 0) {
+                dropSymbolReservations(base);
+                console.log('  RESERVE RESET ' + base + ' n=' + n + ' qty=' + q);
+                return this.limitOrder(pair, side, price, volume, Object.assign({}, meta, { _reset: true }), venue);
+              }
+            }
             const k = pair;
             const now = Date.now();
             if (now - (this._clampAt && this._clampAt[k] || 0) > 20000) {
@@ -272,7 +292,7 @@ export function createExchange(cfg, orderRegistry) {
               this._clampAt[k] = now;
               console.log('  SELL CLAMP ' + base + ' want=' + volume + ' free=' + (Number.isFinite(free) ? free : 'na'));
             }
-            return { skipped: 'free' };
+            return { skipped: 'free', sellable: free, reserved: reserved(base) };
           }
           volume = next;
         }
@@ -327,7 +347,7 @@ export function createExchange(cfg, orderRegistry) {
               console.log('  post-only retry ' + side + ' ' + pair + ' ' + price + ' -> ' + retryPx);
               return this.limitOrder(pair, side, retryPx, volume, Object.assign({}, meta, { _retried: true }), venue);
             }
-            return null;
+            return { error: msg };
           }
           const oid = (res.success_response && res.success_response.order_id) || res.order_id;
           if (oid) {
@@ -338,7 +358,7 @@ export function createExchange(cfg, orderRegistry) {
             }
           } else releaseReserve(null);
           return { order_id: oid };
-        } catch (e) { failCtx(e.message); return null; }
+        } catch (e) { failCtx(e.message); return { error: String(e.message || e) }; }
       }
       try {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
@@ -352,7 +372,7 @@ export function createExchange(cfg, orderRegistry) {
           if (isSell) releaseReserve(oid);
         } else releaseReserve(null);
         return { order_id: oid };
-      } catch (e) { failCtx(e.message); return null; }
+      } catch (e) { failCtx(e.message); return { error: String(e.message || e) }; }
     },
     async getOrderStatus(orderId, venue = name) {
       if (!orderId) return null;
@@ -406,6 +426,8 @@ export function createExchange(cfg, orderRegistry) {
       } catch (e) { console.warn('list open', e.message); return []; }
     },
     async cancelAll(venue = name) {
+      clearReservations();
+      try { invalidateLiveCache(); } catch { /* ignore */ }
       if (cfg.dryRun) return;
       if (venue === 'coinbase') {
         try {
@@ -418,11 +440,16 @@ export function createExchange(cfg, orderRegistry) {
       try { await krakenPrivate(cfg, 'CancelAll'); } catch (e) { console.warn(e.message); }
     },
     async cancelOrder(orderId, venue = name) {
+      if (orderId) dropReservation(orderId);
+      try { invalidateLiveCache(); } catch { /* ignore */ }
       if (!orderId || String(orderId).startsWith('dry-') || cfg.dryRun) return;
       if (venue === 'coinbase') { try { await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders/batch_cancel', { order_ids: [orderId] }); } catch { /* ignore */ } return; }
       try { await krakenPrivate(cfg, 'CancelOrder', { txid: orderId }); } catch { /* ignore */ }
     },
     async cancelPair(pair, venue = name) {
+      const base = String(pair || '').split(/[-/]/)[0];
+      if (base) dropSymbolReservations(base);
+      try { invalidateLiveCache(); } catch { /* ignore */ }
       if (venue === 'coinbase') {
         try {
           const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?product_ids=' + encodeURIComponent(pair) + '&order_status=OPEN&limit=50');
