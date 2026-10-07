@@ -351,6 +351,14 @@ export async function main() {
           active.push(ranked.find((x) => x.symbol === r.symbol) || r);
         }
       }
+      const activeSyms = new Set(active.map((r) => r.symbol));
+      for (const r of book) {
+        if (activeSyms.has(r.symbol) || heldSyms.has(r.symbol)) continue;
+        for (const o of ordersFor(orders, r)) {
+          if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
+          console.log('  CANCEL stale ' + o.side + ' ' + r.symbol);
+        }
+      }
       let shortUsd = 0;
       let longUsd = 0;
       for (const r of active) {
