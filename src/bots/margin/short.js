@@ -255,9 +255,10 @@ function ordersFor(orders, rec) {
 // US retail margin is a different book from the international pairs. The order
 // pair is the altname plus :BTNL. The plain pair returns Reduce only:Non-ECP.
 const US_LEV = {
-  BTC: 20, ADA: 10, AVAX: 10, DOGE: 10, ETH: 10, LINK: 10, LTC: 10, SOL: 10, SUI: 10, XRP: 10,
-  AAVE: 5, BCH: 5, CRV: 5, DOT: 5, HBAR: 5, HYPE: 5, PEPE: 5, PAXG: 5, SHIB: 5, TRX: 5, UNI: 5, ZEC: 5,
-  PENGU: 3, NEAR: 3, RENDER: 3, ALGO: 2, XLM: 2,
+  BTC: 20, ETH: 20,
+  ADA: 10, AVAX: 10, DOGE: 10, LINK: 10, LTC: 10, SOL: 10, SUI: 10, XRP: 10,
+  AAVE: 5, ALGO: 5, BCH: 5, CRV: 5, DOT: 5, HBAR: 5, HYPE: 5, NEAR: 5, PEPE: 5, PAXG: 5, RENDER: 5, SHIB: 5, TRX: 5, UNI: 5, XLM: 5, ZEC: 5,
+  PENGU: 3,
 };
 
 export async function main() {
