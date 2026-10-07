@@ -215,12 +215,11 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
           const hardWhy = new Set(['cap', 'rip', 'tape', 'trend', 'peak']);
           function heldTradable(a) {
             const pos = live && live.positions && live.positions[a.symbol];
-            const qty = Number(pos && pos.amount || 0);
+            const qty = Number(pos && pos.amount || 0) + Number(pos && pos.hold || 0);
             const bidPx = Number((pos && (pos.bestBid || pos.mid)) || 0);
             const quoteMin = Number((pos && pos.quoteMin) || a.quoteMin || 1);
             const baseMin = Number((pos && (pos.baseMin || pos.ordermin)) || a.ordermin || 0);
-            const free = sellable(a.symbol, qty);
-            return free + 1e-12 >= baseMin && bidPx > 0 && free * bidPx + 1e-12 >= quoteMin;
+            return qty + 1e-12 >= baseMin && bidPx > 0 && qty * bidPx + 1e-12 >= quoteMin;
           }
           for (const a of mmAlloc) {
             const st = pairState.get(a.pair);

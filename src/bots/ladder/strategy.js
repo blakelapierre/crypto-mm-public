@@ -946,9 +946,8 @@ export function planBook(live, mmAlloc, exitNotional = 0) {
     const quoteMin = Number(pos.quoteMin || 1);
     const baseMin = Number(pos.baseMin || pos.ordermin || 0);
     const inc = Number(pos.baseInc || 0);
-    const free0 = freeQty(sym, Number(pos.amount || 0));
-    const free = inc > 0 ? Math.floor((free0 + 1e-12) / inc) * inc : free0;
-    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid + 1e-12 >= quoteMin;
+    const q = inc > 0 ? Math.floor((qty + 1e-12) / inc) * inc : qty;
+    const tradable = q + 1e-12 >= baseMin && bid > 0 && q * bid + 1e-12 >= quoteMin;
     if (!tradable && qty > 0) dustUsd += Number(pos.valueQuote || qty * bid || 0);
   }
   const tradableEq = Math.max(0, eq - dustUsd);
@@ -984,14 +983,13 @@ export function blockedLeave(mmAlloc, live) {
   for (const a of mmAlloc) {
     const why = hardBidVeto(a, live);
     const pos = live && live.positions && live.positions[a.symbol];
-    const qty = Number(pos && pos.amount || 0);
+    const qty = Number(pos && pos.amount || 0) + Number(pos && pos.hold || 0);
     const bid = Number((pos && (pos.bestBid || pos.mid)) || 0);
     const quoteMin = Number((pos && pos.quoteMin) || a.quoteMin || 1);
     const baseMin = Number((pos && (pos.baseMin || pos.ordermin)) || a.ordermin || 0);
     const inc = Number((pos && pos.baseInc) || a.baseInc || 0);
-    const free0 = freeQty(a.symbol, qty);
-    const free = inc > 0 ? Math.floor((free0 + 1e-12) / inc) * inc : free0;
-    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid >= quoteMin;
+    const q = inc > 0 ? Math.floor((qty + 1e-12) / inc) * inc : qty;
+    const tradable = q + 1e-12 >= baseMin && bid > 0 && q * bid >= quoteMin;
     if (!why || tradable) { blockedSince.delete(a.pair); all = false; continue; }
     if (!blockedSince.has(a.pair)) blockedSince.set(a.pair, Date.now());
     const age = Date.now() - blockedSince.get(a.pair);

@@ -74,14 +74,16 @@ export function sweepStranded(live, mmAlloc) {
     const baseMin = Number(pos.baseMin || pos.ordermin || 0);
     const value = qty * bid;
     if (!(qty > 0)) continue;
-    const tradable = free + 1e-12 >= baseMin && bid > 0 && free * bid + 1e-12 >= quoteMin;
+    const row = book.get(sym);
+    if (row && row.orderId) continue;
+    const tradable = qty + 1e-12 >= baseMin && bid > 0 && value + 1e-12 >= quoteMin;
     if (!pos.pair || !tradable) {
       dust.push({ symbol: sym, qty, usd: value, quoteMin });
-      const row = book.get(sym);
       if (row && !row.orderId) book.delete(sym);
       continue;
     }
-    queueExit(sym, pos.pair, free, bid, { lotDecimals: pos.lotDecimals, pairDecimals: pos.pairDecimals, quoteMin, baseMin });
+    const sellQty = free + 1e-12 >= baseMin && free * bid + 1e-12 >= quoteMin ? free : qty;
+    queueExit(sym, pos.pair, sellQty, bid, { lotDecimals: pos.lotDecimals, pairDecimals: pos.pairDecimals, quoteMin, baseMin });
   }
   lastDust = dust;
   return dust;
