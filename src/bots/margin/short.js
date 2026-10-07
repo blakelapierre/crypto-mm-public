@@ -336,7 +336,12 @@ export async function main() {
         console.log('  scan down ' + (previewDn.map((r) => r.symbol + ' ' + (r.ret15 * 100).toFixed(2) + '%').join(', ') || '-'));
       }
       const active = [];
-      const tradable = ranked.filter((r) => !(useMargin && blocked.has(r.symbol)) && r.range >= enter && r.ret15 != null).sort((a, b) => b.range - a.range);
+      const tradable = ranked.filter((r) => {
+        if (useMargin && blocked.has(r.symbol)) return false;
+        if (!(r.range >= enter) || r.ret15 == null) return false;
+        if (!canShort && !(r.ret15 >= openRet)) return false;
+        return true;
+      }).sort((a, b) => b.range - a.range);
       for (const r of tradable) {
         if (active.length >= maxPairs) break;
         active.push(r);
