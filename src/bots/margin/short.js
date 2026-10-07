@@ -149,7 +149,7 @@ async function marginAllowed(cfg, row) {
   if (!(px > 0) || !(vol > 0)) return true;
   try {
     await krakenPrivate(cfg, 'AddOrder', {
-      pair: row.pair, type: 'buy', ordertype: 'limit', leverage: '2', oflags: 'post', validate: true,
+      pair: row.orderPair || row.pair, type: 'buy', ordertype: 'limit', leverage: String(row.maxLev || 2), oflags: 'post', validate: true,
       price: String(formatPrice(px * 0.5, row.pairDecimals)), volume: String(vol),
     });
     return true;
@@ -233,6 +233,7 @@ async function ourOrders(cfg) {
       side: String(d.type || '').toLowerCase(),
       price: Number(d.price || 0),
       size: Number(o.vol || 0) - Number(o.vol_exec || 0),
+      leverage: Number(String(d.leverage || '').split(':')[0]) || 0,
     });
   }
   return out;
@@ -269,9 +270,17 @@ export async function main() {
   const half = (envNum('MAKER_FEE_BPS', 16) + envNum('MIN_EDGE_BPS', 20)) / 10000;
   const minUsd = envNum('MIN_ORDER_USD', 1);
   const reprice = envNum('REQUOTE_BPS', 8) / 10000;
-  const longLev = envNum('MARGIN_LONG', 0);
+  const longRaw = String(process.env.MARGIN_LONG ?? 'max').trim().toLowerCase();
+  const useMaxLev = longRaw === 'max';
+  const longLev = useMaxLev ? 2 : envNum('MARGIN_LONG', 0);
+  const marginLongs = useMaxLev || longLev >= 2;
   const canShort = envBool('MARGIN_SHORT', false);
-  const useMargin = canShort || longLev >= 2;
+  const useMargin = canShort || marginLongs;
+  const levFor = (row) => {
+    const max = Number(row.maxLev) || 2;
+    if (useMaxLev) return max;
+    return longLev >= 2 ? Math.min(longLev, max) : max;
+  };
   loadBlocked();
   const ex = createExchange(cfg, new Map());
   if (!cfg.krakenApiKey || !cfg.krakenApiSecret) throw new Error('Missing Kraken keys');
@@ -286,7 +295,7 @@ export async function main() {
   const book = Object.entries(products)
     .filter(([symbol]) => US_LEV[symbol] && !handsOff.has(symbol))
     .map(([symbol, r]) => ({ ...r, symbol, maxLev: US_LEV[symbol], orderPair: (r.altname || symbol + 'USD') + ':BTNL' }));
-  console.log('kraken book pairs=' + book.length + ' live=' + live + ' clip=$' + clip + ' long=' + (longLev >= 2 ? longLev + 'x' : 'spot') + ' short=' + (canShort ? '2x' : 'off'));
+  console.log('kraken book pairs=' + book.length + ' live=' + live + ' clip=$' + clip + ' long=' + (useMaxLev ? 'max' : (marginLongs ? longLev + 'x' : 'spot')) + ' short=' + (canShort ? 'max' : 'off'));
   if (handsOff.has('BTC')) console.log('  leaving the open BTC long alone');
   if (!useMargin) console.log('  margin opens are refused on this account (Non-ECP). longs are spot');
   if (!live) console.log('  dry run. set DRY_RUN=0 and SHORT_LIVE=1 to send orders');
@@ -308,7 +317,7 @@ export async function main() {
       for (const r of book) {
         const p = posFor(pos, r);
         const mark = Number((ranked.find((x) => x.symbol === r.symbol) || {}).mid || 0);
-        const spotUsd = longLev >= 2 ? 0 : Number(bals[r.symbol] || 0) * mark;
+        const spotUsd = marginLongs ? 0 : Number(bals[r.symbol] || 0) * mark;
         if (p.short > 0 || p.long > 0 || spotUsd >= minUsd) heldSyms.add(r.symbol);
       }
       if (forceRank || Date.now() - rankedAt > 60000 || !ranked.length) {
@@ -332,7 +341,7 @@ export async function main() {
         const capUsd = equity * capFrac;
         const fit = (r) => {
           const need = Math.max(minUsd, (Number(r.ordermin) || 0) * r.last);
-          const budget = useMargin ? freeMargin * 2 * 0.9 : freeQuote;
+          const budget = useMargin ? freeMargin * (Number(r.maxLev) || 2) * 0.9 : freeQuote;
           return need <= capUsd + 1e-9 && need <= budget + 1e-9;
         };
         const affordable = scored.filter((r) => r.dayRange > 0 && fit(r) && !(useMargin && blocked.has(r.symbol)));
@@ -385,6 +394,7 @@ export async function main() {
         if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
         console.log('  CANCEL leftover ' + o.side + ' ' + o.pair);
       }
+      let marginLeft = freeMargin;
       let shortUsd = 0;
       let longUsd = 0;
       for (const r of active) {
@@ -393,23 +403,25 @@ export async function main() {
         if (!(mid > 0)) continue;
         const p = posFor(pos, r);
         const spotQty = Number(bals[r.symbol] || 0);
-        const longQty = longLev >= 2 ? p.long : spotQty;
+        const lev = levFor(r);
+        const longQty = marginLongs ? p.long : spotQty;
         const signal = snap.ret15 == null ? null : (snap.ret15 < openRet ? 'short' : 'long');
         const mine = ordersFor(orders, r);
         let bidOpen = mine.some((o) => o.side === 'buy');
         let askOpen = mine.some((o) => o.side === 'sell');
         const q = decideBook({
-          mid, half, clipUsd: clip, equity, capFrac, freeMargin, freeQuote, longLeverage: longLev, canShort,
-          canLong: longLev >= 2 ? r.longable !== false : true,
+          mid, half, clipUsd: clip, equity, capFrac, freeMargin: marginLeft, freeQuote, leverage: lev, longLeverage: lev, canShort,
+          canLong: marginLongs ? r.longable !== false : true,
           shortQty: p.short, longQty,
           signal, bidOpen, askOpen, minUsd, ordermin: r.ordermin, lotDecimals: r.lotDecimals, pairDecimals: r.pairDecimals,
         });
         shortUsd += p.short * mid;
         longUsd += longQty * mid;
         const drifted = (o, px) => !(px > 0) || Math.abs(o.price - px) / px >= reprice;
+        const sameLev = (o) => !o.leverage || o.leverage === lev;
         for (const o of mine) {
-          const keepBid = o.side === 'buy' && q.bid && !drifted(o, q.bid.price);
-          const keepAsk = o.side === 'sell' && q.ask && !drifted(o, q.ask.price);
+          const keepBid = o.side === 'buy' && q.bid && !drifted(o, q.bid.price) && sameLev(o);
+          const keepAsk = o.side === 'sell' && q.ask && !drifted(o, q.ask.price) && sameLev(o);
           if (keepBid || keepAsk) continue;
           if (live) { try { await ex.cancelOrder(o.id, 'kraken'); } catch { /* ignore */ } }
           console.log('  CANCEL ' + o.side + ' ' + r.symbol + ' @ ' + o.price);
@@ -417,8 +429,14 @@ export async function main() {
           else askOpen = false;
         }
         if (!q.bid && !q.ask) console.log('  skip ' + r.symbol + ' ' + (q.why || 'no-quote'));
-        if (q.ask && !askOpen) await send(ex, r, 'sell', q.ask, live);
-        if (q.bid && !bidOpen) await send(ex, r, 'buy', q.bid, live);
+        if (q.ask && !askOpen) {
+          await send(ex, r, 'sell', q.ask, live);
+          marginLeft -= (q.ask.size * q.ask.price) / Math.max(lev, 1);
+        }
+        if (q.bid && !bidOpen) {
+          await send(ex, r, 'buy', q.bid, live);
+          marginLeft -= (q.bid.size * q.bid.price) / Math.max(lev, 1);
+        }
       }
       const names = active.map((r) => {
         const snap = ranked.find((x) => x.symbol === r.symbol);
@@ -434,7 +452,7 @@ export async function main() {
 }
 
 async function send(ex, row, side, order, live) {
-  const tag = (live ? '  ' : '  DRY ') + side.toUpperCase() + ' ' + row.symbol + ' ' + order.size + ' @ ' + order.price + ' ' + (order.role || '');
+  const tag = (live ? '  ' : '  DRY ') + side.toUpperCase() + ' ' + row.symbol + ' ' + order.size + ' @ ' + order.price + ' ' + (order.leverage || 1) + 'x ' + (order.role || '');
   console.log(tag);
   if (!live) return;
   const r = await ex.limitOrder((order.leverage >= 2 && row.orderPair) ? row.orderPair : row.pair, side, order.price, order.size, {
