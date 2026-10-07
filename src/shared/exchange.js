@@ -263,7 +263,7 @@ export function createExchange(cfg, orderRegistry) {
         heldReserve = null;
         if (keepId) reserveSell(base, volume, keepId);
       };
-      if (isSell && meta.marginShort) {
+      if (isSell && (meta.marginShort || meta.marginClose)) {
         const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
         const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
         if (!(Number(volume) > 0) || Number(volume) + 1e-12 < minV0 || Number(volume) * Number(price) + 1e-12 < quoteMin0) {
