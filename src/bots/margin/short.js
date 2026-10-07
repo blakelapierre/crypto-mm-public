@@ -326,7 +326,9 @@ export async function main() {
   const openRet = envNum('SHORT_OPEN_RET', 0);
   const half = (envNum('MAKER_FEE_BPS', 16) + envNum('MIN_EDGE_BPS', 20)) / 10000;
   const minUsd = envNum('MIN_ORDER_USD', 1);
-  const reprice = envNum('REQUOTE_BPS', 8) / 10000;
+  // A resting order stays until the signal flips or the mid leaves it behind.
+  // Chasing the target by a few bps was cancelling bids that the mid then traded.
+  const hold = envNum('HOLD_BPS', 200) / 10000;
   const longRaw = String(process.env.MARGIN_LONG ?? 'max').trim().toLowerCase();
   const useMaxLev = longRaw === 'max';
   const longLev = useMaxLev ? 2 : envNum('MARGIN_LONG', 0);
@@ -486,15 +488,15 @@ export async function main() {
         });
         shortUsd += p.short * mid;
         longUsd += longQty * mid;
-        const drifted = (o, px) => !(px > 0) || Math.abs(o.price - px) / px >= reprice;
         const sameLev = (o) => !o.leverage || o.leverage === lev;
+        const near = (o) => mid > 0 && Math.abs(o.price - mid) / mid <= hold;
         for (const o of mine) {
-          const keepBid = o.side === 'buy' && q.bid && !drifted(o, q.bid.price) && sameLev(o);
-          const keepAsk = o.side === 'sell' && q.ask && !drifted(o, q.ask.price) && sameLev(o);
+          const keepBid = o.side === 'buy' && q.bid && sameLev(o) && o.price < mid && near(o);
+          const keepAsk = o.side === 'sell' && q.ask && sameLev(o) && o.price > mid && near(o);
           if (keepBid || keepAsk) continue;
           const target = o.side === 'buy' ? (q.bid && q.bid.price) : (q.ask && q.ask.price);
-          const why = !target ? 'flat' : (!sameLev(o) ? 'leverage' : 'drift');
-          const offBps = target ? Math.round((o.price - target) / target * 10000) : null;
+          const why = !target ? 'flat' : (!sameLev(o) ? 'leverage' : ((o.side === 'buy' ? o.price >= mid : o.price <= mid) ? 'crossed' : 'far'));
+          const offBps = mid > 0 ? Math.round((o.price - mid) / mid * 10000) : null;
           if (live) {
             try {
               await ex.cancelOrder(o.id, 'kraken');
