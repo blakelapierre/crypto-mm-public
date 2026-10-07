@@ -92,12 +92,12 @@ export function decideBook(x) {
   let bid = null;
   let ask = null;
   if (shortQty > 0 && longQty > 0) why.push('both');
-  if (shortQty > 0 && !x.bidOpen) {
+  if (shortQty > 0) {
     const sz = clipSize(clip, bidPx, shortQty, lot, null);
     if (okSize(sz, bidPx, ordermin, minUsd, shortQty)) bid = { price: bidPx, size: sz, leverage: lev, marginShort: false, role: 'cover' };
     else why.push('cover-below-min');
   }
-  if (longQty > 0 && shortQty <= 0 && !x.askOpen) {
+  if (longQty > 0 && shortQty <= 0) {
     const exitLev = longLev >= 2 ? lev : 0;
     const need = Math.max(clip, ordermin * askPx);
     const sz = clipSize(Math.min(need, longQty * askPx), askPx, longQty, lot, null);
@@ -109,21 +109,21 @@ export function decideBook(x) {
   const affordable = (usd) => usd / lev <= freeMargin * 0.9 + 1e-9;
   const openAskMin = Math.max(minUsd, ordermin * askPx);
   const openBidMin = Math.max(minUsd, ordermin * bidPx);
-  if (canShort && longQty <= 0 && signal === 'short' && !x.askOpen && shortRoom >= openAskMin) {
+  if (canShort && longQty <= 0 && signal === 'short' && shortRoom >= openAskMin) {
     const use = targetUsd(clip, openAskMin, shortRoom, freeMargin, lev);
     const sz = clipSize(use, askPx, null, lot, null);
     if (use >= openAskMin && affordable(sz * askPx) && okSize(sz, askPx, ordermin, minUsd, null)) ask = { price: askPx, size: sz, leverage: lev, marginShort: true, role: 'short' };
     else why.push(use > 0 ? (shortQty > 0 ? 'add-below-min' : 'open-below-min') : 'min-over-cap');
-  } else if (canShort && longQty <= 0 && signal === 'short' && !x.askOpen) why.push('min-over-cap');
+  } else if (canShort && longQty <= 0 && signal === 'short') why.push('min-over-cap');
   else if (!canShort && signal === 'short' && shortQty <= 0 && longQty <= 0) why.push('no-margin');
-  if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen && longRoom >= openBidMin) {
+  if (shortQty <= 0 && canLong && signal === 'long' && longRoom >= openBidMin) {
     const cash = longLev >= 2 ? freeMargin * lev * 0.9 : freeQuote * 0.98;
     const use = targetUsd(clip, openBidMin, longRoom, cash, longLev >= 2 ? lev : 1);
     const sz = clipSize(use, bidPx, null, lot, null);
     const fitsCash = longLev >= 2 || sz * bidPx <= freeQuote * 0.98 + 1e-9;
     if (use >= openBidMin && fitsCash && okSize(sz, bidPx, ordermin, minUsd, null)) bid = { price: bidPx, size: sz, leverage: longLev, marginShort: false, role: 'long' };
     else why.push(use > 0 ? 'bid-below-min' : 'min-over-cap');
-  } else if (shortQty <= 0 && canLong && signal === 'long' && !x.bidOpen) why.push('min-over-cap');
+  } else if (shortQty <= 0 && canLong && signal === 'long') why.push('min-over-cap');
   if (shortQty > 0 && signal !== 'short') why.push('flatten-short');
   if (longQty > 0 && signal === 'short') why.push('flatten-long');
   if (!canLong && signal === 'long' && longQty <= 0) why.push('no-long-margin');
