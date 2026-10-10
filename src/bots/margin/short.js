@@ -106,7 +106,8 @@ export function decideBook(x) {
   let ask = null;
   if (shortQty > 0 && longQty > 0) why.push('both');
   if (shortQty > 0) {
-    const sz = clipSize(clip, coverPx, shortQty, lot, null);
+    const need = Math.max(clip, ordermin * Number(coverPx));
+    const sz = clipSize(Math.min(need, shortQty * Number(coverPx)), coverPx, shortQty, lot, null);
     if (okSize(sz, coverPx, ordermin, minUsd, shortQty)) bid = { price: coverPx, size: sz, leverage: lev, marginShort: false, role: 'cover' };
     else why.push('cover-below-min');
   }
