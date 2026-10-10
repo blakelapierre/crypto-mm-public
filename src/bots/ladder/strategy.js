@@ -312,8 +312,9 @@ export function generateLadder(cfg, mid, sizeUsd, pairDecimals, lotDecimals, ord
   const bidOff = step * (1 + kBid * u) * (shape.offMult || 1) + (qq.bidAddBps || 0) / 10000;
   const askOff = step * Math.max(0.35, 1 - kAsk * u) + (qq.askAddBps || 0) / 10000;
   const rising = symbol && midReturn(symbol) > 0;
-  const sellHalf = rising ? riseSellHalf(cfg, pair, symbol) : l1HalfFrac(cfg, pair);
   const inv0 = Number((live && live.positions && live.positions[symbol] && (Number(live.positions[symbol].amount || 0) + Number(live.positions[symbol].hold || 0))) || 0);
+  const held = inv0 * mid >= Number(process.env.MIN_ORDER_USD || 1);
+  const sellHalf = held || !rising ? l1HalfFrac(cfg, pair) : riseSellHalf(cfg, pair, symbol);
   const useBook = false;
   let bid1 = mid * (1 - Math.max(tick / mid, bidOff, l1HalfFrac(cfg, pair)));
   let ask1 = mid * (1 + Math.max(tick / mid, askOff, sellHalf));
@@ -430,23 +431,10 @@ function resizeLeg(cfg, a, o, live) {
   const heldRaw = (live.positions && live.positions[a.symbol] && live.positions[a.symbol].amount) || 0;
   const held = freeQty(a.symbol, heldRaw);
   const nSell = Math.max(1, isL1 ? 1 : ladderLevelCount(cfg, rangeFrac(a.symbol), rungHint(a.pair, a.symbol), a.symbol));
-  const rising = midReturn(a.symbol) > 0;
-  const holdRet = midReturn(a.symbol, Number(process.env.HOLD_EXIT_MS || 5000));
-  const flatTape = holdRet <= Number(process.env.HOLD_FLAT_RET || 0) || deadTape(a.symbol);
-  const riseHold = rising && !flatTape ? riseHoldFrac(a.symbol) : 0;
+  const riseHold = 0;
   const key = String(a.symbol || '').toUpperCase();
   const midPx = Number((live.positions && live.positions[a.symbol] && live.positions[a.symbol].mid) || 0);
-  const heldUsd = held * (midPx || Number(o.price) || 0);
-  if (riseHold > 0 && heldUsd > 0) {
-    const prev = holdStart.get(key);
-    if (!prev) holdStart.set(key, { mid: midPx || Number(o.price) || 0, usd: heldUsd * riseHold });
-    else prev.usd = heldUsd * riseHold;
-  } else if (flatTape && holdStart.has(key)) {
-    const h = holdStart.get(key);
-    console.log('  HOLD EXIT ' + a.symbol + ' flat — sell reserved at touch');
-    try { noteHoldExit(a.symbol, h.mid, h.usd); } catch { /* ignore */ }
-    holdStart.delete(key);
-  }
+  if (holdStart.has(key)) holdStart.delete(key);
   const quoteMin = Number(a.quoteMin || process.env.MIN_ORDER_USD || 1);
   const pxNow = Number(o.price) || midPx;
   let riseFrac = riseHold;
@@ -567,7 +555,7 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
   const mid = Number(book && book.mid);
   if (!(mid > 0)) return;
   const rising = midReturn(a.symbol) > 0;
-  const half = rising ? riseSellHalf(cfg, a.pair, a.symbol) : l1HalfFrac(cfg, a.pair);
+  const floor = l1HalfFrac(cfg, a.pair);
   let inv0 = 0;
   let pinLive = null;
   if (getLive) {
@@ -576,6 +564,8 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       inv0 = Number((pinLive.positions && pinLive.positions[a.symbol] && (Number(pinLive.positions[a.symbol].amount || 0) + Number(pinLive.positions[a.symbol].hold || 0))) || 0);
     } catch { inv0 = 0; }
   }
+  const held = inv0 * mid >= Number(process.env.MIN_ORDER_USD || 1);
+  const half = held || !rising ? floor : riseSellHalf(cfg, a.pair, a.symbol);
   const shape = pinLive ? bidShape(a.symbol, pinLive) : { offMult: 1, sizeMult: 1 };
   const falling = pinLive && !bidAllowed(a, pinLive).ok;
   const bidFloor = l1HalfFrac(cfg, a.pair) * (shape.offMult || 1);
@@ -594,7 +584,8 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
     const nearest = prices.length ? (side === 'buy' ? Math.max(...prices) : Math.min(...prices)) : 0;
     const targetN = Number(target);
     const gap = !nearest || !(mid > 0) ? Infinity : (side === 'buy' ? (targetN - nearest) / mid : (nearest - targetN) / mid);
-    if (prices.length && gap < step * 0.75) {
+    const slack = side === 'sell' ? 0.0015 : step * 0.75;
+    if (prices.length && gap < slack) {
       pinAt.set(key, Date.now());
       return;
     }
@@ -605,12 +596,14 @@ export async function pinL1(cfg, ex, a, ladder, book, getLive, pairState) {
       : 1;
     if (open.length >= maxOpen) {
       if (side !== 'buy') {
-        pinAt.set(key, Date.now());
-        return;
+        const far = open.slice().sort((a1, b1) => Number(b1.price) - Number(a1.price))[0];
+        console.log('  SCALE tighten ask ' + a.symbol + ' @ ' + far.price);
+        await cancelSide(ex, [far], 'touch');
+      } else {
+        const far = open.slice().sort((a1, b1) => Number(a1.price) - Number(b1.price))[0];
+        console.log('  SCALE drop far bid ' + a.symbol + ' @ ' + far.price);
+        await cancelSide(ex, [far], 'scale');
       }
-      const far = open.slice().sort((a1, b1) => Number(a1.price) - Number(b1.price))[0];
-      console.log('  SCALE drop far bid ' + a.symbol + ' @ ' + far.price);
-      await cancelSide(ex, [far], 'scale');
     }
     let live = getLive ? await getLive() : null;
     let size = live ? resizeLeg(cfg, a, { side, price: target, size: 0, level: 1 }, live) : 0;
@@ -1076,21 +1069,12 @@ async function ensureAsk(cfg, ex, a, ladder, book, getLive) {
   const openSz = openSells.reduce((s, o) => s + Number(o.size || 0), 0);
   if (openSz + 1e-8 >= avail * 0.9) return;
   const mid = Number(book.mid);
-  const holdFrac = riseHoldFrac(a.symbol);
   const half = l1HalfFrac(cfg, a.pair);
-  const riseHalf = riseSellHalf(cfg, a.pair, a.symbol) * Number(process.env.RISE_HOLD_ASK_MULT || 2);
-  const heldQty = avail * holdFrac;
-  const rest = Math.max(0, avail - heldQty);
-  const risePx = clampAwayFromMid(mid, mid * (1 + Math.max(half, riseHalf)), 'sell', half, a.pairDecimals);
   const normPx = clampAwayFromMid(mid, mid * (1 + half), 'sell', half, a.pairDecimals);
   const parts = [];
   const need = Math.max(0, avail - openSz);
-  if (holdFrac > 0 && heldQty * Number(risePx) >= quoteMin && rest * Number(normPx) >= quoteMin && heldQty >= baseMin && rest >= baseMin && !openSells.length) {
-    parts.push({ px: normPx, size: formatVolume(rest, a.lotDecimals), level: 1 });
-    parts.push({ px: risePx, size: formatVolume(heldQty, a.lotDecimals), level: 2, riseHold: true });
-  } else if (need * bid >= quoteMin) {
-    const px = holdFrac > 0 ? risePx : normPx;
-    parts.push({ px, size: formatVolume(need, a.lotDecimals), level: 1, riseHold: holdFrac > 0 });
+  if (need * bid >= quoteMin) {
+    parts.push({ px: normPx, size: formatVolume(need, a.lotDecimals), level: 1, riseHold: false });
   }
   for (const p of parts) {
     if (!(Number(p.size) > 0) || Number(p.size) * bid < quoteMin) continue;

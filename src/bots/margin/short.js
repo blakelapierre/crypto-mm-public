@@ -85,25 +85,36 @@ export function decideBook(x) {
   const canLong = x.canLong !== false;
   const freeMargin = x.freeMargin == null ? Infinity : Math.max(0, Number(x.freeMargin) || 0);
   const signal = x.signal === 'long' || x.signal === 'short' ? x.signal : null;
+  const shortPnl = Number(x.shortPnl) || 0;
+  const longPnl = Number(x.longPnl) || 0;
+  const holdFrac = Number(x.hold) > 0 ? Number(x.hold) : 0.02;
   if (!(mid > 0) || !(half > 0)) return { bid: null, ask: null, why: 'no-mid' };
   // The US book rounds to the nearest cent. A buy that rounds up crosses and is canceled.
   const tick = 0.01;
   const bidPx = formatPrice(Math.floor((mid * (1 - half)) / tick + 1e-8) * tick, 8);
   const askPx = formatPrice(Math.ceil((mid * (1 + half)) / tick - 1e-8) * tick, 8);
+  const touch = (side) => {
+    const raw = side === 'buy' ? Math.floor((mid - 1e-8) / tick) * tick : Math.ceil((mid + 1e-8) / tick) * tick;
+    const px = side === 'buy' ? (raw < mid ? raw : raw - tick) : (raw > mid ? raw : raw + tick);
+    return formatPrice(Math.max(tick, px), 8);
+  };
+  const coverPx = touch('buy');
+  const closePx = touch('sell');
+  const far = (px) => Math.abs(Number(px) - mid) / mid > holdFrac + 1e-12;
   const why = [];
   let bid = null;
   let ask = null;
   if (shortQty > 0 && longQty > 0) why.push('both');
   if (shortQty > 0) {
-    const sz = clipSize(clip, bidPx, shortQty, lot, null);
-    if (okSize(sz, bidPx, ordermin, minUsd, shortQty)) bid = { price: bidPx, size: sz, leverage: lev, marginShort: false, role: 'cover' };
+    const sz = clipSize(clip, coverPx, shortQty, lot, null);
+    if (okSize(sz, coverPx, ordermin, minUsd, shortQty)) bid = { price: coverPx, size: sz, leverage: lev, marginShort: false, role: 'cover' };
     else why.push('cover-below-min');
   }
   if (longQty > 0 && shortQty <= 0) {
     const exitLev = longLev >= 2 ? lev : 0;
-    const need = Math.max(clip, ordermin * askPx);
-    const sz = clipSize(Math.min(need, longQty * askPx), askPx, longQty, lot, null);
-    if (okSize(sz, askPx, ordermin, minUsd, longQty)) ask = { price: askPx, size: sz, leverage: exitLev, marginClose: exitLev >= 2, role: 'close' };
+    const need = Math.max(clip, ordermin * closePx);
+    const sz = clipSize(Math.min(need, longQty * closePx), closePx, longQty, lot, null);
+    if (okSize(sz, closePx, ordermin, minUsd, longQty)) ask = { price: closePx, size: sz, leverage: exitLev, marginClose: exitLev >= 2, role: 'close' };
     else why.push('close-below-min');
   }
   const shortRoom = cap - shortQty * mid;
@@ -111,14 +122,20 @@ export function decideBook(x) {
   const affordable = (usd) => usd / lev <= freeMargin * 0.9 + 1e-9;
   const openAskMin = Math.max(minUsd, ordermin * askPx);
   const openBidMin = Math.max(minUsd, ordermin * bidPx);
-  if (canShort && longQty <= 0 && signal === 'short' && shortRoom >= openAskMin) {
+  const redShort = shortQty > 0 && shortPnl < 0;
+  const redLong = longQty > 0 && longPnl < 0;
+  if (canShort && longQty <= 0 && signal === 'short' && redShort) why.push('red-short');
+  else if (canShort && longQty <= 0 && signal === 'short' && far(askPx)) why.push('tick-far');
+  else if (canShort && longQty <= 0 && signal === 'short' && shortRoom >= openAskMin) {
     const use = targetUsd(clip, openAskMin, shortRoom, freeMargin, lev);
     const sz = clipSize(use, askPx, null, lot, null);
     if (use >= openAskMin && affordable(sz * askPx) && okSize(sz, askPx, ordermin, minUsd, null)) ask = { price: askPx, size: sz, leverage: lev, marginShort: true, role: 'short' };
     else why.push(use > 0 ? (shortQty > 0 ? 'add-below-min' : 'open-below-min') : 'min-over-cap');
   } else if (canShort && longQty <= 0 && signal === 'short') why.push('min-over-cap');
   else if (!canShort && signal === 'short' && shortQty <= 0 && longQty <= 0) why.push('no-margin');
-  if (shortQty <= 0 && canLong && signal === 'long' && longRoom >= openBidMin) {
+  if (shortQty <= 0 && canLong && signal === 'long' && redLong) why.push('red-long');
+  else if (shortQty <= 0 && canLong && signal === 'long' && far(bidPx)) why.push('tick-far');
+  else if (shortQty <= 0 && canLong && signal === 'long' && longRoom >= openBidMin) {
     const cash = longLev >= 2 ? freeMargin * lev * 0.9 : freeQuote * 0.98;
     const use = targetUsd(clip, openBidMin, longRoom, cash, longLev >= 2 ? lev : 1);
     const sz = clipSize(use, bidPx, null, lot, null);
@@ -222,9 +239,10 @@ async function marginPos(cfg) {
   for (const p of Object.values(r || {})) {
     const vol = Number(p.vol || 0) - Number(p.vol_closed || 0);
     if (!(vol > 0) || !p.pair) continue;
-    const row = by.get(p.pair) || { short: 0, long: 0 };
-    if (String(p.type).toLowerCase() === 'sell') row.short += vol;
-    else row.long += vol;
+    const row = by.get(p.pair) || { short: 0, long: 0, shortPnl: 0, longPnl: 0 };
+    const net = Number(p.net || 0);
+    if (String(p.type).toLowerCase() === 'sell') { row.short += vol; row.shortPnl += net; }
+    else { row.long += vol; row.longPnl += net; }
     by.set(p.pair, row);
   }
   return by;
@@ -250,7 +268,7 @@ async function ourOrders(cfg) {
 
 function posFor(pos, rec) {
   const btnl = rec.orderPair || (rec.altname ? rec.altname + ':BTNL' : null);
-  return pos.get(rec.pair) || pos.get(rec.altname) || (btnl && pos.get(btnl)) || pos.get(rec.wsname) || { short: 0, long: 0 };
+  return pos.get(rec.pair) || pos.get(rec.altname) || (btnl && pos.get(btnl)) || pos.get(rec.wsname) || { short: 0, long: 0, shortPnl: 0, longPnl: 0 };
 }
 
 function ordersFor(orders, rec) {
@@ -490,19 +508,23 @@ export async function main() {
         const q = decideBook({
           mid, half, clipUsd: clip, equity, capFrac, freeMargin: marginLeft, freeQuote, leverage: lev, longLeverage: lev, canShort,
           canLong: marginLongs ? r.longable !== false : true,
-          shortQty: p.short, longQty,
+          shortQty: p.short, longQty, shortPnl: p.shortPnl, longPnl: p.longPnl, hold,
           signal, bidOpen, askOpen, minUsd, ordermin: r.ordermin, lotDecimals: r.lotDecimals, pairDecimals: r.pairDecimals,
         });
         shortUsd += p.short * mid;
         longUsd += longQty * mid;
         const sameLev = (o) => !o.leverage || o.leverage === lev;
         const near = (o) => mid > 0 && Math.abs(o.price - mid) / mid <= hold;
+        const samePx = (o, target) => target && Math.abs(Number(o.price) - Number(target.price)) <= 0.0051;
         for (const o of mine) {
-          const keepBid = o.side === 'buy' && q.bid && sameLev(o) && o.price < mid && near(o);
-          const keepAsk = o.side === 'sell' && q.ask && sameLev(o) && o.price > mid && near(o);
+          const exitBid = q.bid && q.bid.role === 'cover';
+          const exitAsk = q.ask && q.ask.role === 'close';
+          const keepBid = o.side === 'buy' && q.bid && sameLev(o) && o.price < mid && (exitBid ? samePx(o, q.bid) : near(o));
+          const keepAsk = o.side === 'sell' && q.ask && sameLev(o) && o.price > mid && (exitAsk ? samePx(o, q.ask) : near(o));
           if (keepBid || keepAsk) continue;
           const target = o.side === 'buy' ? (q.bid && q.bid.price) : (q.ask && q.ask.price);
-          const why = !target ? 'flat' : (!sameLev(o) ? 'leverage' : ((o.side === 'buy' ? o.price >= mid : o.price <= mid) ? 'crossed' : 'far'));
+          const exit = (o.side === 'buy' ? q.bid : q.ask);
+          const why = !target ? 'flat' : (!sameLev(o) ? 'leverage' : ((o.side === 'buy' ? o.price >= mid : o.price <= mid) ? 'crossed' : (exit && (exit.role === 'cover' || exit.role === 'close') ? 'touch' : 'far')));
           const offBps = mid > 0 ? Math.round((o.price - mid) / mid * 10000) : null;
           if (live) {
             try {
