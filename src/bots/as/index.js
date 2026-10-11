@@ -164,7 +164,7 @@ async function select(products, book, state) {
   for (const row of candidates.slice(0, 10)) {
     try {
       const s = await stats(row);
-      if (s && s.range + 1e-12 >= MIN_RANGE) ranked.push({ ...row, range: s.range });
+      if (s && s.range + 1e-12 >= MIN_RANGE && (Number(row.ordermin) || 0) * s.mid <= CLIP * 2.5) ranked.push({ ...row, range: s.range });
     } catch { /* quiet */ }
     await sleep(120);
   }
@@ -262,13 +262,21 @@ async function main() {
       const book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
       if (!startEquity && book.equity > 0) startEquity = book.equity;
       const chosen = await select(products, book, state);
-      state.symbols = chosen.map((r) => r.symbol);
+      const fresh = chosen.filter((r) => {
+        const pos = book.positions[r.symbol];
+        const held = pos && (pos.long + pos.short) > 0;
+        if (held) return true;
+        if (VENUE === 'coinbase' && book.cash + 1e-9 < CLIP) return false;
+        return true;
+      });
+      state.symbols = fresh.map((r) => r.symbol);
       const markets = [];
-      for (const row of chosen) {
+      for (const row of fresh) {
         const m = await quoteSymbol(row, book, state);
         if (m) markets.push(m);
         await sleep(200);
       }
+      state.symbols = markets.filter((m) => m.bids || m.asks || Math.abs(m.q) >= 0.2).map((m) => m.symbol);
       for (const sym of Object.keys(state.orders)) {
         if (!state.symbols.includes(sym)) delete state.orders[sym];
       }
