@@ -1,0 +1,17 @@
+[Unit]
+Description=crypto-mm Avellaneda-Stoikov Coinbase
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mm
+WorkingDirectory=/opt/crypto-mm
+Environment=BOT_CONFIG=configs/as-coinbase.env
+ExecStart=/usr/bin/node src/bots/as/index.js
+Restart=always
+RestartSec=5
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target
