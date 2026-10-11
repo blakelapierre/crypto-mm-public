@@ -160,14 +160,21 @@ async function select(products, book, state) {
     const rank = new Map(((scan && scan.ranked) || []).map((r, i) => [String(r.symbol || '').toUpperCase(), i]));
     candidates.sort((a, b) => (rank.has(a.symbol) ? rank.get(a.symbol) : 999) - (rank.has(b.symbol) ? rank.get(b.symbol) : 999));
   }
+  const room = VENUE === 'kraken'
+    ? Math.min(envNum('AS_MAX_NOTIONAL', 10), Math.max(CLIP, Number(book.cash || 0) * Math.max(LEV, 1) * 0.4))
+    : Math.max(CLIP, Number(book.cash || 0));
   const ranked = [];
-  for (const row of candidates.slice(0, 10)) {
+  let best = null;
+  for (const row of candidates.slice(0, VENUE === 'kraken' ? candidates.length : 10)) {
     try {
       const s = await stats(row);
-      if (s && s.range + 1e-12 >= MIN_RANGE && (Number(row.ordermin) || 0) * s.mid <= CLIP * 2.5) ranked.push({ ...row, range: s.range });
+      const minNotional = (Number(row.ordermin) || 0) * (s && s.mid || 0);
+      if (s && (!best || s.range > best.range)) best = { symbol: row.symbol, range: s.range, minNotional };
+      if (s && s.range + 1e-12 >= MIN_RANGE && minNotional <= room) ranked.push({ ...row, range: s.range });
     } catch { /* quiet */ }
     await sleep(120);
   }
+  if (!ranked.length && best) console.log('  no name  best ' + best.symbol + ' range ' + (best.range * 100).toFixed(2) + '% min $' + best.minNotional.toFixed(2));
   ranked.sort((a, b) => b.range - a.range);
   return keep.concat(ranked).slice(0, MAX_PAIRS);
 }
@@ -185,7 +192,8 @@ async function syncSide(row, side, target, mine, state, q) {
   }
   if (cur && prev > 0 && Math.abs(prev - target) / target < 0.0015) return;
   const minNotional = (Number(row.ordermin) || 0) * target;
-  if (minNotional > CLIP * 2.5) {
+  const room = VENUE === 'kraken' ? envNum('AS_MAX_NOTIONAL', 10) : Math.max(CLIP, minNotional);
+  if (minNotional > room) {
     console.log('  skip ' + row.symbol + ' min $' + minNotional.toFixed(2));
     return;
   }
