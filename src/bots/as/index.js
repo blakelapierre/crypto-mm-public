@@ -342,11 +342,18 @@ function markDust(state, sym) {
 async function select(products, book, state) {
   const held = [];
   const push = (rec, symbol) => {
-    if (!rec || held.some((r) => r.symbol === symbol) || dusting(state, symbol) || book.foreign.has(symbol)) return;
+    if (!rec || held.some((r) => r.symbol === symbol) || dusting(state, symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) return;
     held.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol) });
   };
   for (const [sym, pos] of Object.entries(book.positions || {})) {
     const usd = pos.usd || Math.abs(pos.long - pos.short) * (pos.mid || 0);
+    if (!(pos.mid > 0) && !(pos.long > 0 || pos.short > 0)) continue;
+    const mid = pos.mid || 0;
+    if (VENUE !== 'kraken' && pos.long > 0 && mid > 0 && (1 / pos.long) > mid * 1.15) {
+      state.dust = state.dust || {};
+      state.dust[sym] = Date.now() + 6 * 3600 * 1000;
+      continue;
+    }
     if (usd >= 0.5 || (state.symbols || []).includes(sym)) push(products[sym], sym);
   }
   if (held.length >= MAX_PAIRS) return held;
@@ -354,7 +361,7 @@ async function select(products, book, state) {
   const rank = new Map(((scan && scan.ranked) || []).map((r, i) => [String(r.symbol || r.pair || '').toUpperCase(), i]));
   const candidates = [];
   for (const [symbol, rec] of Object.entries(products)) {
-    if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol)) continue;
+    if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) continue;
     if (VENUE === 'kraken' && !rec.shortable) continue;
     candidates.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol), scan: rank.has(symbol) ? rank.get(symbol) : 999 });
   }
@@ -410,7 +417,9 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
     else { slot.ask = r.order_id; slot.askPx = target; slot.askSz = size; }
   } else {
     const why = (r && (r.error || r.skipped)) || 'no id';
-    if (String(why).includes('belowMin')) markDust(state, row.symbol);
+    if (/TOO_FAR/i.test(String(why))) { state.dust = state.dust || {}; state.dust[row.symbol] = Date.now() + 6 * 3600 * 1000; }
+    else if (/belowMin/i.test(String(why))) markDust(state, row.symbol);
+    if (/unknown asset pair/i.test(String(why))) { state.skip = state.skip || {}; state.skip[row.symbol] = true; }
     console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
     if (side === 'buy') slot.bid = null; else slot.ask = null;
   }
