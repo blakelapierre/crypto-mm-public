@@ -35,6 +35,16 @@ export function realizedSigma(closes) {
   return Math.sqrt(Math.max(0, v));
 }
 
+// Largest position notional whose cross-margin liquidation stays at least minDist
+// (a fraction, 0.15 = 15%) away from the fill, at the given leverage.
+export function liqNotionalCap(equity, lev, minDist) {
+  const e = Number(equity);
+  const l = Math.max(1, Number(lev) || 1);
+  const d = Math.max(0, Number(minDist) || 0);
+  if (!(e > 0)) return 0;
+  return e / (d + 1 / l);
+}
+
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
 }

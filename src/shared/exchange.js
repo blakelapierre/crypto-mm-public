@@ -86,7 +86,11 @@ export function createExchange(cfg, orderRegistry) {
         const base = b === 'XBT' ? 'BTC' : b;
         const shortable = Array.isArray(v.leverage_sell) && v.leverage_sell.length > 0;
         if (map[base] && (map[base].shortable || !shortable)) continue;
-        const rec = { venue: 'kraken', pair: k, altname: v.altname || null, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0, baseMin: parseFloat(v.ordermin || '0') || 0, baseInc: 10 ** -(v.lot_decimals ?? 8), quoteMin: Number(process.env.MIN_ORDER_USD || 1), shortable, leverageSell: v.leverage_sell || [] };
+        const buyLev = (Array.isArray(v.leverage_buy) ? v.leverage_buy : []).map(Number).filter((n) => n >= 2);
+        const sellLev = (Array.isArray(v.leverage_sell) ? v.leverage_sell : []).map(Number).filter((n) => n >= 2);
+        const maxLevBuy = buyLev.length ? Math.max(...buyLev) : 0;
+        const maxLevSell = sellLev.length ? Math.max(...sellLev) : 0;
+        const rec = { venue: 'kraken', pair: k, altname: v.altname || null, wsname: v.wsname || null, pairDecimals: v.pair_decimals ?? 5, lotDecimals: v.lot_decimals ?? 8, quoteIncrement: 10 ** -(v.pair_decimals ?? 5), ordermin: parseFloat(v.ordermin || '0') || 0, baseMin: parseFloat(v.ordermin || '0') || 0, baseInc: 10 ** -(v.lot_decimals ?? 8), quoteMin: Number(process.env.MIN_ORDER_USD || 1), shortable, leverageSell: v.leverage_sell || [], leverageBuy: v.leverage_buy || [], maxLevBuy, maxLevSell, maxLev: Math.max(maxLevBuy, maxLevSell), levSteps: [...new Set([...buyLev, ...sellLev])].sort((a, b) => b - a) };
         map[base] = rec; pairMeta.set(k, rec); if (v.altname) pairMeta.set(v.altname, rec);
       }
       return map;
@@ -348,7 +352,7 @@ export function createExchange(cfg, orderRegistry) {
       if (venue === 'coinbase') {
         try {
           const res = await coinbaseRequest(cfg, 'POST', '/api/v3/brokerage/orders', {
-            client_order_id: randomUUID(), product_id: pair, side: side.toUpperCase(),
+            client_order_id: meta.clientOrderId || randomUUID(), product_id: pair, side: side.toUpperCase(),
             order_configuration: { limit_limit_gtc: { base_size: String(volume), limit_price: String(price), post_only: cfg.postOnly } },
           });
           if (res.success === false || res.error_response) {
@@ -411,6 +415,7 @@ export function createExchange(cfg, orderRegistry) {
         const params = { pair, type: side.toLowerCase(), ordertype: 'limit', price: String(price), volume: String(volume) };
         if (cfg.postOnly) params.oflags = 'post';
         if (meta.userref) params.userref = String(meta.userref);
+        if (meta.reduceOnly) params.reduce_only = true;
         const lev = meta.leverage != null ? Number(meta.leverage) : Number(cfg.marginLeverage || process.env.MARGIN_LEVERAGE || 0);
         if (lev >= 2) params.leverage = String(lev);
         const r = await krakenPrivate(cfg, 'AddOrder', params);
