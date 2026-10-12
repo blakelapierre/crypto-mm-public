@@ -113,7 +113,8 @@ async function coinbaseBook(state, products) {
     const qty = Number(p.amount || 0);
     if (!(qty > 0)) continue;
     positions[sym] = { long: qty, short: 0 };
-    if (!owned.has(sym)) foreign.add(sym);
+    const usd = Number(p.valueQuote || 0);
+    if (!owned.has(sym) && usd < 0.9) foreign.add(sym);
   }
   return { equity: Number(live.totalEquity || 0), cash: Number(live.freeQuote || 0), positions, foreign, mine };
 }
@@ -137,19 +138,26 @@ async function stats(row) {
 }
 
 async function select(products, book, state) {
-  const keep = [];
+  const held = [];
+  const push = (rec, symbol) => {
+    if (!rec || held.some((r) => r.symbol === symbol)) return;
+    held.push({ ...rec, symbol, orderPair: orderPair(rec, symbol) });
+  };
+  for (const [sym, pos] of Object.entries(book.positions || {})) {
+    if (book.foreign.has(sym)) continue;
+    if (!(pos.long > 0 || pos.short > 0)) continue;
+    push(products[sym], sym);
+  }
   for (const sym of state.symbols || []) {
-    const rec = products[sym];
     const pos = book.positions[sym];
     const mine = (book.mine[sym] || []).length > 0;
-    if (!rec) continue;
     if (book.foreign.has(sym) && !pos && !mine) continue;
-    keep.push({ ...rec, symbol: sym, orderPair: orderPair(rec, sym) });
+    push(products[sym], sym);
   }
-  if (keep.length >= MAX_PAIRS) return keep.slice(0, MAX_PAIRS);
+  if (held.length >= MAX_PAIRS) return held;
   const candidates = [];
   for (const [symbol, rec] of Object.entries(products)) {
-    if (keep.some((r) => r.symbol === symbol)) continue;
+    if (held.some((r) => r.symbol === symbol)) continue;
     if (VENUE === 'kraken' && !US.has(symbol)) continue;
     if (book.foreign.has(symbol)) continue;
     candidates.push({ ...rec, symbol, orderPair: orderPair(rec, symbol) });
@@ -176,10 +184,10 @@ async function select(products, book, state) {
   }
   if (!ranked.length && best) console.log('  no name  best ' + best.symbol + ' range ' + (best.range * 100).toFixed(2) + '% min $' + best.minNotional.toFixed(2));
   ranked.sort((a, b) => b.range - a.range);
-  return keep.concat(ranked).slice(0, MAX_PAIRS);
+  return held.concat(ranked).slice(0, Math.max(MAX_PAIRS, held.length));
 }
 
-async function syncSide(row, side, target, mine, state, q) {
+async function syncSide(row, side, target, mine, state, q, posQty) {
   const cur = (mine || []).find((o) => o.side === side);
   const slot = state.orders[row.symbol] || {};
   const prev = side === 'buy' ? Number(slot.bidPx || 0) : Number(slot.askPx || 0);
@@ -198,8 +206,17 @@ async function syncSide(row, side, target, mine, state, q) {
     return;
   }
   const notional = Math.max(CLIP, minNotional);
-  const size = formatVolume(notional / target, row.lotDecimals ?? 8);
-  if (!(Number(size) > 0)) return;
+  let qty = notional / target;
+  if (side === 'sell' && posQty > 0 && posQty * target <= CLIP * 1.5) qty = posQty;
+  let size = formatVolume(qty, row.lotDecimals ?? 8);
+  const minUsd = Number(row.quoteMin || process.env.MIN_ORDER_USD || 1);
+  if (side === 'sell' && Number(size) * target + 1e-9 < minUsd && posQty * target + 1e-9 >= minUsd) {
+    size = formatVolume(posQty, row.lotDecimals ?? 8);
+  }
+  if (!(Number(size) > 0) || (side === 'sell' && Number(size) * target + 1e-9 < minUsd)) {
+    console.log('  skip ' + row.symbol + ' ' + side + ' $' + (Number(size) * target).toFixed(2));
+    return;
+  }
   if (cur && LIVE) await ex.cancelOrder(cur.id, VENUE);
   console.log((LIVE ? '  ' : '  DRY ') + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + ' q=' + q.toFixed(2));
   if (!LIVE) {
@@ -240,10 +257,10 @@ async function quoteSymbol(row, book, state) {
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
   const canBuy = q < 0.95 && (VENUE === 'kraken' ? book.cash > CLIP / Math.max(LEV, 1) : book.cash + 1e-9 >= CLIP);
-  const canSell = VENUE === 'kraken' ? q > -0.95 : pos.long * mid >= Math.max(1, CLIP * 0.5);
+  const canSell = VENUE === 'kraken' ? q > -0.95 : pos.long * mid + 1e-9 >= Number(row.quoteMin || 1);
   const mine = book.mine[row.symbol] || [];
-  await syncSide(row, 'buy', canBuy ? bidPx : 0, mine, state, q);
-  await syncSide(row, 'sell', canSell ? askPx : 0, mine, state, q);
+  await syncSide(row, 'buy', canBuy ? bidPx : 0, mine, state, q, pos.long);
+  await syncSide(row, 'sell', canSell ? askPx : 0, mine, state, q, pos.long);
   const slot = state.orders[row.symbol] || {};
   return {
     symbol: row.symbol, mid, q,
@@ -285,6 +302,10 @@ async function main() {
         await sleep(200);
       }
       state.symbols = markets.filter((m) => m.bids || m.asks || Math.abs(m.q) >= 0.2).map((m) => m.symbol);
+      for (const [sym, pos] of Object.entries(book.positions || {})) {
+        if (book.foreign.has(sym)) continue;
+        if ((pos.long > 0 || pos.short > 0) && !state.symbols.includes(sym)) state.symbols.push(sym);
+      }
       for (const sym of Object.keys(state.orders)) {
         if (!state.symbols.includes(sym)) delete state.orders[sym];
       }
