@@ -268,17 +268,18 @@ export function createExchange(cfg, orderRegistry) {
         if (keepId) reserveSell(base, volume, keepId);
       };
       const levN = Number(meta.leverage) || 0;
-      const marginSell = isSell && !!(meta.marginShort || meta.marginClose || meta.reduceOnly || levN > 0);
-      if (marginSell) {
+      const reducing = !!(meta.reduceOnly || meta.marginClose);
+      const marginSell = isSell && !!(meta.marginShort || reducing || levN > 0);
+      if (reducing || marginSell) {
         const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
         const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
         let vol = Number(volume);
         const cap = Number(meta.positionQty);
-        if ((meta.reduceOnly || meta.marginClose) && Number.isFinite(cap)) {
+        if (reducing && Number.isFinite(cap)) {
           if (!(cap > 0)) return { skipped: 'pos', sellable: 0 };
           if (vol > cap + 1e-12) {
             const next = formatVolume(cap, info && info.lotDecimals);
-            console.log('  SELL CLAMP ' + base + ' want=' + volume + ' pos=' + cap);
+            console.log('  ' + (isSell ? 'SELL' : 'BUY') + ' CLAMP ' + base + ' want=' + volume + ' pos=' + cap);
             vol = Number(next);
           }
         }

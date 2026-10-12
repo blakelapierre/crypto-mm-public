@@ -57,9 +57,12 @@ const bot = fs.readFileSync(new URL('../src/bots/as/index.js', import.meta.url),
 const ex = fs.readFileSync(new URL('../src/shared/exchange.js', import.meta.url), 'utf8');
 check(!/TOO_FAR[\s\S]{0,120}6 \* 3600/.test(bot), 'a too-far reject does not dust the coin');
 check(bot.includes('AS_PROFIT_BPS') && bot.includes('AS_MARGIN_LEVEL_RESUME'), 'profit and resume knobs');
-check(bot.includes('fillsN') && bot.includes('fillsH'), 'status fills are since start and last hour');
+check(bot.includes('fillsN') && bot.includes('fillsH') && bot.includes('fillCount'), 'status fills are since start and last hour');
 check(bot.includes('reduceOnly') && bot.includes('positionQty'), 'reduces carry the margin size');
 check(bot.includes('cancelOpening'), 'opening orders cancel before a rail exit');
+check(bot.includes('cutLatch'), 'cut exits keep quoting until margin is back at the stop');
+check(/reason !== 'below-min' && reason !== 'too-far'/.test(bot), 'a too-far reject reprices next loop instead of backing off');
+check(/if \(reducing \|\| marginSell\)/.test(ex), 'reduce-only buys clamp to the position');
 check(ex.indexOf('marginSell') < ex.indexOf('const free = sellable'), 'leveraged sells skip the spot free clamp');
 
 if (failed) {

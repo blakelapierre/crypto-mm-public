@@ -180,6 +180,7 @@ function noteFill(state, row) {
   if (ids.length > 400) delete state.seenFills[ids[0]];
   state.makerCapture = (state.makerCapture || 0) + (row.capture || 0);
   state.fees = (state.fees || 0) + (row.fee || 0);
+  state.fillCount = (Number(state.fillCount) || 0) + 1;
   state.fillTimes = state.fillTimes || [];
   state.fillTimes.push(Date.parse(row.time) || Date.now());
   const prev = state.entry && state.entry[row.symbol];
@@ -488,7 +489,8 @@ function noteRail(state, mode, ml) {
   if (mode === prev) return;
   if (mode === 'stop') console.log('RAIL margin-stop ml=' + ml);
   else if (mode === 'cut') console.log('RAIL margin-cut ml=' + ml);
-  else if (prev === 'stop' || prev === 'cut') console.log('RAIL exit-' + prev + ' ml=' + (ml == null ? '-' : ml));
+  else if (mode === 'halt') console.log('RAIL halt ml=' + (ml == null ? '-' : ml));
+  else if (prev === 'stop' || prev === 'cut' || prev === 'halt') console.log('RAIL exit-' + prev + ' ml=' + (ml == null ? '-' : ml));
   state.railMode = mode;
 }
 
@@ -583,7 +585,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
     if (reason === 'too-far') {
       state.tooFar = state.tooFar || {};
       const prevFar = state.tooFar[row.symbol] || { n: 0 };
-      state.tooFar[row.symbol] = { n: (Number(prevFar.n) || 0) + 1, px: target, side, at: Date.now() };
+      state.tooFar[row.symbol] = { n: (Number(prevFar.n) || 0) + 1, px: target, side, at: Date.now(), touch: Number(extra.touch) || 0 };
     } else if (reason === 'below-min') markDust(state, row.symbol, target);
     else if (reason === 'post-only') {
       state.stepAway = state.stepAway || {};
@@ -592,7 +594,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
     }
     if (/unknown asset pair/i.test(String(why))) { state.skip = state.skip || {}; state.skip[row.symbol] = true; }
     console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
-    if (reason !== 'below-min') armBackoff(state, row.symbol, reason);
+    if (reason !== 'below-min' && reason !== 'too-far') armBackoff(state, row.symbol, reason);
     if (side === 'buy') slot.bid = null; else slot.ask = null;
   }
   state.orders[row.symbol] = slot;
@@ -666,7 +668,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   if (!model) return null;
   const halfBps = Math.round(model.half * 10000);
   const inc = row.quoteIncrement || 0.01;
-  const lossOk = rail.mode === 'cut' || !!state.halted;
+  const lossOk = !!(rail.lossOk || rail.mode === 'cut' || state.halted);
   let bidPx = snap(model.bid, inc, 'buy');
   let askPx = snap(model.ask, inc, 'sell');
   if (!(bidPx < mid)) bidPx = snap(mid - inc, inc, 'buy');
@@ -691,14 +693,30 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (Number(pos.long) > 0 && longFloor > 0) askPx = Math.max(askPx, longFloor);
     if (Number(pos.short) > 0 && shortCeil > 0) bidPx = Math.min(bidPx, shortCeil);
   }
-  const far = state.tooFar && state.tooFar[row.symbol];
-  if (far && far.n > 0) {
-    if (far.side === 'sell') {
-      let next = halveToward(far.px || askPx, s.ask || mid, far.n);
+  let blockSell = false;
+  let blockBuy = false;
+  let far = state.tooFar && state.tooFar[row.symbol];
+  if (far && far.n >= 3) {
+    const touch = far.side === 'sell' ? (s.ask || mid) : (s.bid || mid);
+    const stuckAt = Number(far.touch) > 0 ? Number(far.touch) : Number(far.px);
+    const unchanged = !(touch > 0) || (stuckAt > 0 && Math.abs(touch - stuckAt) / stuckAt < 0.001);
+    if (unchanged) {
+      if (far.side === 'sell') blockSell = true;
+      else if (far.side === 'buy') blockBuy = true;
+    } else {
+      delete state.tooFar[row.symbol];
+      far = null;
+    }
+  }
+  if (far && far.n > 0 && far.n < 3) {
+    if (far.side === 'sell' && !blockSell) {
+      const touch = s.ask || mid;
+      let next = far.n >= 2 ? touch : halveToward(far.px || askPx, touch, far.n);
       if (!legacy && !lossOk && hardLong > 0) next = Math.max(next, hardLong);
       askPx = next;
-    } else if (far.side === 'buy') {
-      let next = halveToward(far.px || bidPx, s.bid || mid, far.n);
+    } else if (far.side === 'buy' && !blockBuy) {
+      const touch = s.bid || mid;
+      let next = far.n >= 2 ? touch : halveToward(far.px || bidPx, touch, far.n);
       if (!legacy && !lossOk && hardShort > 0) next = Math.min(next, hardShort);
       bidPx = next;
     }
@@ -729,26 +747,28 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const lot = row.lotDecimals ?? 8;
   const frac = rail.halfSize || cut ? 0.5 : 1;
   const focusedOut = rail.focus && rail.focus !== row.symbol;
-  if (focusedOut && reduce) {
-    buySz = 0; sellSz = 0;
-  } else if (reduce && (Number(pos.long) > 0 || Number(pos.short) > 0)) {
-    if (Number(pos.long) > 0) sellSz = formatVolume(Number(pos.long) * frac, lot);
-    if (Number(pos.short) > 0) buySz = formatVolume(Number(pos.short) * frac, lot);
-  } else if (VENUE === 'coinbase') {
-    if (Number(pos.long) > 0 && askPx * Number(pos.long) + 1e-9 >= minUsd) sellSz = formatVolume(Number(pos.long), lot);
-    else if (Number(pos.long) > 0) markDust(state, row.symbol, mid);
-    if (addOk && q < 0.95 && budget.left + 1e-9 >= minUsd && bidPx > 0) buySz = formatVolume(Math.min(clip, budget.left) / bidPx, lot);
-  } else if (!reduce) {
-    const cap = liqNotionalCap(book.equity, lev || 2, LIQ_MIN);
-    const sz = Math.min(clip, cap) / mid;
-    if (q < 0.95) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
-    if (q > -0.95) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
-    if (buySz * bidPx > cap || sellSz * askPx > cap) {
-      console.log('RAIL liq ' + row.symbol);
-      if (buySz * bidPx > cap) buySz = 0;
-      if (sellSz * askPx > cap) sellSz = 0;
+  if (!(focusedOut && reduce)) {
+    if (reduce && (Number(pos.long) > 0 || Number(pos.short) > 0)) {
+      if (Number(pos.long) > 0) sellSz = formatVolume(Number(pos.long) * frac, lot);
+      if (Number(pos.short) > 0) buySz = formatVolume(Number(pos.short) * frac, lot);
+    } else if (VENUE === 'coinbase') {
+      if (Number(pos.long) > 0 && askPx * Number(pos.long) + 1e-9 >= minUsd) sellSz = formatVolume(Number(pos.long), lot);
+      else if (Number(pos.long) > 0) markDust(state, row.symbol, mid);
+      if (addOk && q < 0.95 && budget.left + 1e-9 >= minUsd && bidPx > 0) buySz = formatVolume(Math.min(clip, budget.left) / bidPx, lot);
+    } else if (!reduce) {
+      const cap = liqNotionalCap(book.equity, lev || 2, LIQ_MIN);
+      const sz = Math.min(clip, cap) / mid;
+      if (q < 0.95) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+      if (q > -0.95) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+      if (buySz * bidPx > cap || sellSz * askPx > cap) {
+        console.log('RAIL liq ' + row.symbol);
+        if (buySz * bidPx > cap) buySz = 0;
+        if (sellSz * askPx > cap) sellSz = 0;
+      }
     }
   }
+  if (blockSell) sellSz = 0;
+  if (blockBuy) buySz = 0;
   if (VENUE !== 'kraken' && sellSz > 0 && askPx * sellSz + 1e-9 < minUsd) {
     markDust(state, row.symbol, mid);
     sellSz = 0;
@@ -763,9 +783,9 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const mine = book.mine[row.symbol] || [];
   const quoteExtra = { halfBps, floorTxt };
   const quiet = backoffActive(state, row.symbol) && !rail.ignoreBackoff;
-  if (!quiet) {
-    await syncSide(row, 'buy', buySz > 0 ? bidPx : 0, buySz, mine, state, buyLev, reduce && Number(pos.short) > 0, budget, { ...quoteExtra, positionQty: pos.short, lossBps: buyLoss });
-    await syncSide(row, 'sell', sellSz > 0 ? askPx : 0, sellSz, mine, state, sellLev, reduce && Number(pos.long) > 0, budget, { ...quoteExtra, positionQty: pos.long, lossBps: sellLoss });
+  if (!quiet && !(focusedOut && reduce)) {
+    await syncSide(row, 'buy', buySz > 0 ? bidPx : 0, buySz, mine, state, buyLev, reduce && Number(pos.short) > 0, budget, { ...quoteExtra, positionQty: pos.short, lossBps: buyLoss, touch: s.bid });
+    await syncSide(row, 'sell', sellSz > 0 ? askPx : 0, sellSz, mine, state, sellLev, reduce && Number(pos.long) > 0, budget, { ...quoteExtra, positionQty: pos.long, lossBps: sellLoss, touch: s.ask });
   }
   const slot = state.orders[row.symbol] || {};
   return {
@@ -795,6 +815,7 @@ async function main() {
   state.symbols = state.symbols || [];
   state.orders = state.orders || {};
   state.knownIds = state.knownIds || {};
+  if (state.fillCount == null) state.fillCount = Object.keys(state.seenFills || {}).length;
   if (envBool('AS_RESUME', false)) { state.halted = null; state.haltSwept = false; }
   if (envBool('AS_NEW_SESSION', false) || !(state.startEquity > 0)) {
     state.startEquity = 0;
@@ -840,8 +861,9 @@ async function main() {
       if (state.halted) mode = 'halt';
       else if (book.ml != null && book.ml < ML_CUT) mode = 'cut';
       else if (book.ml != null && book.ml < ML_STOP) mode = 'stop';
-      noteRail(state, mode === 'halt' ? (state.railMode === 'halt' ? 'halt' : state.railMode || 'ok') : mode, book.ml);
-      if (mode === 'halt') state.railMode = 'halt';
+      if (book.ml != null && book.ml < ML_CUT) state.cutLatch = true;
+      if (book.ml == null || book.ml >= ML_STOP) state.cutLatch = false;
+      noteRail(state, mode, book.ml);
       if (state.halted && !state.haltSwept) {
         await cancelOurs(book);
         state.haltSwept = true;
@@ -852,10 +874,13 @@ async function main() {
       }
       const rail = {
         mode, onRail: !!state.onRail || !!state.halted,
-        forceTouch: mode === 'stop' || mode === 'cut' || mode === 'halt',
-        halfSize: mode === 'cut', ignoreBackoff: mode === 'cut' || !!state.halted, focus: null,
+        forceTouch: mode === 'stop' || mode === 'cut' || mode === 'halt' || !!state.cutLatch,
+        halfSize: mode === 'cut',
+        ignoreBackoff: mode === 'cut' || mode === 'halt' || !!state.halted || !!state.cutLatch,
+        lossOk: mode === 'cut' || mode === 'halt' || !!state.halted || !!state.cutLatch,
+        focus: null,
       };
-      if (mode === 'stop' && maxBackoffN(state) >= 3 && !exitResting(book)) {
+      if (mode === 'stop' && !state.cutLatch && maxBackoffN(state) >= 3 && !exitResting(book)) {
         rail.halfSize = true;
         rail.focus = largestSymbol(book.positions);
       }
@@ -910,7 +935,7 @@ async function main() {
         state.reconLogAt = now;
       }
       const hour = now - 3600 * 1000;
-      const fillsN = Object.keys(state.seenFills || {}).length;
+      const fillsN = Number(state.fillCount) || 0;
       const fillsH = (state.fillTimes || []).filter((t) => t >= hour).length;
       state.fillTimes = (state.fillTimes || []).filter((t) => t >= hour);
       const levBySymbol = {};
