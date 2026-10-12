@@ -11,7 +11,8 @@ import { fetchLivePortfolio } from '../../shared/portfolio.js';
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { logFill } from '../../shared/fill-log.js';
-import { asQuote, realizedSigma, liqNotionalCap } from './quote.js';
+import { refreshFeeTier } from '../../shared/fee-tier.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, positionPnl, opensRisk, touchExit, bookNotional } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -40,6 +41,11 @@ const BOOK_TARGET = envNum('BOOK_TARGET_FRAC', 0.9);
 const MIN_VOL = envNum('SCAN_MIN_VOL24_USD', 250000);
 const MAX_SPREAD = envNum('SCAN_MAX_SPREAD_BPS', 40) / 10000;
 const FEE_BPS = envNum('MAKER_FEE_BPS', VENUE === 'kraken' ? 16 : 40);
+const PROFIT_BPS = envNum('AS_PROFIT_BPS', 10);
+const ML_HALT = envNum('AS_MARGIN_LEVEL_HALT', 150);
+const ML_RESUME = envNum('AS_MARGIN_LEVEL_RESUME', 350);
+const MAX_FROM_MID = envNum('AS_MAX_FROM_MID', 0.02);
+let makerFeeBps = FEE_BPS;
 const statePath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.json');
 const lockPath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.lock');
 const fillPath = path.join(process.cwd(), 'logs', 'fills-as-' + VENUE + '.jsonl');
@@ -102,11 +108,36 @@ function median(xs) {
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)];
 }
-function halfFor(row, spreadBps) {
-  const fee = FEE_BPS * 1.2;
-  const touch = spreadBps > 0 ? 0.5 * spreadBps : 0;
-  const bps = Math.max(fee, touch, 1);
-  return Math.min(MAX_HALF, bps / 10000);
+function halfFor(spreadBps) {
+  return halfSpread({
+    feeBps: makerFeeBps,
+    profitBps: PROFIT_BPS,
+    touchHalfBps: spreadBps > 0 ? 0.5 * spreadBps : 0,
+    maxHalfBps: MAX_HALF * 10000,
+  });
+}
+function pxText(n) {
+  const x = Number(n);
+  if (!(x > 0)) return '-';
+  const d = x >= 100 ? 2 : x >= 1 ? 4 : 6;
+  return String(Number(x.toFixed(d)));
+}
+async function loadMakerFee() {
+  try {
+    if (VENUE === 'coinbase') {
+      const tier = await refreshFeeTier(cfg);
+      if (tier && tier.makerBps > 0) makerFeeBps = tier.makerBps;
+    } else {
+      const tv = await krakenOnce('TradeVolume', {});
+      const book = (tv && tv.fees_maker) || {};
+      const row = Object.values(book)[0];
+      const bps = feeToBps(row && row.fee);
+      if (bps > 0) makerFeeBps = bps;
+    }
+  } catch (e) {
+    console.warn('fee', e.message);
+  }
+  console.log('maker fee ' + makerFeeBps.toFixed(2) + 'bp profit ' + PROFIT_BPS + 'bp minHalf ' + (makerFeeBps + PROFIT_BPS).toFixed(2) + 'bp');
 }
 function levWant(row, side) {
   const max = side === 'sell' ? Number(row.maxLevSell || row.maxLev || 2) : Number(row.maxLevBuy || row.maxLev || 2);
@@ -151,6 +182,14 @@ function noteFill(state, row) {
   state.fees = (state.fees || 0) + (row.fee || 0);
   state.fillTimes = state.fillTimes || [];
   state.fillTimes.push(Date.parse(row.time) || Date.now());
+  const prev = state.entry && state.entry[row.symbol];
+  const next = applyEntry(prev, row);
+  const grew = String(row.side).toLowerCase() === 'buy'
+    ? next.longQty > (Number(prev && prev.longQty) || 0) + 1e-12
+    : next.shortQty > (Number(prev && prev.shortQty) || 0) + 1e-12;
+  row.posEffect = grew ? 'open' : 'close';
+  state.entry = state.entry || {};
+  state.entry[row.symbol] = next;
   fs.mkdirSync(path.dirname(fillPath), { recursive: true });
   fs.appendFileSync(fillPath, JSON.stringify(row) + '\n');
   logFill({
@@ -241,11 +280,22 @@ async function krakenBook(state) {
     const sym = symbolOf(p.pair);
     const vol = Number(p.vol || 0) - Number(p.vol_closed || 0);
     if (!(vol > 0)) continue;
-    const row = positions[sym] || { long: 0, short: 0 };
-    if (String(p.type).toLowerCase() === 'sell') row.short += vol;
-    else row.long += vol;
+    const row = positions[sym] || { long: 0, short: 0, longCost: 0, shortCost: 0, margin: 0, value: 0 };
+    const cost = Number(p.cost || 0);
+    const margin = Number(p.margin || 0);
+    const value = Number(p.value || 0) || cost;
+    if (String(p.type).toLowerCase() === 'sell') { row.short += vol; row.shortCost += cost; }
+    else { row.long += vol; row.longCost += cost; }
+    row.margin += margin;
+    row.value += value;
     upnl += Number(p.net || 0);
     positions[sym] = row;
+  }
+  for (const row of Object.values(positions)) {
+    row.avgLong = row.long > 0 && row.longCost > 0 ? row.longCost / row.long : 0;
+    row.avgShort = row.short > 0 && row.shortCost > 0 ? row.shortCost / row.short : 0;
+    const rawLev = row.margin > 0 && row.value > 0 ? row.value / row.margin : 0;
+    row.lev = rawLev >= 2 && rawLev <= 20 ? Math.max(2, Math.round(rawLev)) : 0;
   }
   const mine = {};
   const known = state.knownIds || {};
@@ -253,7 +303,8 @@ async function krakenBook(state) {
     const sym = symbolOf((o.descr || {}).pair);
     const ours = String(o.userref || '') === USERREF || known[id];
     if (!ours) continue;
-    const rec = { id, sym, side: String((o.descr || {}).type || '').toLowerCase(), price: Number((o.descr || {}).price || 0), ours: true };
+    const left = Number(o.vol || 0) - Number(o.vol_exec || 0);
+    const rec = { id, sym, side: String((o.descr || {}).type || '').toLowerCase(), price: Number((o.descr || {}).price || 0), size: left > 0 ? left : Number(o.vol || 0), ours: true };
     (mine[sym] = mine[sym] || []).push(rec);
     known[id] = { sym, side: rec.side };
   }
@@ -261,7 +312,7 @@ async function krakenBook(state) {
   const hasPos = Object.keys(positions).length > 0;
   return {
     equity: Number(tb.eb || tb.e || 0), cash: Number(tb.mf || 0), positions, mine, foreign: new Set(),
-    ml: hasPos ? Number(tb.ml || 0) : null, inventoryPnl: upnl,
+    ml: hasPos ? Number(tb.ml || 0) : null, inventoryPnl: upnl, quoteHold: 0,
   };
 }
 
@@ -276,7 +327,12 @@ async function coinbaseBook(state, products) {
     const cid = String(o.client_order_id || '');
     const ours = cid.startsWith('as-cb-') || known[o.order_id];
     const limit = ((o.order_configuration || {}).limit_limit_gtc) || {};
-    const rec = { id: o.order_id, sym, side: String(o.side || '').toLowerCase(), price: Number(limit.limit_price || 0), ours };
+    const baseSz = Number(limit.base_size || 0);
+    const filled = Number(o.filled_size || 0);
+    const rec = {
+      id: o.order_id, sym, side: String(o.side || '').toLowerCase(), price: Number(limit.limit_price || 0),
+      size: baseSz > filled ? baseSz - filled : baseSz, ours,
+    };
     if (!ours) foreign.add(sym);
     else {
       (mine[sym] = mine[sym] || []).push(rec);
@@ -286,10 +342,19 @@ async function coinbaseBook(state, products) {
   state.knownIds = known;
   const positions = {};
   for (const [sym, p] of Object.entries(live.positions || {})) {
-    const qty = Number(p.amount || 0);
-    if (qty > 0) positions[sym] = { long: qty, short: 0, usd: Number(p.valueQuote || 0), mid: Number(p.mid || 0) };
+    const avail = Number(p.amount || 0);
+    const hold = Number(p.hold || 0);
+    const qty = avail + hold;
+    if (!(qty > 0)) continue;
+    positions[sym] = {
+      long: qty, short: 0, available: avail, hold, usd: Number(p.valueQuote || 0),
+      mid: Number(p.mid || 0), bid: Number(p.bestBid || 0), quoteMin: Number(p.quoteMin || 1),
+    };
   }
-  return { equity: Number(live.totalEquity || 0), cash: Number(live.freeQuote || 0), positions, mine, foreign, ml: null, inventoryPnl: 0 };
+  return {
+    equity: Number(live.totalEquity || 0), cash: Number(live.freeQuote || 0), quoteHold: Number(live.quoteHold || 0),
+    positions, mine, foreign, ml: null, inventoryPnl: 0,
+  };
 }
 
 async function stats(row) {
@@ -325,36 +390,116 @@ async function stats(row) {
   return { mid: book.mid, bid: book.bid, ask: book.ask, sigma, range: Math.max(MIN_RANGE, 0), vol: MIN_VOL };
 }
 
-function dusting(state, sym) {
-  const until = (state.dust && state.dust[sym]) || 0;
-  return until > Date.now();
+function markDust(state, sym, mid) {
+  state.belowMin = state.belowMin || {};
+  state.belowMin[sym] = mid || state.belowMin[sym] || true;
 }
-function markDust(state, sym) {
-  state.dustN = state.dustN || {};
-  state.dustN[sym] = (state.dustN[sym] || 0) + 1;
-  if (state.dustN[sym] >= 3) {
-    state.dust = state.dust || {};
-    state.dust[sym] = Date.now() + 6 * 3600 * 1000;
-    console.log('  dust ' + sym + ' 6h');
+function restingBuyNotional(mine) {
+  let n = 0;
+  for (const orders of Object.values(mine || {})) {
+    for (const o of orders || []) {
+      if (o.side === 'buy') n += Number(o.price || 0) * Number(o.size || 0);
+    }
   }
+  return n;
+}
+function rejectReason(why) {
+  const s = String(why || '');
+  if (/TOO_FAR/i.test(s)) return 'too-far';
+  if (/belowMin|ordermin|minimum/i.test(s)) return 'below-min';
+  if (/post only|would execute|POST_ONLY|INVALID_LIMIT/i.test(s)) return 'post-only';
+  if (/insufficient/i.test(s)) return 'funds';
+  if (s === 'pos' || s === 'free') return 'size';
+  return (s || 'reject').slice(0, 40);
+}
+function armBackoff(state, sym, reason) {
+  state.backoff = state.backoff || {};
+  const prev = state.backoff[sym] || { n: 0, reason };
+  const n = prev.reason === reason ? (Number(prev.n) || 0) + 1 : 1;
+  const sec = backoffSec(n);
+  state.backoff[sym] = { n, reason, until: Date.now() + sec * 1000 };
+  console.log('BACKOFF ' + sym + ' ' + reason + ' ' + n + ' ' + sec);
+}
+function backoffActive(state, sym) {
+  const b = state.backoff && state.backoff[sym];
+  return !!(b && b.until > Date.now());
+}
+function maxBackoffN(state) {
+  let n = 0;
+  for (const b of Object.values(state.backoff || {})) n = Math.max(n, Number(b.n) || 0);
+  return n;
+}
+function exitResting(book) {
+  for (const [sym, orders] of Object.entries(book.mine || {})) {
+    const pos = book.positions[sym] || {};
+    const net = Number(pos.long || 0) - Number(pos.short || 0);
+    for (const o of orders || []) {
+      if (net > 0 && o.side === 'sell') return true;
+      if (net < 0 && o.side === 'buy') return true;
+    }
+  }
+  return false;
+}
+function largestSymbol(positions) {
+  let best = null;
+  let bestN = 0;
+  for (const [sym, p] of Object.entries(positions || {})) {
+    const mid = Number(p.mid || p.avgLong || p.avgShort || 0);
+    const n = Math.abs(Number(p.long || 0) - Number(p.short || 0)) * mid;
+    if (n > bestN) { bestN = n; best = sym; }
+  }
+  return best;
+}
+function clearFlatEntry(state, positions) {
+  if (!state.entry) return;
+  for (const sym of Object.keys(state.entry)) {
+    const pos = positions && positions[sym];
+    const qty = pos ? Number(pos.long || 0) + Number(pos.short || 0) : 0;
+    if (!(qty > 0)) delete state.entry[sym];
+  }
+}
+function ensureEntry(state, sym, pos, mid) {
+  state.entry = state.entry || {};
+  let cur = state.entry[sym];
+  const long = Number(pos.long || 0);
+  const short = Number(pos.short || 0);
+  const avg = long > 0 ? Number(pos.avgLong || 0) : Number(pos.avgShort || 0);
+  if (VENUE === 'kraken' && avg > 0 && (long > 0 || short > 0)) {
+    const have = long > 0 ? Number(cur && cur.longQty || 0) : Number(cur && cur.shortQty || 0);
+    const need = long > 0 ? long : short;
+    if (!(have > need * 0.75)) {
+      cur = long > 0
+        ? { longQty: long, longCost: long * avg, shortQty: 0, shortCost: 0, basis: 'fill', at: Date.now() }
+        : { longQty: 0, longCost: 0, shortQty: short, shortCost: short * avg, basis: 'fill', at: Date.now() };
+      state.entry[sym] = cur;
+      return cur;
+    }
+  }
+  if (cur && (Number(cur.longQty) > 1e-10 || Number(cur.shortQty) > 1e-10)) return cur;
+  if (!(long > 0 || short > 0) || !(mid > 0)) return cur || null;
+  cur = long >= short
+    ? { longQty: long, longCost: long * mid, shortQty: 0, shortCost: 0, basis: 'legacy', at: Date.now() }
+    : { longQty: 0, longCost: 0, shortQty: short, shortCost: short * mid, basis: 'legacy', at: Date.now() };
+  state.entry[sym] = cur;
+  return cur;
+}
+function noteRail(state, mode, ml) {
+  const prev = state.railMode || 'ok';
+  if (mode === prev) return;
+  if (mode === 'stop') console.log('RAIL margin-stop ml=' + ml);
+  else if (mode === 'cut') console.log('RAIL margin-cut ml=' + ml);
+  else if (prev === 'stop' || prev === 'cut') console.log('RAIL exit-' + prev + ' ml=' + (ml == null ? '-' : ml));
+  state.railMode = mode;
 }
 
 async function select(products, book, state) {
   const held = [];
-  const push = (rec, symbol) => {
-    if (!rec || held.some((r) => r.symbol === symbol) || dusting(state, symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) return;
-    held.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol) });
-  };
   for (const [sym, pos] of Object.entries(book.positions || {})) {
-    const usd = pos.usd || Math.abs(pos.long - pos.short) * (pos.mid || 0);
-    if (!(pos.mid > 0) && !(pos.long > 0 || pos.short > 0)) continue;
-    const mid = pos.mid || 0;
-    if (VENUE !== 'kraken' && pos.long > 0 && mid > 0 && (1 / pos.long) > mid * 1.15) {
-      state.dust = state.dust || {};
-      state.dust[sym] = Date.now() + 6 * 3600 * 1000;
-      continue;
-    }
-    if (usd >= 0.5 || (state.symbols || []).includes(sym)) push(products[sym], sym);
+    if (!(Number(pos.long) > 0 || Number(pos.short) > 0)) continue;
+    if (state.skip && state.skip[sym]) continue;
+    const rec = products[sym];
+    if (!rec) continue;
+    held.push({ ...rec, symbol: sym, orderPair: orderPairOf(rec, sym) });
   }
   if (held.length >= MAX_PAIRS) return held;
   const scan = await pullVenueScan(VENUE);
@@ -386,53 +531,120 @@ async function select(products, book, state) {
   return held.concat(ranked).slice(0, Math.max(MAX_PAIRS, held.length));
 }
 
-async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, budget) {
+async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, budget, extra) {
+  extra = extra || {};
   const cur = (mine || []).find((o) => o.side === side);
   const slot = state.orders[row.symbol] || {};
   const prev = side === 'buy' ? Number(slot.bidPx || 0) : Number(slot.askPx || 0);
   if (!(target > 0) || !(Number(size) > 0)) {
     if (cur && LIVE) await ex.cancelOrder(cur.id, VENUE);
-    if (side === 'buy') { slot.bid = null; slot.bidPx = 0; } else { slot.ask = null; slot.askPx = 0; }
+    if (side === 'buy') { slot.bid = null; slot.bidPx = 0; slot.bidSz = 0; } else { slot.ask = null; slot.askPx = 0; slot.askSz = 0; }
     state.orders[row.symbol] = slot;
     return;
   }
   const notional = Number(size) * target;
-  if (side === 'buy' && budget && notional > budget.left + 1e-9) {
+  if (side === 'buy' && !reduceOnly && budget && notional > budget.left + 1e-9) {
     console.log('  skip ' + row.symbol + ' cash $' + budget.left.toFixed(2));
     return;
   }
-  if (cur && prev > 0 && Math.abs(prev - target) / target < 0.0015 && Math.abs(Number(side === 'buy' ? slot.bidSz : slot.askSz) - Number(size)) < 1e-8) return;
+  if (cur && prev > 0 && Math.abs(prev - target) / target < 0.0015 && Math.abs(Number(side === 'buy' ? slot.bidSz : slot.askSz) - Number(size)) < 1e-8) {
+    if (state.backoff) delete state.backoff[row.symbol];
+    if (state.tooFar && state.tooFar[row.symbol] && state.tooFar[row.symbol].side === side) delete state.tooFar[row.symbol];
+    return;
+  }
+  if (side === 'buy' && cur && budget) {
+    const sz = Number(cur.size || slot.bidSz || 0);
+    const px = Number(cur.price || prev || 0);
+    if (sz > 0 && px > 0) budget.left += px * sz;
+  }
   if (cur && LIVE) await ex.cancelOrder(cur.id, VENUE);
   const clientOrderId = 'as-cb-' + randomUUID();
-  console.log('  ' + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + (lev ? ' ' + lev + 'x' : '') + (reduceOnly ? ' reduce' : ''));
+  console.log('  ' + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + (lev ? ' ' + lev + 'x' : '') + (reduceOnly ? ' reduce' : '') + (extra.halfBps != null ? ' half=' + extra.halfBps + 'bp' : '') + (extra.floorTxt ? ' floor=' + extra.floorTxt : ''));
+  if (extra.lossBps != null) console.log('EXIT LOSS ' + row.symbol + ' ' + extra.lossBps);
   if (!LIVE) return;
   const meta = { level: 1, userref: Number(USERREF), leverage: lev || 0, clientOrderId };
-  if (reduceOnly) meta.reduceOnly = true;
+  if (reduceOnly) {
+    meta.reduceOnly = true;
+    if (Number(extra.positionQty) > 0) meta.positionQty = Number(extra.positionQty);
+  }
   const paramsNote = VENUE === 'kraken' ? row.orderPair : row.pair;
   const r = await ex.limitOrder(paramsNote, side, target, size, meta, VENUE);
   if (r && r.order_id) {
     state.knownIds = state.knownIds || {};
     state.knownIds[r.order_id] = { sym: row.symbol, side };
-    if (side === 'buy') { slot.bid = r.order_id; slot.bidPx = target; slot.bidSz = size; if (budget) budget.left -= notional; }
+    if (state.backoff) delete state.backoff[row.symbol];
+    if (state.tooFar && state.tooFar[row.symbol] && state.tooFar[row.symbol].side === side) delete state.tooFar[row.symbol];
+    if (state.stepAway) delete state.stepAway[row.symbol + ':' + side];
+    if (side === 'buy') { slot.bid = r.order_id; slot.bidPx = target; slot.bidSz = size; if (budget && !reduceOnly) budget.left -= notional; }
     else { slot.ask = r.order_id; slot.askPx = target; slot.askSz = size; }
   } else {
     const why = (r && (r.error || r.skipped)) || 'no id';
-    if (/TOO_FAR/i.test(String(why))) { state.dust = state.dust || {}; state.dust[row.symbol] = Date.now() + 6 * 3600 * 1000; }
-    else if (/belowMin/i.test(String(why))) markDust(state, row.symbol);
+    const reason = rejectReason(why);
+    if (reason === 'too-far') {
+      state.tooFar = state.tooFar || {};
+      const prevFar = state.tooFar[row.symbol] || { n: 0 };
+      state.tooFar[row.symbol] = { n: (Number(prevFar.n) || 0) + 1, px: target, side, at: Date.now() };
+    } else if (reason === 'below-min') markDust(state, row.symbol, target);
+    else if (reason === 'post-only') {
+      state.stepAway = state.stepAway || {};
+      const key = row.symbol + ':' + side;
+      state.stepAway[key] = (Number(state.stepAway[key]) || 0) + 1;
+    }
     if (/unknown asset pair/i.test(String(why))) { state.skip = state.skip || {}; state.skip[row.symbol] = true; }
     console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
+    if (reason !== 'below-min') armBackoff(state, row.symbol, reason);
     if (side === 'buy') slot.bid = null; else slot.ask = null;
   }
   state.orders[row.symbol] = slot;
 }
 
-async function quoteSymbol(row, book, state, clip, addOk, budget) {
-  if (dusting(state, row.symbol)) return null;
+async function cancelIds(orders) {
+  if (!orders.length) return false;
+  for (const o of orders) {
+    console.log('  CANCEL open ' + o.sym + ' ' + o.side);
+    if (LIVE) await ex.cancelOrder(o.id, VENUE);
+  }
+  if (!LIVE) return true;
+  const ids = new Set(orders.map((o) => o.id));
+  for (let i = 0; i < 5; i++) {
+    await sleep(500);
+    try {
+      if (VENUE === 'kraken') {
+        const open = await krakenOnce('OpenOrders', {});
+        const still = Object.keys((open && open.open) || {}).some((id) => ids.has(id));
+        if (!still) return true;
+      } else {
+        const live = await ex.listOpen(VENUE);
+        const still = (live || []).some((o) => ids.has(o.order_id));
+        if (!still) return true;
+      }
+    } catch { /* retry */ }
+  }
+  console.log('  CANCEL open wait timed out');
+  return true;
+}
+async function cancelOpening(book) {
+  const doomed = [];
+  for (const [sym, orders] of Object.entries(book.mine || {})) {
+    const pos = book.positions[sym] || {};
+    const net = Number(pos.long || 0) - Number(pos.short || 0);
+    for (const o of orders || []) if (opensRisk(net, o.side)) doomed.push(o);
+  }
+  return cancelIds(doomed);
+}
+async function cancelOurs(book) {
+  const all = [];
+  for (const orders of Object.values(book.mine || {})) all.push(...(orders || []));
+  return cancelIds(all);
+}
+
+async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
+  rail = rail || {};
   const s = await stats(row);
   if (!s) return null;
   const mid = s.mid;
   const pos = book.positions[row.symbol] || { long: 0, short: 0 };
-  const net = (pos.long - pos.short) * mid;
+  const net = (Number(pos.long || 0) - Number(pos.short || 0)) * mid;
   const q = clip > 0 ? net / clip : 0;
   const spreads = (state.spreads && state.spreads[row.symbol]) || [];
   if (s.bid > 0 && s.ask > s.bid) {
@@ -441,19 +653,63 @@ async function quoteSymbol(row, book, state, clip, addOk, budget) {
     state.spreads = state.spreads || {};
     state.spreads[row.symbol] = spreads;
   }
+  const entry = ensureEntry(state, row.symbol, pos, mid);
+  const legacy = !!(entry && entry.basis === 'legacy');
+  const ageMs = entry && entry.at ? Date.now() - Number(entry.at) : 0;
+  const longAvg = entryAvg(entry, 'long');
+  const shortAvg = entryAvg(entry, 'short');
+  const minH = halfFor(median(spreads));
   const model = asQuote({
     mid, q, sigma: s.sigma || 0.001, gamma: GAMMA, kappa: KAPPA, tau: TAU,
-    minHalf: halfFor(row, median(spreads)), maxHalf: MAX_HALF, maxShift: MAX_SHIFT,
+    minHalf: minH, maxHalf: Math.max(MAX_HALF, minH), maxShift: MAX_SHIFT,
   });
   if (!model) return null;
-  const inc = row.quoteIncrement || (VENUE === 'kraken' ? 0.01 : 0.01);
+  const halfBps = Math.round(model.half * 10000);
+  const inc = row.quoteIncrement || 0.01;
+  const lossOk = rail.mode === 'cut' || !!state.halted;
   let bidPx = snap(model.bid, inc, 'buy');
   let askPx = snap(model.ask, inc, 'sell');
   if (!(bidPx < mid)) bidPx = snap(mid - inc, inc, 'buy');
   if (!(askPx > mid)) askPx = snap(mid + inc, inc, 'sell');
-  if (VENUE !== 'kraken' && pos.long > 0) {
-    const need = Number(row.quoteMin || 1) / pos.long;
-    if (askPx < need) askPx = snap(need, inc, 'sell');
+  if (VENUE !== 'kraken' && Number(pos.long) > 0) {
+    const touch = touchExit('sell', s.bid, s.ask, inc, 40);
+    if (touch > 0) askPx = touch;
+  }
+  if (rail.forceTouch) {
+    if (Number(pos.long) > 0 && s.ask > 0) askPx = s.ask;
+    if (Number(pos.short) > 0 && s.bid > 0) bidPx = s.bid;
+    const stepS = Number(state.stepAway && state.stepAway[row.symbol + ':sell'] || 0);
+    const stepB = Number(state.stepAway && state.stepAway[row.symbol + ':buy'] || 0);
+    if (stepS && Number(pos.long) > 0 && s.ask > 0) askPx = s.ask + stepS * inc;
+    if (stepB && Number(pos.short) > 0 && s.bid > 0) bidPx = s.bid - stepB * inc;
+  }
+  const longFloor = longAvg > 0 ? exitBound({ entry: longAvg, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS, touch: s.ask || mid, legacy, ageMs }) : 0;
+  const shortCeil = shortAvg > 0 ? exitBound({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, profitBps: PROFIT_BPS, touch: s.bid || mid, legacy, ageMs }) : 0;
+  const hardLong = longAvg > 0 ? exitBound({ entry: longAvg, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS }) : 0;
+  const hardShort = shortAvg > 0 ? exitBound({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, profitBps: PROFIT_BPS }) : 0;
+  if (!lossOk) {
+    if (Number(pos.long) > 0 && longFloor > 0) askPx = Math.max(askPx, longFloor);
+    if (Number(pos.short) > 0 && shortCeil > 0) bidPx = Math.min(bidPx, shortCeil);
+  }
+  const far = state.tooFar && state.tooFar[row.symbol];
+  if (far && far.n > 0) {
+    if (far.side === 'sell') {
+      let next = halveToward(far.px || askPx, s.ask || mid, far.n);
+      if (!legacy && !lossOk && hardLong > 0) next = Math.max(next, hardLong);
+      askPx = next;
+    } else if (far.side === 'buy') {
+      let next = halveToward(far.px || bidPx, s.bid || mid, far.n);
+      if (!legacy && !lossOk && hardShort > 0) next = Math.min(next, hardShort);
+      bidPx = next;
+    }
+  }
+  if (VENUE !== 'kraken' && mid > 0 && MAX_FROM_MID > 0) {
+    const bandAsk = clampToBand(askPx, mid, MAX_FROM_MID);
+    const bandBid = clampToBand(bidPx, mid, MAX_FROM_MID);
+    if (legacy || lossOk || !(hardLong > 0) || bandAsk + 1e-12 >= hardLong) askPx = bandAsk;
+    if (legacy || lossOk || !(hardShort > 0) || bandBid - 1e-12 <= hardShort) bidPx = bandBid;
+    if (s.bid > 0 && askPx <= s.bid) askPx = s.bid + inc;
+    if (s.ask > 0 && bidPx >= s.ask) bidPx = s.ask - inc;
   }
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
@@ -466,39 +722,55 @@ async function quoteSymbol(row, book, state, clip, addOk, budget) {
     if (!state.levOk[keyS]) state.levOk[keyS] = await probeLev(row, 'sell', mid);
     lev = Math.max(state.levOk[keyB], state.levOk[keyS]);
   }
-  const reduce = !!state.halted || (book.ml != null && book.ml < ML_STOP);
-  const cut = book.ml != null && book.ml < ML_CUT;
+  const reduce = !!rail.onRail || !!state.halted;
+  const cut = rail.mode === 'cut';
   let buySz = 0; let sellSz = 0;
-  const minUsd = Number(row.quoteMin || 1);
-  if (cut && (pos.long > 0 || pos.short > 0)) {
-    if (pos.long > 0) { sellSz = formatVolume(pos.long * 0.5, row.lotDecimals ?? 8); askPx = formatPrice(s.ask || askPx, row.pairDecimals ?? 8); }
-    if (pos.short > 0) { buySz = formatVolume(pos.short * 0.5, row.lotDecimals ?? 8); bidPx = formatPrice(s.bid || bidPx, row.pairDecimals ?? 8); }
+  const minUsd = Number(row.quoteMin || pos.quoteMin || 1);
+  const lot = row.lotDecimals ?? 8;
+  const frac = rail.halfSize || cut ? 0.5 : 1;
+  const focusedOut = rail.focus && rail.focus !== row.symbol;
+  if (focusedOut && reduce) {
+    buySz = 0; sellSz = 0;
+  } else if (reduce && (Number(pos.long) > 0 || Number(pos.short) > 0)) {
+    if (Number(pos.long) > 0) sellSz = formatVolume(Number(pos.long) * frac, lot);
+    if (Number(pos.short) > 0) buySz = formatVolume(Number(pos.short) * frac, lot);
   } else if (VENUE === 'coinbase') {
-    if (pos.long > 0 && askPx * pos.long + 1e-9 >= minUsd) sellSz = formatVolume(pos.long, row.lotDecimals ?? 8);
-    if (addOk && q < 0.95 && budget.left + 1e-9 >= minUsd) buySz = formatVolume(Math.min(clip, budget.left) / bidPx, row.lotDecimals ?? 8);
+    if (Number(pos.long) > 0 && askPx * Number(pos.long) + 1e-9 >= minUsd) sellSz = formatVolume(Number(pos.long), lot);
+    else if (Number(pos.long) > 0) markDust(state, row.symbol, mid);
+    if (addOk && q < 0.95 && budget.left + 1e-9 >= minUsd && bidPx > 0) buySz = formatVolume(Math.min(clip, budget.left) / bidPx, lot);
   } else if (!reduce) {
     const cap = liqNotionalCap(book.equity, lev || 2, LIQ_MIN);
     const sz = Math.min(clip, cap) / mid;
-    if (q < 0.95) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), row.lotDecimals ?? 8);
-    if (q > -0.95) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), row.lotDecimals ?? 8);
+    if (q < 0.95) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+    if (q > -0.95) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
     if (buySz * bidPx > cap || sellSz * askPx > cap) {
       console.log('RAIL liq ' + row.symbol);
       if (buySz * bidPx > cap) buySz = 0;
       if (sellSz * askPx > cap) sellSz = 0;
     }
-  } else {
-    if (pos.short > 0) buySz = formatVolume(pos.short, row.lotDecimals ?? 8);
-    if (pos.long > 0) sellSz = formatVolume(pos.long, row.lotDecimals ?? 8);
   }
-  const buyLev = VENUE === 'kraken' ? (state.levOk[row.symbol + ':buy'] || lev) : 0;
-  const sellLev = VENUE === 'kraken' ? (state.levOk[row.symbol + ':sell'] || lev) : 0;
+  if (VENUE !== 'kraken' && sellSz > 0 && askPx * sellSz + 1e-9 < minUsd) {
+    markDust(state, row.symbol, mid);
+    sellSz = 0;
+  } else if (sellSz > 0 && state.belowMin) delete state.belowMin[row.symbol];
+  const floorPx = Number(pos.long) > 0 ? longFloor : Number(pos.short) > 0 ? shortCeil : 0;
+  const floorTxt = pxText(floorPx);
+  const sellLoss = lossOk && hardLong > 0 && askPx + 1e-12 < hardLong ? Math.round((askPx / longAvg - 1) * 10000) : null;
+  const buyLoss = lossOk && hardShort > 0 && bidPx - 1e-12 > hardShort ? Math.round((1 - bidPx / shortAvg) * 10000) : null;
+  const posLev = Number(pos.lev) >= 2 ? Number(pos.lev) : 0;
+  const buyLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':buy'] || lev) : 0;
+  const sellLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':sell'] || lev) : 0;
   const mine = book.mine[row.symbol] || [];
-  await syncSide(row, 'buy', buySz > 0 ? bidPx : 0, buySz, mine, state, buyLev, reduce || cut, budget);
-  await syncSide(row, 'sell', sellSz > 0 ? askPx : 0, sellSz, mine, state, sellLev, reduce || cut, budget);
+  const quoteExtra = { halfBps, floorTxt };
+  const quiet = backoffActive(state, row.symbol) && !rail.ignoreBackoff;
+  if (!quiet) {
+    await syncSide(row, 'buy', buySz > 0 ? bidPx : 0, buySz, mine, state, buyLev, reduce && Number(pos.short) > 0, budget, { ...quoteExtra, positionQty: pos.short, lossBps: buyLoss });
+    await syncSide(row, 'sell', sellSz > 0 ? askPx : 0, sellSz, mine, state, sellLev, reduce && Number(pos.long) > 0, budget, { ...quoteExtra, positionQty: pos.long, lossBps: sellLoss });
+  }
   const slot = state.orders[row.symbol] || {};
   return {
-    symbol: row.symbol, mid, q, lev: lev || 0,
-    shiftBps: Math.round(-model.shift * 10000), halfBps: Math.round(model.half * 10000),
+    symbol: row.symbol, mid, q, lev: lev || posLev || 0,
+    shiftBps: Math.round(-model.shift * 10000), halfBps, floor: floorPx, floorTxt,
     bids: slot.bid ? 1 : 0, asks: slot.ask ? 1 : 0,
     orders: [
       slot.bid ? { side: 'buy', price: slot.bidPx, size: slot.bidSz, status: 'open' } : null,
@@ -523,7 +795,7 @@ async function main() {
   state.symbols = state.symbols || [];
   state.orders = state.orders || {};
   state.knownIds = state.knownIds || {};
-  if (envBool('AS_RESUME', false)) state.halted = null;
+  if (envBool('AS_RESUME', false)) { state.halted = null; state.haltSwept = false; }
   if (envBool('AS_NEW_SESSION', false) || !(state.startEquity > 0)) {
     state.startEquity = 0;
     state.startTime = new Date().toISOString();
@@ -533,10 +805,13 @@ async function main() {
     state.fundingBorrow = 0;
     state.equityMarks = [];
   }
+  await loadMakerFee();
+  let feeAt = Date.now();
   for (;;) {
     try {
       if (Date.now() - productsAt > 3600 * 1000) { products = await ex.getProducts(VENUE); productsAt = Date.now(); }
-      const book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
+      if (Date.now() - feeAt > 3600 * 1000) { await loadMakerFee(); feeAt = Date.now(); }
+      let book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
       if (!(state.startEquity > 0) && book.equity > 0) state.startEquity = book.equity;
       const sessionLoss = lossPct(state.startEquity, book.equity, state.transfers);
       state.equityMarks = state.equityMarks || [];
@@ -548,35 +823,102 @@ async function main() {
       const dayBase = (state.equityMarks.find((m) => now - m.t >= 24 * 3600 * 1000) || state.equityMarks[0] || {}).eq || state.startEquity;
       const dayLoss = lossPct(dayBase, book.equity, 0);
       if (!state.halted && (sessionLoss >= SESSION_LOSS || dayLoss >= DAY_LOSS)) {
-        state.halted = 'session-loss';
-        console.log('RAIL ' + (sessionLoss >= SESSION_LOSS ? 'session-loss' : 'day-loss'));
+        state.halted = sessionLoss >= SESSION_LOSS ? 'session-loss' : 'day-loss';
+        console.log('HALT ' + state.halted);
       }
-      if (book.ml != null && book.ml < ML_CUT) console.log('RAIL margin-cut ml=' + book.ml);
-      else if (book.ml != null && book.ml < ML_STOP) console.log('RAIL margin-stop ml=' + book.ml);
-      const addOk = !state.halted && !(book.ml != null && book.ml < ML_STOP);
+      if (!state.halted && book.ml != null && book.ml < ML_HALT) {
+        state.halted = 'margin-halt';
+        console.log('HALT margin-halt ml=' + book.ml);
+      }
+      const wasOnRail = !!state.onRail;
+      if (book.ml != null && book.ml < ML_STOP) state.onRail = true;
+      if (book.ml == null || book.ml >= ML_RESUME) {
+        if (wasOnRail && book.ml != null && book.ml >= ML_RESUME) console.log('RAIL resume ml=' + book.ml);
+        state.onRail = false;
+      }
+      let mode = 'ok';
+      if (state.halted) mode = 'halt';
+      else if (book.ml != null && book.ml < ML_CUT) mode = 'cut';
+      else if (book.ml != null && book.ml < ML_STOP) mode = 'stop';
+      noteRail(state, mode === 'halt' ? (state.railMode === 'halt' ? 'halt' : state.railMode || 'ok') : mode, book.ml);
+      if (mode === 'halt') state.railMode = 'halt';
+      if (state.halted && !state.haltSwept) {
+        await cancelOurs(book);
+        state.haltSwept = true;
+        book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
+      } else if (state.onRail) {
+        const cancelled = await cancelOpening(book);
+        if (cancelled) book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
+      }
+      const rail = {
+        mode, onRail: !!state.onRail || !!state.halted,
+        forceTouch: mode === 'stop' || mode === 'cut' || mode === 'halt',
+        halfSize: mode === 'cut', ignoreBackoff: mode === 'cut' || !!state.halted, focus: null,
+      };
+      if (mode === 'stop' && maxBackoffN(state) >= 3 && !exitResting(book)) {
+        rail.halfSize = true;
+        rail.focus = largestSymbol(book.positions);
+      }
+      const addOk = !state.halted && !state.onRail;
+      clearFlatEntry(state, book.positions);
+      const seedMids = {};
+      for (const [sym, p] of Object.entries(book.positions || {})) if (p.mid > 0) seedMids[sym] = p.mid;
+      try { await pollFills(state, seedMids); } catch (e) { console.warn('fills', e.message); }
       const levGuess = VENUE === 'kraken' ? 5 : 1;
       const clip = clipFor(book.equity, levGuess);
       const chosen = await select(products, book, state);
-      const budget = { left: book.cash };
+      let budgetLeft = Number(book.cash || 0);
+      if (VENUE === 'coinbase') {
+        const reserved = restingBuyNotional(book.mine);
+        budgetLeft = Math.max(0, budgetLeft + Number(book.quoteHold || 0) - reserved);
+        let askCover = 0;
+        for (const p of Object.values(book.positions || {})) {
+          const qty = Number(p.long || 0);
+          const px = Number(p.mid || 0);
+          if (qty > 0 && px > 0 && qty * px + 1e-9 >= Number(p.quoteMin || 1)) askCover += qty * px;
+        }
+        const bidRoom = Math.max(0, BOOK_TARGET * Number(book.equity || 0) - askCover - reserved);
+        budgetLeft = Math.min(budgetLeft, bidRoom);
+      }
+      const budget = { left: budgetLeft };
       const markets = [];
       const mids = {};
       for (const row of chosen) {
-        const m = await quoteSymbol(row, book, state, clip, addOk, budget);
+        const m = await quoteSymbol(row, book, state, clip, addOk, budget, rail);
         if (m) { markets.push(m); mids[m.symbol] = m.mid; }
         await sleep(150);
       }
-      state.symbols = [...new Set(markets.map((m) => m.symbol).concat(Object.keys(book.positions || {}).filter((s) => !dusting(state, s))))];
-      try { await pollFills(state, mids); } catch (e) { console.warn('fills', e.message); }
+      const heldSyms = Object.keys(book.positions || {}).filter((s) => {
+        const p = book.positions[s];
+        return Number(p.long || 0) > 0 || Number(p.short || 0) > 0;
+      });
+      state.symbols = [...new Set(markets.map((m) => m.symbol).concat(heldSyms))];
       try { await pollTransfers(state); } catch (e) { console.warn('ledgers', e.message); }
+      const bySym = {};
+      let marked = 0;
+      for (const [sym, pos] of Object.entries(book.positions || {})) {
+        const pnl = positionPnl(state.entry && state.entry[sym], { ...pos, mid: pos.mid || mids[sym] || 0 });
+        if (Math.abs(pnl) > 1e-6) bySym[sym] = pnl;
+        marked += pnl;
+      }
       const equityAdj = book.equity - (state.startEquity || book.equity) - (state.transfers || 0);
-      const inv = book.inventoryPnl || 0;
+      const inv = VENUE === 'kraken' ? (book.inventoryPnl || 0) : marked;
       const recon = equityAdj - ((state.makerCapture || 0) - (state.fees || 0) + inv - (state.fundingBorrow || 0));
-      if (book.equity > 0 && Math.abs(recon) > book.equity * 0.01) console.log('RECON ' + recon.toFixed(2));
-      const hour = Date.now() - 3600 * 1000;
+      if (book.equity > 0 && Math.abs(recon) > Math.max(0.05, book.equity * 0.01) && now - (state.reconLogAt || 0) > 3600 * 1000) {
+        const split = Object.entries(bySym).map(([s, v]) => s + '=' + v.toFixed(2)).join(' ');
+        console.log('RECON ' + recon.toFixed(2) + (split ? ' ' + split : ''));
+        state.reconLogAt = now;
+      }
+      const hour = now - 3600 * 1000;
+      const fillsN = Object.keys(state.seenFills || {}).length;
+      const fillsH = (state.fillTimes || []).filter((t) => t >= hour).length;
       state.fillTimes = (state.fillTimes || []).filter((t) => t >= hour);
       const levBySymbol = {};
       for (const m of markets) if (m.lev) levBySymbol[m.symbol] = m.lev;
-      const dust = Object.keys(state.dust || {}).filter((s) => state.dust[s] > Date.now());
+      const dust = Object.keys(state.belowMin || {});
+      let openNotional = 0;
+      for (const m of markets) openNotional += bookNotional(m.orders);
+      const bookFrac = book.equity > 0 ? openNotional / book.equity : 0;
       saveState(state);
       postStatus({
         bot: process.env.BOT, exchange: VENUE, quote: cfg.quote,
@@ -584,17 +926,17 @@ async function main() {
           startEquity: state.startEquity, startTime: state.startTime, lastEquity: book.equity,
           transfers: state.transfers || 0, equityAdj, makerCapture: state.makerCapture || 0,
           fees: state.fees || 0, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
-          recon, fills: Object.keys(state.seenFills || {}).length, fillsHour: state.fillTimes.length,
+          recon, fills: fillsN, fillsHour: fillsH,
           netMaker: (state.makerCapture || 0) - (state.fees || 0), pricePnl: inv,
         },
         rails: {
           ml: book.ml, liqDistPct: LIQ_MIN * 100, sessionLossPct: sessionLoss * 100,
-          dayLossPct: dayLoss * 100, halted: state.halted || null, levBySymbol,
+          dayLossPct: dayLoss * 100, halted: state.halted || null, levBySymbol, onRail: !!state.onRail,
         },
-        dust, markets,
+        bookFrac, dust, markets,
       });
-      const line = markets.map((m) => m.symbol + ' q=' + m.q.toFixed(2) + ' ' + m.halfBps + 'bp').join(' ');
-      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + inv.toFixed(2) + ' fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fills=' + state.fillTimes.length + ' lev=' + (Object.values(levBySymbol)[0] || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + ' | ' + (line || 'no names'));
+      const line = markets.map((m) => m.symbol + ' q=' + m.q.toFixed(2) + ' half=' + m.halfBps + 'bp floor=' + (m.floorTxt || '-')).join(' ');
+      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + inv.toFixed(2) + ' fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' book=' + Math.round(bookFrac * 100) + '% lev=' + (Object.values(levBySymbol)[0] || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + ' | ' + (line || 'no names'));
     } catch (e) {
       console.warn('as loop', e.message);
     }

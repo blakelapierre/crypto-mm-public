@@ -267,12 +267,25 @@ export function createExchange(cfg, orderRegistry) {
         heldReserve = null;
         if (keepId) reserveSell(base, volume, keepId);
       };
-      if (isSell && (meta.marginShort || meta.marginClose)) {
+      const levN = Number(meta.leverage) || 0;
+      const marginSell = isSell && !!(meta.marginShort || meta.marginClose || meta.reduceOnly || levN > 0);
+      if (marginSell) {
         const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
         const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
-        if (!(Number(volume) > 0) || Number(volume) + 1e-12 < minV0 || Number(volume) * Number(price) + 1e-12 < quoteMin0) {
+        let vol = Number(volume);
+        const cap = Number(meta.positionQty);
+        if ((meta.reduceOnly || meta.marginClose) && Number.isFinite(cap)) {
+          if (!(cap > 0)) return { skipped: 'pos', sellable: 0 };
+          if (vol > cap + 1e-12) {
+            const next = formatVolume(cap, info && info.lotDecimals);
+            console.log('  SELL CLAMP ' + base + ' want=' + volume + ' pos=' + cap);
+            vol = Number(next);
+          }
+        }
+        if (!(vol > 0) || vol + 1e-12 < minV0 || vol * Number(price) + 1e-12 < quoteMin0) {
           return { skipped: 'belowMin' };
         }
+        volume = vol;
       } else if (isSell) {
         const quoteMin0 = Number((info && info.quoteMin) || process.env.MIN_ORDER_USD || 1);
         const minV0 = Number((info && (info.baseMin || info.ordermin)) || 0);
@@ -357,7 +370,7 @@ export function createExchange(cfg, orderRegistry) {
           });
           if (res.success === false || res.error_response) {
             const msg = JSON.stringify(res.error_response || res);
-            if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+            if (isSell && !marginSell && !meta._settleRetry && /insufficient/i.test(msg)) {
               releaseReserve(null);
               await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
               invalidateLiveCache();
@@ -392,7 +405,7 @@ export function createExchange(cfg, orderRegistry) {
           return { order_id: oid };
         } catch (e) {
         const msg = String(e.message || e);
-        if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+        if (isSell && !marginSell && !meta._settleRetry && /insufficient/i.test(msg)) {
           releaseReserve(null);
           await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
           invalidateLiveCache();
@@ -427,7 +440,7 @@ export function createExchange(cfg, orderRegistry) {
         return { order_id: oid };
       } catch (e) {
         const msg = String(e.message || e);
-        if (isSell && !meta._settleRetry && /insufficient/i.test(msg)) {
+        if (isSell && !marginSell && !meta._settleRetry && /insufficient/i.test(msg)) {
           releaseReserve(null);
           await sleep(Number(process.env.SELL_SETTLE_MS || 3000));
           invalidateLiveCache();
