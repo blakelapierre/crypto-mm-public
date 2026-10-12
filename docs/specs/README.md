@@ -1,6 +1,7 @@
 # Bot specs
 
-- **`14-spec-as-v1.md` is the current, active work list. Start here.** It covers the Avellaneda-Stoikov bots `as-cb` (Coinbase) and `as-kraken` (Kraken), with max leverage plus safety rails, fill and P&L logging, and scanner-driven selection. Line numbers refer to `5cfaae4`.
+- **`15-spec-as-v2.md` is the current, active work list. Start here.** Lead priority for the AS bots `as-cb` (Coinbase) and `as-kraken` (Kraken): a fee-aware minimum half-spread with an exit floor above entry after fees; unwinding on the margin rail (cancel opening orders first, Kraken `reduce_only` post-only exits sized to the margin position, backoff and a defined fallback); as-cb ladder leftovers priced near the touch and treated as inventory. Line numbers refer to `f8deff8`.
+- `14-spec-as-v1.md` was the spec for commits `414a1e3` and `f8deff8` (max leverage plus rails, fill and P&L logging, scanner-driven selection). Its post-mortem is in AS v2. Line numbers refer to `5cfaae4`.
 
 ## Retired / archived
 
