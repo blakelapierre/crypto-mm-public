@@ -254,10 +254,17 @@ async function quoteSymbol(row, book, state) {
   let askPx = snap(model.ask, inc, 'sell');
   if (!(bidPx < mid)) bidPx = snap(mid - inc, inc, 'buy');
   if (!(askPx > mid)) askPx = snap(mid + inc, inc, 'sell');
+  if (VENUE !== 'kraken' && pos.long > 0) {
+    const need = Number(row.quoteMin || 1) / pos.long;
+    if (askPx + 1e-12 < need) askPx = snap(need, inc, 'sell');
+  }
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
+  if (VENUE !== 'kraken' && pos.long > 0 && askPx * pos.long + 1e-9 < Number(row.quoteMin || 1)) {
+    askPx = formatPrice(askPx + inc, row.pairDecimals ?? 8);
+  }
   const canBuy = q < 0.95 && (VENUE === 'kraken' ? book.cash > CLIP / Math.max(LEV, 1) : book.cash + 1e-9 >= CLIP);
-  const canSell = VENUE === 'kraken' ? q > -0.95 : pos.long * mid + 1e-9 >= Number(row.quoteMin || 1);
+  const canSell = VENUE === 'kraken' ? q > -0.95 : pos.long > 0 && askPx * pos.long + 1e-9 >= Number(row.quoteMin || 1);
   const mine = book.mine[row.symbol] || [];
   await syncSide(row, 'buy', canBuy ? bidPx : 0, mine, state, q, pos.long);
   await syncSide(row, 'sell', canSell ? askPx : 0, mine, state, q, pos.long);
