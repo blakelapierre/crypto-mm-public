@@ -1,9 +1,13 @@
-# Ladder bot specs
+# Bot specs
 
-Change specs for the `ladder` bot, written from live logs and status data (Oct 4–7, 2026).
+- **`14-spec-as-v1.md` is the current, active work list. Start here.** It covers the Avellaneda-Stoikov bots `as-cb` (Coinbase) and `as-kraken` (Kraken), with max leverage plus safety rails, fill and P&L logging, and scanner-driven selection. Line numbers refer to `5cfaae4`.
 
-- `13-spec-v13.md` is the current, active work list. Start here. Lead priority: no transfer is ever inferred from a cash residual (venue records only, with a reversal path); fills come from cumulative quantity so partials survive cancels; open book ≥ 90% of tradable equity (`BOOK_TARGET_FRAC`); a full-balance ask on every sellable position; truthful `running` status.
-- `12-kraken-short-book.md` is separate Kraken short-book work, not part of the ladder spec series.
+## Retired / archived
+
+The `ladder` bot and the Kraken margin/short book were retired on Oct 11, 2026. The specs below are kept for history only.
+
+- `13-spec-v13.md` (archived) was the last ladder spec. Lead priority: no transfer is ever inferred from a cash residual (venue records only, with a reversal path); fills come from cumulative quantity so partials survive cancels; open book ≥ 90% of tradable equity (`BOOK_TARGET_FRAC`); a full-balance ask on every sellable position; truthful `running` status.
+- `12-kraken-short-book.md` (archived) covered the Kraken short book (margin bot), now retired.
 - `11-spec-v12.md` was the spec for commits `08d1b98`, `5abcc9e` and `b78ff91` (followed by `b85218e` and `af81074`). Its post-mortem is in v13.
 - `10-spec-v11.md` was the spec for commits `587e29c` and `19caf70`. Its post-mortem is in v12.
 - `09-spec-v10.md` was the spec for commits `ef47ed6` and `3bdfea8`. Its post-mortem is in v11.
