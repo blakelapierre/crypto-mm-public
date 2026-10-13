@@ -218,10 +218,12 @@ export function feeMul(feeBps) {
   return 1 + Math.max(0, Number(feeBps) || 0) / 10000;
 }
 
-// free quote minus resting buy cost (already including fee) minus a cash reserve.
-export function cashBudget({ free = 0, restingCost = 0, equity = 0, halve = false } = {}) {
+// free quote minus a cash reserve. Subtract resting buys only when the venue
+// figure does not already exclude them (Coinbase available is already net).
+export function cashBudget({ free = 0, restingCost = 0, equity = 0, halve = false, netOfHolds = false } = {}) {
   const reserve = Math.max((Number(equity) || 0) * 0.01, 0.1);
-  let b = Math.max(0, (Number(free) || 0) - Math.max(0, Number(restingCost) || 0) - reserve);
+  const held = netOfHolds ? 0 : Math.max(0, Number(restingCost) || 0);
+  let b = Math.max(0, (Number(free) || 0) - held - reserve);
   if (halve) b *= 0.5;
   return b;
 }
@@ -401,5 +403,69 @@ export function sentHalfBps(mid, bidPx, askPx) {
   if (Number(bidPx) > 0) h = Math.max(h, (m - Number(bidPx)) / m * 10000);
   if (Number(askPx) > 0) h = Math.max(h, (Number(askPx) - m) / m * 10000);
   return Math.round(h);
+}
+
+// half = max(fee + profit, k × sigma, half the touch). Never under the fee floor.
+export function adaptiveHalf({ feeBps = 0, profitBps = 0, sigma = 0, k = 1.5, touchSpreadBps = 0, maxHalfBps = 200 } = {}) {
+  const floor = Math.max(minHalfBps(feeBps, profitBps), 1);
+  const vol = Math.max(0, Number(k) || 0) * Math.max(0, Number(sigma) || 0) * 10000;
+  const touch = 0.5 * Math.max(0, Number(touchSpreadBps) || 0);
+  let src = 'floor';
+  let bps = floor;
+  if (vol > bps + 1e-9) { bps = vol; src = 'vol'; }
+  if (touch > bps + 1e-9) { bps = touch; src = 'touch'; }
+  const hi = Math.max(floor, Number(maxHalfBps) > 0 ? Number(maxHalfBps) : bps);
+  if (bps > hi) bps = hi;
+  if (bps + 1e-9 < floor) { bps = floor; src = 'floor'; }
+  return { half: bps / 10000, bps, src };
+}
+
+// Notional whose forced exit (round-trip fee + a sigma move over the hold) stays inside maxLossPct of equity.
+export function exitLossNotional({ equity = 0, feeBps = 0, sigma = 0, holdMin = 240, maxLossPct = 0.015 } = {}) {
+  const e = Number(equity);
+  if (!(e > 0)) return 0;
+  const fee = Math.max(0, Number(feeBps) || 0) / 10000;
+  const move = Math.max(0, Number(sigma) || 0) * Math.sqrt(Math.max(1, Number(holdMin) || 1) / 15);
+  const lossFrac = 2 * fee + move;
+  const cap = Math.max(0, Number(maxLossPct) || 0);
+  if (!(lossFrac > 0)) return e * cap;
+  return (e * cap) / lossFrac;
+}
+
+// From 75% of the hold cap, walk the exit from entry+fee+profit toward breakeven.
+// After the cap, step a quarter-spread toward the touch every 15 minutes. 0 means "keep the v2 floor".
+export function gradualHoldExit({ entry = 0, side = 'long', feeBps = 0, profitBps = 0, carryPerUnit = 0, ageMin = 0, maxHoldMin = 240, touch = 0, halfBps = 26 } = {}) {
+  const e = Number(entry);
+  if (!(e > 0)) return 0;
+  const fee = Math.max(0, Number(feeBps) || 0) / 10000;
+  const profit = Math.max(0, Number(profitBps) || 0) / 10000;
+  const carry = Math.max(0, Number(carryPerUnit) || 0);
+  const sign = side === 'short' || side === 'buy' ? -1 : 1;
+  const profitPx = e * (1 + sign * (fee + profit));
+  const bePx = e * (1 + sign * fee) + sign * carry;
+  const age = Number(ageMin) || 0;
+  const maxH = Number(maxHoldMin) > 0 ? Number(maxHoldMin) : 240;
+  if (age + 1e-9 < 0.75 * maxH) return 0;
+  if (age < maxH) {
+    const t = (age - 0.75 * maxH) / (0.25 * maxH);
+    return profitPx + (bePx - profitPx) * Math.max(0, Math.min(1, t));
+  }
+  const touchPx = Number(touch) > 0 ? Number(touch) : bePx;
+  const steps = Math.floor((age - maxH) / 15);
+  const step = Math.abs(e) * (Math.max(1, Number(halfBps) || 26) / 10000) * 0.25;
+  const dir = touchPx >= bePx ? 1 : -1;
+  let px = bePx + dir * step * Math.max(0, steps);
+  if (dir > 0) px = Math.min(touchPx, Math.max(bePx, px));
+  else px = Math.max(touchPx, Math.min(bePx, px));
+  return px;
+}
+
+export function holdingClass({ qty = 0, mid = 0, minNotional = 1, minSize = 0 } = {}) {
+  const q = Number(qty) || 0;
+  const m = Number(mid) || 0;
+  if (!(q > 0) || !(m > 0)) return 'dust';
+  if (q + 1e-12 < (Number(minSize) || 0)) return 'dust';
+  if (q * m + 1e-12 < Math.max(0, Number(minNotional) || 0)) return 'dust';
+  return 'inventory';
 }
 
