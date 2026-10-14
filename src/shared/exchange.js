@@ -69,6 +69,7 @@ export function createExchange(cfg, orderRegistry) {
             baseMin: parseFloat(p.base_min_size || '0') || 0,
             baseInc: parseFloat(bi) || 0,
             quoteMin: parseFloat(p.quote_min_size || '1') || 1,
+            vol24: Number(p.approximate_quote_24h_volume || p.quote_volume_24h || 0) || 0,
           };
           map[base] = rec; pairMeta.set(rec.pair, rec);
         }

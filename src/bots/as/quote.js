@@ -546,4 +546,178 @@ export function roundUpReduce({ size = 0, minSize = 0, posQty = 0 } = {}) {
   return { size: 0, dust: true };
 }
 
+// Touch spread a maker must see before the round trip clears fees plus the minimum edge.
+export function minBookSpreadBps({ feeBps = 0, minEdgeBps = 8 } = {}) {
+  return 2 * Math.max(0, Number(feeBps) || 0) + Math.max(0, Number(minEdgeBps) || 0);
+}
+
+// Rank by net edge, not by how tight the book is. Volume is a weight, not the sort.
+export function rankByNetEdge(rows, opts = {}) {
+  const fee = Math.max(0, Number(opts.feeBps) || 0);
+  const minEdge = Math.max(0, Number(opts.minEdgeBps) || 0);
+  const minVol = Math.max(0, Number(opts.minVol) || 0);
+  const maxSpread = Number(opts.maxSpreadBps) > 0 ? Number(opts.maxSpreadBps) : Infinity;
+  const target = Math.max(0, Number(opts.targetVol) || 0);
+  const evalN = Math.max(1, Number(opts.evalN) || 40);
+  const maxPairs = Math.max(0, Number(opts.maxPairs) || 0);
+  const ordered = [...(rows || [])].sort((a, b) => (Number(b.vol24) || 0) - (Number(a.vol24) || 0) || String(a.symbol || '').localeCompare(String(b.symbol || '')));
+  const evald = ordered.slice(0, evalN);
+  const rejected = { feeSpread: 0, vol: 0, tick: 0, wide: 0 };
+  const feeSpread = [];
+  const ok = [];
+  let best = null;
+  for (const row of evald) {
+    const spread = Number(row.spreadBps) || 0;
+    const edge = spread - 2 * fee;
+    const vol = Number(row.vol24) || 0;
+    if (!best || edge > best.edge) best = { symbol: row.symbol, edge };
+    const tickBps = Number(row.tickBps) || 0;
+    if (tickBps > 10) { rejected.tick += 1; continue; }
+    if (vol + 1e-9 < minVol) { rejected.vol += 1; continue; }
+    if (spread > maxSpread) { rejected.wide += 1; continue; }
+    if (edge + 1e-9 < minEdge) { rejected.feeSpread += 1; feeSpread.push(row.symbol); continue; }
+    const volW = target > 0 ? Math.min(1, vol / target) : 1;
+    const tie = (Number(row.sigma) || 0) + tickBps;
+    ok.push({ ...row, edge, score: edge * volW, tie });
+  }
+  ok.sort((a, b) => b.score - a.score || a.tie - b.tie || String(a.symbol).localeCompare(String(b.symbol)));
+  return {
+    picked: maxPairs > 0 ? ok.slice(0, maxPairs) : ok,
+    rejected, feeSpread, best, evaluated: evald.length,
+  };
+}
+
+export function haltPhase({ halted = '', since = 0, now = 0, holdMs = 6 * 3600 * 1000, maxMs = 24 * 3600 * 1000 } = {}) {
+  if (halted !== 'session-loss') return '';
+  const start = since == null || since === '' ? Number(now) : Number(since);
+  const age = Math.max(0, Number(now) - (Number.isFinite(start) ? start : Number(now)));
+  if (age + 1e-9 >= Number(maxMs)) return 'C';
+  if (age + 1e-9 >= Number(holdMs)) return 'B';
+  return 'A';
+}
+
+// Lowest long exit (highest short cover) once a session-loss halt is allowed to give ground.
+export function haltExitBound({ cost = 0, side = 'long', maxLossPct = 0.015, equity = 0, qty = 0, haltLossUsed = 0 } = {}) {
+  const c = Number(cost);
+  if (!(c > 0)) return 0;
+  const short = side === 'short' || side === 'buy';
+  const cap = Math.max(0, Number(maxLossPct) || 0);
+  const pctBound = short ? c * (1 + cap) : c * (1 - cap);
+  const q = Number(qty) || 0;
+  const eq = Number(equity) || 0;
+  if (!(q > 0) || !(eq > 0)) return pctBound;
+  const room = Math.max(0, eq * 0.01 - Math.max(0, Number(haltLossUsed) || 0));
+  const eqBound = short ? c + room / q : c - room / q;
+  return short ? Math.min(pctBound, eqBound) : Math.max(pctBound, eqBound);
+}
+
+// Phase B: step a quarter-spread toward the touch, never through the loss bound.
+export function haltTimeoutPx({ cost = 0, side = 'long', touch = 0, halfBps = 26, steps = 0, maxLossPct = 0.015, equity = 0, qty = 0, haltLossUsed = 0 } = {}) {
+  const c = Number(cost);
+  if (!(c > 0)) return 0;
+  const short = side === 'short' || side === 'buy';
+  const bound = haltExitBound({ cost: c, side, maxLossPct, equity, qty, haltLossUsed });
+  const touchPx = Number(touch) || 0;
+  const dest = short
+    ? (touchPx > 0 ? Math.min(Math.max(touchPx, c), bound) : bound)
+    : (touchPx > 0 ? Math.max(Math.min(touchPx, c), bound) : bound);
+  return stepToward({ from: c, to: dest, halfBps, steps, entry: c });
+}
+
+function snapOpen(px, inc, side) {
+  const tick = Number(inc) > 0 ? Number(inc) : 0;
+  if (!(tick > 0)) return px;
+  return side === 'buy' ? Math.floor(px / tick + 1e-8) * tick : Math.ceil(px / tick - 1e-8) * tick;
+}
+
+// why is ok, max-dist, below-need, or no-mid. half is the half that would have been sent.
+export function widenOpenDecision({ px = 0, side = 'buy', mid = 0, needBps = 0, touch = 0, otherTouch = 0, maxDistBps = 150, inc = 0 } = {}) {
+  const m = Number(mid);
+  const need = Math.max(0, Number(needBps) || 0);
+  const capBase = Math.max(0, Number(maxDistBps) || 0);
+  if (!(m > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0 };
+  const buy = String(side) !== 'sell';
+  const raw = buy ? m * (1 - need / 10000) : m * (1 + need / 10000);
+  let next = buy ? Math.min(Number(px) > 0 ? Number(px) : raw, raw) : Math.max(Number(px) > 0 ? Number(px) : raw, raw);
+  next = snapOpen(next, inc, buy ? 'buy' : 'sell');
+  if (buy && !(next < m)) next = snapOpen(raw, inc, 'buy');
+  if (!buy && !(next > m)) next = snapOpen(raw, inc, 'sell');
+  if (!(next > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0 };
+  const half = Math.abs(next - m) / m * 10000;
+  const bid = buy ? Number(touch) || 0 : Number(otherTouch) || 0;
+  const ask = buy ? Number(otherTouch) || 0 : Number(touch) || 0;
+  const distTouch = Number(touch) > 0 ? Math.abs(next - Number(touch)) / m * 10000 : 0;
+  const touchSpread = bid > 0 && ask > bid ? (ask - bid) / m * 10000 : 0;
+  const wide = need > 0 && touchSpread > 2 * need;
+  const cap = wide ? Math.max(capBase, touchSpread / 2 + need) : capBase;
+  const measured = wide ? half : distTouch;
+  if (measured > cap + 1e-6) return { px: 0, why: 'max-dist', need, distTouch, cap, half };
+  if (half + 0.5 < need) return { px: 0, why: 'below-need', need, distTouch, cap, half };
+  return { px: next, why: 'ok', need, distTouch, cap, half };
+}
+
+export function openGateWhy(decision) {
+  if (!decision || decision.why === 'ok') return '';
+  const need = Math.round(Number(decision.need) || 0);
+  if (decision.why === 'max-dist') {
+    return 'max-dist need=' + need + ' dist_touch=' + Math.round(Number(decision.distTouch) || 0) + ' cap=' + Math.round(Number(decision.cap) || 0);
+  }
+  if (decision.why === 'below-need') {
+    const half = Number(decision.half) || 0;
+    if (!(half + 0.5 < Number(decision.need))) return '';
+    return 'fee-edge half=' + Math.round(half) + ' need=' + need;
+  }
+  if (decision.why === 'no-mid') return 'no-mid';
+  return '';
+}
+
+export function unexplainedJump({ prev = 0, next = 0, quiet = true } = {}) {
+  if (!quiet) return 0;
+  const p = Number(prev) || 0;
+  const n = Number(next) || 0;
+  if (!(p > 0)) return 0;
+  const jump = n - p;
+  if (Math.abs(jump) > Math.max(Math.abs(p) * 0.05, 1)) return jump;
+  return 0;
+}
+
+export function dustTopupUsd({ dustUsd = 0, venueMin = 1 } = {}) {
+  return Math.max(0, (Number(venueMin) || 0) - Math.max(0, Number(dustUsd) || 0));
+}
+
+export function bookSlots({ budget = 0, maxPairs = 1, venueMin = 1 } = {}) {
+  const floor = Math.max(0.01, (Number(venueMin) || 1) * 1.2);
+  const n = Math.floor(Math.max(0, Number(budget) || 0) / floor);
+  return Math.max(0, Math.min(Math.max(0, Number(maxPairs) || 0), n));
+}
+
+// Per-slot share of the cash budget. A CLIP_MAX under that share cannot hit the book target,
+// so it only binds when it is wider than the venue minimum.
+export function openClipUsd({ budget = 0, slots = 1, clipMax = 0, venueMin = 1 } = {}) {
+  const n = Math.max(1, Number(slots) || 1);
+  const share = Math.max(0, Number(budget) || 0) / n;
+  const venueFloor = Math.max(Number(venueMin) || 0, (Number(venueMin) || 0) * 1.2);
+  if (share + 1e-9 < Math.max(Number(venueMin) || 0, venueFloor)) return 0;
+  const cap = Number(clipMax) || 0;
+  if (cap > venueFloor) return Math.min(share, cap);
+  return share;
+}
+
+export function tradableBookTarget({ equity = 0, dust = 0, reserve = 0, frac = 0.9, askCover = 0 } = {}) {
+  const base = Math.max(0, (Number(equity) || 0) - (Number(dust) || 0) - (Number(reserve) || 0));
+  const target = Math.max(0, Number(frac) || 0) * base;
+  return { target, bidRoom: Math.max(0, target - Math.max(0, Number(askCover) || 0)) };
+}
+
+// Missing price does not count as flat. A known price under the venue minimum does.
+export function positionAboveMin({ qty = 0, mid = 0, minNotional = 1, minSize = 0 } = {}) {
+  const q = Math.abs(Number(qty) || 0);
+  if (!(q > 0)) return false;
+  if ((Number(minSize) || 0) > 0 && q + 1e-12 < Number(minSize)) return false;
+  const m = Number(mid) || 0;
+  if (!(m > 0)) return true;
+  return q * m + 1e-12 >= Math.max(0, Number(minNotional) || 0);
+}
+
+
 
