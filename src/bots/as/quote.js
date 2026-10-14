@@ -469,3 +469,81 @@ export function holdingClass({ qty = 0, mid = 0, minNotional = 1, minSize = 0 } 
   return 'inventory';
 }
 
+// Opening half must pay the fee, the buffer, the profit, and a positive round trip.
+export function openingMinHalfBps({ feeBps = 0, bufferBps = 6, profitBps = 10, minEdgeBps = 8, minHalfBps = 0 } = {}) {
+  const fee = Math.max(0, Number(feeBps) || 0);
+  const byBuffer = fee + Math.max(0, Number(bufferBps) || 0) + Math.max(0, Number(profitBps) || 0);
+  const byEdge = fee + Math.max(0, Number(minEdgeBps) || 0) / 2;
+  return Math.max(byBuffer, byEdge, Number(minHalfBps) || 0, 1);
+}
+
+// Long exit sits at or above this. Short exit sits at or below it.
+export function costFloorPx({ entry = 0, side = 'long', feeBps = 0, profitBps = 0 } = {}) {
+  const e = Number(entry);
+  if (!(e > 0)) return 0;
+  const pad = (Math.max(0, Number(feeBps) || 0) + Math.max(0, Number(profitBps) || 0)) / 10000;
+  const sign = side === 'short' || side === 'buy' ? -1 : 1;
+  return e * (1 + sign * pad);
+}
+
+export function posEffectOf({ longQty = 0, shortQty = 0, side = 'buy', size = 0 } = {}) {
+  const sz = Math.max(0, Number(size) || 0);
+  const buy = String(side || '').toLowerCase() === 'buy';
+  const long = Math.max(0, Number(longQty) || 0);
+  const short = Math.max(0, Number(shortQty) || 0);
+  if (!(sz > 0)) return 'open';
+  const have = buy ? short : long;
+  const same = buy ? long : short;
+  if (!(have > 1e-12) && !(same > 1e-12)) return 'open';
+  if (!(have > 1e-12)) return 'add';
+  if (sz + 1e-8 < have) return 'reduce';
+  if (Math.abs(sz - have) <= Math.max(1e-8, have * 1e-6)) return 'close';
+  return 'flip';
+}
+
+export function quoteCapture({ side = 'buy', price = 0, size = 0, mid = 0 } = {}) {
+  const px = Number(price);
+  const sz = Number(size);
+  const m = Number(mid);
+  if (!(px > 0) || !(sz > 0) || !(m > 0)) return null;
+  return (String(side || '').toLowerCase() === 'buy' ? m - px : px - m) * sz;
+}
+
+// A tag means the exit may cross the cost floor. Session-loss is not one of them.
+export function riskAllowsLoss({ ml = null, cut = 200, adverseFrac = 0, sigmaMove = 0, stopSigma = 3, stopPct = 0.03, ageMin = 0, maxHoldMin = 240, haltKind = '' } = {}) {
+  if (ml != null && Number(ml) > 0 && Number(ml) < Number(cut)) return 'margin';
+  const adv = Math.max(0, Number(adverseFrac) || 0);
+  const need = Math.max(0, Number(stopSigma) || 0) * Math.max(0, Number(sigmaMove) || 0);
+  if ((need > 0 && adv + 1e-12 >= need) || (Number(stopPct) > 0 && adv + 1e-12 >= Number(stopPct))) return 'stop';
+  const maxH = Number(maxHoldMin) > 0 ? Number(maxHoldMin) : 240;
+  if ((Number(ageMin) || 0) + 1e-9 >= 2 * maxH) return 'hold';
+  if (haltKind === 'day-loss' || haltKind === 'margin-halt') return 'halt';
+  return '';
+}
+
+export function stepToward({ from = 0, to = 0, halfBps = 26, steps = 0, entry = 0 } = {}) {
+  const a = Number(from);
+  const b = Number(to);
+  if (!(a > 0)) return b > 0 ? b : 0;
+  if (!(b > 0)) return a;
+  const step = Math.abs(Number(entry) > 0 ? Number(entry) : a) * (Math.max(1, Number(halfBps) || 26) / 10000) * 0.25;
+  const n = Math.max(0, Math.floor(Number(steps) || 0));
+  const dir = b >= a ? 1 : -1;
+  let px = a + dir * step * n;
+  if (dir > 0) px = Math.min(b, px);
+  else px = Math.max(b, px);
+  return px;
+}
+
+// A reduce below the venue minimum rounds up only when that stays inside the position.
+export function roundUpReduce({ size = 0, minSize = 0, posQty = 0 } = {}) {
+  const sz = Math.max(0, Number(size) || 0);
+  const minS = Math.max(0, Number(minSize) || 0);
+  const pos = Math.max(0, Number(posQty) || 0);
+  if (!(sz > 0)) return { size: 0, dust: true };
+  if (!(minS > 0) || sz + 1e-12 >= minS) return { size: sz, dust: false };
+  if (minS <= pos + 1e-12) return { size: minS, dust: false };
+  return { size: 0, dust: true };
+}
+
+

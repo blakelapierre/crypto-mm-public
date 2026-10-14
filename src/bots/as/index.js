@@ -11,7 +11,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -49,6 +49,15 @@ const MAX_FROM_MID = envNum('AS_MAX_FROM_MID', 0.02);
 const SIGMA_K = envNum('AS_SIGMA_K', 1.5);
 const MAX_EXIT_LOSS = envNum('AS_MAX_EXIT_LOSS_PCT', 1.5) / 100;
 const CLIP_CAP = envNum('CLIP_MAX_USD', 0);
+const FEE_BUFFER = envNum('AS_FEE_BUFFER_BPS', 6);
+const MIN_EDGE = envNum('AS_MIN_EDGE_BPS', 8);
+const MAX_QUOTE_DIST = envNum('AS_MAX_QUOTE_DIST_BPS', 150);
+const STOP_SIGMA = envNum('AS_STOP_SIGMA', 3);
+const STOP_PCT = envNum('AS_STOP_PCT', 3) / 100;
+const HALT_COOLDOWN = envNum('AS_HALT_COOLDOWN_MIN', 60) * 60 * 1000;
+const MAX_RESETS = Math.max(0, envNum('AS_MAX_SESSION_RESETS_PER_DAY', 2));
+const MAX_Q = envNum('AS_MAX_Q', 2);
+const DUST_COMBINE_MAX = Math.max(0, envNum('AS_DUST_COMBINE_MAX', 2));
 const BOT_NAME = process.env.BOT || 'as';
 let makerFeeBps = FEE_BPS;
 const statePath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.json');
@@ -56,6 +65,7 @@ const lockPath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.lock');
 const fillPath = path.join(process.cwd(), 'logs', 'fills-' + BOT_NAME + '.jsonl');
 const ledgerPath = path.join(process.cwd(), 'logs', 'ledger-' + BOT_NAME + '.jsonl');
 const markoutPath = path.join(process.cwd(), 'logs', 'markouts-' + BOT_NAME + '.jsonl');
+const controlPath = path.join(process.cwd(), 'data', BOT_NAME + '.control.json');
 
 function ceiling(name) {
   const v = String(process.env[name] ?? 'max').trim().toLowerCase();
@@ -116,15 +126,53 @@ function median(xs) {
   return s[Math.floor(s.length / 2)];
 }
 function halfFor(spreadBps, sigma) {
-  const floorBps = Math.max(makerFeeBps + PROFIT_BPS, MIN_HALF_BPS);
+  const floorBps = openingNeedBps();
   return adaptiveHalf({
     feeBps: makerFeeBps,
-    profitBps: Math.max(PROFIT_BPS, floorBps - makerFeeBps),
+    profitBps: Math.max(0, floorBps - makerFeeBps),
     sigma: Number(sigma) || 0,
     k: SIGMA_K,
     touchSpreadBps: Number(spreadBps) || 0,
     maxHalfBps: Math.max(MAX_HALF * 10000, floorBps),
   });
+}
+function openingNeedBps() {
+  return openingMinHalfBps({
+    feeBps: makerFeeBps, bufferBps: FEE_BUFFER, profitBps: PROFIT_BPS,
+    minEdgeBps: MIN_EDGE, minHalfBps: MIN_HALF_BPS,
+  });
+}
+function widenOpen(px, side, mid, inc, needBps, touch) {
+  const m = Number(mid);
+  if (!(m > 0)) return 0;
+  const dist = needBps / 10000;
+  const raw = side === 'buy' ? m * (1 - dist) : m * (1 + dist);
+  let next = side === 'buy' ? Math.min(Number(px) || raw, raw) : Math.max(Number(px) || raw, raw);
+  next = snap(next, inc, side);
+  if (side === 'buy' && !(next < m)) next = snap(raw, inc, 'buy');
+  if (side === 'sell' && !(next > m)) next = snap(raw, inc, 'sell');
+  if (!(next > 0)) return 0;
+  if (touch > 0 && Math.abs(next - touch) / m * 10000 > MAX_QUOTE_DIST + 1e-6) return 0;
+  if (Math.abs(next - m) / m * 10000 + 0.5 < needBps) return 0;
+  return next;
+}
+function quoteMid(state, orderId, sym, timeIso) {
+  const rec = state.orderMid && state.orderMid[String(orderId)];
+  if (rec && Number(rec.mid) > 0) return Number(rec.mid);
+  const t = Date.parse(timeIso) || Date.now();
+  let best = 0;
+  let bestT = -1;
+  for (const h of (state.pxHist && state.pxHist[sym]) || []) {
+    if (h && h.t <= t && Number(h.mid) > 0 && h.t >= bestT) { bestT = h.t; best = Number(h.mid); }
+  }
+  return best;
+}
+function riskStep(state, key) {
+  state.riskSteps = state.riskSteps || {};
+  const cur = state.riskSteps[key] || { n: 0, at: Date.now() };
+  if (Date.now() - cur.at >= 15 * 60 * 1000) { cur.n += 1; cur.at = Date.now(); }
+  state.riskSteps[key] = cur;
+  return cur.n;
 }
 function pxText(n) {
   const x = Number(n);
@@ -188,19 +236,34 @@ function noteFill(state, row) {
   state.seenFills[row.venueFillId] = row.time;
   const ids = Object.keys(state.seenFills);
   if (ids.length > 400) delete state.seenFills[ids[0]];
-  state.makerCapture = (state.makerCapture || 0) + (row.capture || 0);
+  if (row.capture != null && Number.isFinite(Number(row.capture))) state.makerCapture = (state.makerCapture || 0) + Number(row.capture);
   state.fees = (state.fees || 0) + (row.fee || 0);
   state.fillCount = (Number(state.fillCount) || 0) + 1;
   state.fillTimes = state.fillTimes || [];
   state.fillTimes.push(Date.parse(row.time) || Date.now());
   const prev = state.entry && state.entry[row.symbol];
+  const effect = posEffectOf({
+    longQty: prev && prev.longQty, shortQty: prev && prev.shortQty, side: row.side, size: row.size,
+  });
+  row.posEffect = effect;
+  if (effect === 'reduce' || effect === 'close' || effect === 'flip') {
+    const buy = String(row.side || '').toLowerCase() === 'buy';
+    const have = buy ? Number(prev && prev.shortQty) || 0 : Number(prev && prev.longQty) || 0;
+    const closeQty = Math.min(have, Number(row.size) || 0);
+    const avg = buy ? entryAvg(prev, 'short') : entryAvg(prev, 'long');
+    const gross = avg > 0 ? (buy ? avg - Number(row.price) : Number(row.price) - avg) * closeQty : 0;
+    row.realized = gross - (Number(row.fee) || 0);
+  }
   const next = applyEntry(prev, row);
-  const grew = String(row.side).toLowerCase() === 'buy'
-    ? next.longQty > (Number(prev && prev.longQty) || 0) + 1e-12
-    : next.shortQty > (Number(prev && prev.shortQty) || 0) + 1e-12;
-  row.posEffect = grew ? 'open' : 'close';
   state.entry = state.entry || {};
   state.entry[row.symbol] = next;
+  state.pairStats = state.pairStats || {};
+  const ps = state.pairStats[row.symbol] || { fills: 0, capture: 0, fees: 0, realized: 0 };
+  ps.fills += 1;
+  ps.capture += Number(row.capture) || 0;
+  ps.fees += Number(row.fee) || 0;
+  ps.realized += Number(row.realized) || 0;
+  state.pairStats[row.symbol] = ps;
   state.fillOrders = state.fillOrders || [];
   if (row.orderId) state.fillOrders.push(String(row.orderId));
   if (state.fillOrders.length > 2000) state.fillOrders.splice(0, state.fillOrders.length - 2000);
@@ -229,15 +292,17 @@ async function pollFills(state, mids) {
       if (exec > prev + 1e-12) {
         const px = Number(d.price || o.price || 0);
         const sym = symbolOf(d.pair);
-        const mid = mids[sym] || px;
+        const timeIso = new Date((Number(o.closetm) || Date.now() / 1000) * 1000).toISOString();
+        const mid = quoteMid(state, id, sym, timeIso);
+        if (!(mid > 0)) console.log('CAPTURE missing ' + id);
         const side = String(d.type || '').toLowerCase();
         const delta = exec - prev;
-        const capture = (side === 'buy' ? mid - px : px - mid) * delta;
+        const capture = mid > 0 ? (side === 'buy' ? mid - px : px - mid) * delta : null;
         noteFill(state, {
-          venueFillId: id + ':' + exec, time: new Date((Number(o.closetm) || Date.now() / 1000) * 1000).toISOString(),
+          venueFillId: id + ':' + exec, time: timeIso,
           symbol: sym, side, price: px, size: delta, fee: Number(o.fee || 0), feeCcy: 'USD',
           liquidity: 'maker', orderId: id, leverage: Number(String(d.leverage || '').split(':')[0]) || 0,
-          posEffect: 'open', capture, mid,
+          capture, mid: mid || null,
         });
       }
       state.exec = state.exec || {};
@@ -255,13 +320,15 @@ async function pollFills(state, mids) {
     const sz = Number(f.size || 0);
     const sym = String(f.product_id || '').split('-')[0].toUpperCase();
     const side = String(f.side || '').toLowerCase();
-    const mid = mids[sym] || px;
+    const timeIso = f.trade_time || new Date().toISOString();
+    const mid = quoteMid(state, f.order_id, sym, timeIso);
+    if (!(mid > 0)) console.log('CAPTURE missing ' + (f.order_id || sym));
     noteFill(state, {
-      venueFillId: f.trade_id || f.entry_id, time: f.trade_time || new Date().toISOString(),
+      venueFillId: f.trade_id || f.entry_id, time: timeIso,
       symbol: sym, side, price: px, size: sz, fee: Number(f.commission || 0), feeCcy: 'USDC',
       liquidity: String(f.liquidity_indicator || 'MAKER').toLowerCase().includes('taker') ? 'taker' : 'maker',
-      orderId: f.order_id, leverage: 0, posEffect: 'open',
-      capture: (side === 'buy' ? mid - px : px - mid) * sz, mid,
+      orderId: f.order_id, leverage: 0,
+      capture: mid > 0 ? (side === 'buy' ? mid - px : px - mid) * sz : null, mid: mid || null,
     });
   }
 }
@@ -439,8 +506,11 @@ async function krakenBook(state) {
   }
   state.knownIds = known;
   const hasPos = Object.keys(positions).length > 0;
+  const eb = Number(tb.eb || 0);
+  const marked = Number(tb.e);
+  const equity = marked > 0 ? marked : eb + upnl;
   return {
-    equity: Number(tb.eb || tb.e || 0), cash: Number(tb.mf || 0), positions, mine, foreign: new Set(),
+    equity, cashEq: eb, cash: Number(tb.mf || 0), positions, mine, foreign: new Set(),
     ml: hasPos ? Number(tb.ml || 0) : null, inventoryPnl: upnl, quoteHold: 0,
   };
 }
@@ -470,18 +540,22 @@ async function coinbaseBook(state, products) {
   }
   state.knownIds = known;
   const positions = {};
+  let markedEq = Number(live.freeQuote || 0) + Number(live.quoteHold || 0);
   for (const [sym, p] of Object.entries(live.positions || {})) {
     const avail = Number(p.amount || 0);
     const hold = Number(p.hold || 0);
     const qty = avail + hold;
     if (!(qty > 0)) continue;
+    const mid = Number(p.mid || 0);
     positions[sym] = {
       long: qty, short: 0, available: avail, hold, usd: Number(p.valueQuote || 0),
-      mid: Number(p.mid || 0), bid: Number(p.bestBid || 0), quoteMin: Number(p.quoteMin || 1),
+      mid, bid: Number(p.bestBid || 0), quoteMin: Number(p.quoteMin || 1),
     };
+    markedEq += mid > 0 ? qty * mid : Number(p.valueQuote || 0);
   }
   return {
-    equity: Number(live.totalEquity || 0), cash: Number(live.freeQuote || 0), quoteHold: Number(live.quoteHold || 0),
+    equity: markedEq > 0 ? markedEq : Number(live.totalEquity || 0),
+    cash: Number(live.freeQuote || 0), quoteHold: Number(live.quoteHold || 0),
     positions, mine, foreign, ml: null, inventoryPnl: 0,
   };
 }
@@ -523,6 +597,13 @@ async function stats(row) {
       sigma = realizedSigma(closes);
       sigmaWarmup = !(sigma > 0);
     }
+    if (sigmaWarmup) {
+      const spark = feedSpark(row.symbol);
+      if (spark.length >= 8) {
+        sigma = realizedSigma(spark);
+        sigmaWarmup = !(sigma > 0);
+      }
+    }
     const win = candles.slice(0, 15);
     const hi = Math.max(...win.map((c) => Number(c.high)).filter((n) => n > 0));
     const lo = Math.min(...win.map((c) => Number(c.low)).filter((n) => n > 0));
@@ -533,6 +614,23 @@ async function stats(row) {
   return { mid: book.mid, bid: book.bid, ask: book.ask, sigma, sigmaWarmup, range, vol: MIN_VOL, tradesPerHour };
 }
 
+function feedSpark(sym) {
+  try {
+    const row = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'feed', 'coinbase.json'), 'utf8'));
+    const arr = row.sparks && row.sparks[sym];
+    if (!Array.isArray(arr) || arr.length < 8) return [];
+    const closes = [];
+    let bucket = 0;
+    for (const x of arr) {
+      const t = Number(x.t) || 0;
+      const p = Number(x.p);
+      if (!(p > 0)) continue;
+      const b = Math.floor(t / 60000);
+      if (b !== bucket) { closes.push(p); bucket = b; }
+    }
+    return closes;
+  } catch { return []; }
+}
 function markDust(state, sym, mid) {
   state.belowMin = state.belowMin || {};
   state.belowMin[sym] = mid || state.belowMin[sym] || true;
@@ -640,20 +738,26 @@ function noteRail(state, mode, ml) {
 
 async function select(products, book, state) {
   const held = [];
+  state.dustWatch = [];
   for (const [sym, pos] of Object.entries(book.positions || {})) {
     if (!(Number(pos.long) > 0 || Number(pos.short) > 0)) continue;
     if (state.skip && state.skip[sym]) continue;
     const rec = products[sym];
     if (!rec) continue;
     if (VENUE !== 'kraken') {
+      const qty = Number(pos.long || 0);
+      const mid = Number(pos.mid || 0);
       const klass = holdingClass({
-        qty: Number(pos.long || 0),
-        mid: Number(pos.mid || 0),
+        qty, mid,
         minNotional: Number(pos.quoteMin || rec.quoteMin || 1),
         minSize: Number(rec.baseMin || rec.ordermin || 0),
       });
       if (klass === 'dust') {
-        markDust(state, sym, Number(pos.mid || 0));
+        markDust(state, sym, mid);
+        state.dustWatch.push({
+          ...rec, symbol: sym, orderPair: orderPairOf(rec, sym), dustBid: true,
+          dustUsd: qty * mid, qty, quoteMin: Number(pos.quoteMin || rec.quoteMin || 1),
+        });
         continue;
       }
       if (state.belowMin) delete state.belowMin[sym];
@@ -679,6 +783,12 @@ async function select(products, book, state) {
       if (tick / s.mid > 0.001) continue;
       if (s.vol && s.vol < MIN_VOL) continue;
       if (spread > MAX_SPREAD) continue;
+      const hist = (state.spreads && state.spreads[row.symbol]) || [];
+      const seenBps = hist.length >= 3 ? median(hist) : spread * 10000;
+      if (seenBps + 1e-9 < 2 * makerFeeBps) {
+        console.log('GATE ' + row.symbol + ' both fee-spread');
+        continue;
+      }
       const needRange = 2 * (makerFeeBps + PROFIT_BPS) / 10000;
       if (s.range + 1e-12 < Math.max(MIN_RANGE, needRange)) {
         console.log('GATE ' + row.symbol + ' both vol');
@@ -688,9 +798,10 @@ async function select(products, book, state) {
     } catch { /* skip */ }
     await sleep(80);
   }
-  ranked.sort((a, b) => fillScore(b) - fillScore(a) || a.symbol.localeCompare(b.symbol));
+  ranked.sort((a, b) => ((b.spread * 10000 - 2 * makerFeeBps) - (a.spread * 10000 - 2 * makerFeeBps)) || (b.range - a.range) || a.symbol.localeCompare(b.symbol));
   ranked.forEach((r, i) => { r.hot = i < 2; });
   for (const h of held) h.hot = (rank.get(h.symbol) ?? 99) < 2;
+  for (const d of state.dustWatch || []) d.scan = rank.has(d.symbol) ? rank.get(d.symbol) : 999;
   return held.concat(ranked.slice(0, MAX_PAIRS));
 }
 
@@ -731,7 +842,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   const clientOrderId = 'as-cb-' + randomUUID();
   const sigTxt = extra.sigmaBps != null ? ' sig=' + extra.sigmaBps + 'bp' : '';
   const distTxt = extra.distBps != null ? ' dist=' + extra.distBps + 'bp' : '';
-  console.log('  ' + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + (lev ? ' ' + lev + 'x' : '') + (reduceOnly ? ' reduce' : '') + (extra.halfBps != null ? ' half=' + extra.halfBps + 'bp' : '') + (extra.halfSrc ? ' half_src=' + extra.halfSrc : '') + sigTxt + distTxt + (extra.floorTxt ? ' floor=' + extra.floorTxt : ''));
+  console.log('  ' + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + (lev ? ' ' + lev + 'x' : '') + (reduceOnly ? ' reduce' : '') + (extra.halfBps != null ? ' half=' + extra.halfBps + 'bp' : '') + (extra.halfSrc ? ' half_src=' + extra.halfSrc : '') + (extra.risk ? ' risk=' + extra.risk : '') + sigTxt + distTxt + (extra.floorTxt ? ' floor=' + extra.floorTxt : ''));
   if (extra.lossBps != null) console.log('EXIT LOSS ' + row.symbol + ' ' + extra.lossBps);
   if (!LIVE) return;
   const meta = { level: 1, userref: Number(USERREF), leverage: lev || 0, clientOrderId };
@@ -744,6 +855,8 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   if (r && r.order_id) {
     state.knownIds = state.knownIds || {};
     state.knownIds[r.order_id] = { sym: row.symbol, side, at: Date.now() };
+    state.orderMid = state.orderMid || {};
+    if (Number(extra.mid) > 0) state.orderMid[r.order_id] = { mid: Number(extra.mid), t: Date.now() };
     if (state.backoff) delete state.backoff[row.symbol];
     if (state.tooFar && state.tooFar[row.symbol] && state.tooFar[row.symbol].side === side) delete state.tooFar[row.symbol];
     if (state.stepAway) delete state.stepAway[row.symbol + ':' + side];
@@ -852,10 +965,15 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const spreads = (state.spreads && state.spreads[row.symbol]) || [];
   if (s.bid > 0 && s.ask > s.bid) {
     spreads.push((s.ask - s.bid) / mid * 10000);
-    while (spreads.length > 90) spreads.shift();
+    while (spreads.length > 180) spreads.shift();
     state.spreads = state.spreads || {};
     state.spreads[row.symbol] = spreads;
   }
+  state.pxHist = state.pxHist || {};
+  const pxHist = state.pxHist[row.symbol] || [];
+  pxHist.push({ t: Date.now(), mid });
+  while (pxHist.length > 200) pxHist.shift();
+  state.pxHist[row.symbol] = pxHist;
   const entry = ensureEntry(state, row.symbol, pos, mid);
   const legacy = !!(entry && entry.basis === 'legacy');
   const ageMs = entry && entry.at ? Date.now() - Number(entry.at) : 0;
@@ -870,7 +988,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   if (!model) return null;
   const halfBps = Math.round(model.half * 10000);
   const inc = row.quoteIncrement || 0.01;
-  const lossOk = !!(rail.lossOk || rail.mode === 'cut' || state.halted);
+  let lossOk = !!(rail.lossOk || rail.mode === 'cut');
   let bidPx = snap(model.bid, inc, 'buy');
   let askPx = snap(model.ask, inc, 'sell');
   if (!(bidPx < mid)) bidPx = snap(mid - inc, inc, 'buy');
@@ -959,6 +1077,40 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (s.bid > 0 && askPx <= s.bid) askPx = s.bid + inc;
     if (s.ask > 0 && bidPx >= s.ask) bidPx = s.ask - inc;
   }
+  const ageMinNow = ageMs / 60000;
+  const adverseLong = longAvg > 0 && mid > 0 && Number(pos.long) > 0 ? Math.max(0, (longAvg - mid) / longAvg) : 0;
+  const adverseShort = shortAvg > 0 && mid > 0 && Number(pos.short) > 0 ? Math.max(0, (mid - shortAvg) / shortAvg) : 0;
+  const sigmaMove = (s.sigmaWarmup ? 0 : Number(s.sigma) || 0) * Math.sqrt(Math.max(1, ageMinNow) / 15);
+  const haltKind = state.halted === 'day-loss' || state.halted === 'margin-halt' ? state.halted : '';
+  const risk = riskAllowsLoss({
+    ml: book.ml, cut: ML_CUT, adverseFrac: Math.max(adverseLong, adverseShort), sigmaMove,
+    stopSigma: STOP_SIGMA, stopPct: STOP_PCT, ageMin: ageMinNow, maxHoldMin: MAX_HOLD_MIN, haltKind,
+  });
+  const costLong = costFloorPx({ entry: longAvg, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
+  const costShort = costFloorPx({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
+  if (VENUE === 'kraken' && Number(pos.long) > 0 && costLong > 0) {
+    if (!risk) askPx = Math.max(askPx, costLong);
+    else askPx = stepToward({ from: costLong, to: (s.bid || mid) + inc, halfBps: plan.bps, steps: riskStep(state, row.symbol + ':sell'), entry: longAvg || mid });
+  }
+  if (VENUE === 'kraken' && Number(pos.short) > 0 && costShort > 0) {
+    if (!risk) bidPx = Math.min(bidPx, costShort);
+    else bidPx = stepToward({ from: costShort, to: Math.max(0, (s.ask || mid) - inc), halfBps: plan.bps, steps: riskStep(state, row.symbol + ':buy'), entry: shortAvg || mid });
+  }
+  const needBps = openingNeedBps();
+  let blockOpenBuy = false;
+  let blockOpenSell = false;
+  if (!(Number(pos.short) > 0)) {
+    const w = widenOpen(bidPx, 'buy', mid, inc, needBps, s.bid);
+    if (!(w > 0)) blockOpenBuy = true;
+    else bidPx = w;
+  }
+  if (!(Number(pos.long) > 0)) {
+    const w = widenOpen(askPx, 'sell', mid, inc, needBps, s.ask);
+    if (!(w > 0)) blockOpenSell = true;
+    else askPx = w;
+  }
+  if (s.bid > 0 && askPx > 0 && askPx <= s.bid) askPx = s.bid + inc;
+  if (s.ask > 0 && bidPx > 0 && bidPx >= s.ask) bidPx = s.ask - inc;
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
   let lev = 0;
@@ -978,7 +1130,14 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const frac = rail.halfSize || cut ? 0.5 : 1;
   const focusedOut = rail.focus && rail.focus !== row.symbol;
   if (!(focusedOut && reduce)) {
-    if (reduce && (Number(pos.long) > 0 || Number(pos.short) > 0)) {
+    if (row.dustBid) {
+      sellSz = 0;
+      const minN = minUsd;
+      if (addOk && bidPx > 0 && budget && Number(budget.dustLeft) + 1e-9 >= minN) buySz = formatVolume(minN / bidPx, lot);
+    } else if (reduce && state.belowMin && state.belowMin[row.symbol]) {
+      buySz = 0;
+      sellSz = 0;
+    } else if (reduce && (Number(pos.long) > 0 || Number(pos.short) > 0)) {
       if (Number(pos.long) > 0) sellSz = formatVolume(Number(pos.long) * frac, lot);
       if (Number(pos.short) > 0) buySz = formatVolume(Number(pos.short) * frac, lot);
     } else if (VENUE === 'coinbase') {
@@ -993,13 +1152,13 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       const slots = Math.max(1, Number(budget && budget.slots) || MAX_PAIRS);
       const left = Math.max(0, Number(budget && budget.left) || 0);
       const wantUsd = Math.min(left, Math.max(left / slots, floorUsd));
-      if (addOk && q < 0.95 && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
+      if (addOk && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
       if (budget) budget.slots = Math.max(1, slots - 1);
     } else if (!reduce) {
       const cap = liqNotionalCap(book.equity, lev || 2, LIQ_MIN);
       const sz = Math.min(clip, cap) / mid;
-      if (q < 0.95) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
-      if (q > -0.95) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+      if (q < MAX_Q) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+      if (q > -MAX_Q) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
       if (buySz * bidPx > cap || sellSz * askPx > cap) {
         console.log('RAIL liq ' + row.symbol);
         if (buySz * bidPx > cap) buySz = 0;
@@ -1009,6 +1168,17 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   }
   if (blockSell) sellSz = 0;
   if (blockBuy) buySz = 0;
+  if (reduce) {
+    const fitReduce = (sz, px, posQty) => {
+      if (!(sz > 0) || !(px > 0)) return 0;
+      const minSz = Math.max(Number(row.ordermin || row.baseMin || 0), px > 0 ? minUsd / px : 0);
+      const fit = roundUpReduce({ size: Number(sz), minSize: minSz, posQty });
+      if (fit.dust) { markDust(state, row.symbol, mid); return 0; }
+      return formatVolume(fit.size, lot);
+    };
+    if (Number(pos.long) > 0) sellSz = fitReduce(sellSz, askPx, Number(pos.long));
+    if (Number(pos.short) > 0) buySz = fitReduce(buySz, bidPx, Number(pos.short));
+  }
   const posLev = Number(pos.lev) >= 2 ? Number(pos.lev) : 0;
   const buyLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':buy'] || lev) : 0;
   const sellLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':sell'] || lev) : 0;
@@ -1020,17 +1190,15 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     sellSz = 0;
   } else if (sellSz > 0 && state.belowMin && klassNow === 'inventory') delete state.belowMin[row.symbol];
   const gates = [];
-  const gate = (side, why) => gates.push(side + ' ' + why);
+  const gate = (side, why) => { if (!gates.some((g) => g.startsWith(side + ' '))) gates.push(side + ' ' + why); };
   const netQty = Number(pos.long || 0) - Number(pos.short || 0);
   const hasPos = Number(pos.long || 0) > 0 || Number(pos.short || 0) > 0;
+  if (blockOpenBuy && !(Number(pos.short) > 0)) { buySz = 0; gate('buy', 'fee-edge half=' + sentHalfBps(mid, bidPx, 0) + ' need=' + Math.round(needBps)); }
+  if (blockOpenSell && !(Number(pos.long) > 0)) { sellSz = 0; gate('sell', 'fee-edge half=' + sentHalfBps(mid, 0, askPx) + ' need=' + Math.round(needBps)); }
   if (reduce && hasPos) {
     const why = state.halted || rail.mode === 'halt' ? 'halt' : rail.mode === 'cut' ? 'cut' : 'stop';
     if (!(Number(pos.short) > 0)) gate('buy', why);
     if (!(Number(pos.long) > 0)) gate('sell', why);
-  }
-  if (VENUE === 'kraken' && !reduce && hasPos) {
-    if (buySz > 0 && opensRisk(netQty, 'buy')) { buySz = 0; gate('buy', 'carry'); }
-    if (sellSz > 0 && opensRisk(netQty, 'sell')) { sellSz = 0; gate('sell', 'carry'); }
   }
   if (s.sigmaWarmup) {
     if (buySz > 0 && opensRisk(netQty, 'buy')) { buySz = 0; gate('buy', 'vol-warmup'); }
@@ -1130,21 +1298,27 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     } else if (taken.send) {
       buySz = taken.size;
       buyCharged = taken.cost;
+      if (row.dustBid && budget) budget.dustLeft = Math.max(0, Number(budget.dustLeft) - taken.cost);
     } else buyHold = true;
   }
-  const sentHalf = sentHalfBps(mid, buySz > 0 ? bidPx : 0, sellSz > 0 ? askPx : 0);
-  const halfShown = sentHalf || Math.round(plan.bps);
-  const floorPx = Number(pos.long) > 0 ? longFloor : Number(pos.short) > 0 ? shortCeil : 0;
+  const bidHalf = buySz > 0 ? sentHalfBps(mid, bidPx, 0) : 0;
+  const askHalf = sellSz > 0 ? sentHalfBps(mid, 0, askPx) : 0;
+  const halfShown = 'b' + (bidHalf || '-') + '/a' + (askHalf || '-');
+  const floorPx = Number(pos.long) > 0 ? (costLong || longFloor) : Number(pos.short) > 0 ? (costShort || shortCeil) : 0;
   const floorTxt = pxText(floorPx);
+  const sellThrough = !!(risk && Number(pos.long) > 0 && costLong > 0 && askPx + 1e-12 < costLong);
+  const buyThrough = !!(risk && Number(pos.short) > 0 && costShort > 0 && bidPx - 1e-12 > costShort);
   const sellLoss = lossOk && hardLong > 0 && askPx + 1e-12 < hardLong ? Math.round((askPx / longAvg - 1) * 10000) : null;
   const buyLoss = lossOk && hardShort > 0 && bidPx - 1e-12 > hardShort ? Math.round((1 - bidPx / shortAvg) * 10000) : null;
   const sigmaBps = s.sigmaWarmup ? null : Math.round((s.sigma || 0) * 10000);
-  const quoteExtra = { halfBps: halfShown, halfSrc: plan.src, floorTxt, sigmaBps };
+  const quoteExtra = { halfBps: halfShown, halfSrc: plan.src, floorTxt, sigmaBps, mid };
   const quiet = backoffActive(state, row.symbol) && !rail.ignoreBackoff;
   if (quiet) { gate('buy', 'backoff'); gate('sell', 'backoff'); }
+  if (!(buySz > 0)) gate('buy', state.halted ? 'halt' : 'budget');
+  if (!(sellSz > 0)) gate('sell', state.halted ? 'halt' : 'budget');
   for (const g of gates) console.log('GATE ' + row.symbol + ' ' + g);
-  const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: reduce && Number(pos.short) > 0, extra: { ...quoteExtra, positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold } };
-  const sellJob = { row, side: 'sell', target: sellSz > 0 ? askPx : 0, size: sellSz, mine, lev: sellLev, reduceOnly: reduce && Number(pos.long) > 0, extra: { ...quoteExtra, positionQty: pos.long, lossBps: sellLoss, touch: s.ask, distBps: mid > 0 && s.ask > 0 ? Math.round(Math.abs(askPx - s.ask) / mid * 10000) : 0 } };
+  const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: reduce && Number(pos.short) > 0, extra: { ...quoteExtra, risk: buyThrough ? risk : '', positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold } };
+  const sellJob = { row, side: 'sell', target: sellSz > 0 ? askPx : 0, size: sellSz, mine, lev: sellLev, reduceOnly: reduce && Number(pos.long) > 0, extra: { ...quoteExtra, risk: sellThrough ? risk : '', positionQty: pos.long, lossBps: sellLoss, touch: s.ask, distBps: mid > 0 && s.ask > 0 ? Math.round(Math.abs(askPx - s.ask) / mid * 10000) : 0 } };
   if (!quiet && !(focusedOut && reduce)) {
     if (rail.defer) {
       rail.defer.sells.push(sellJob);
@@ -1252,6 +1426,69 @@ function pruneState(state, book, now) {
   }
 }
 
+function beginSession(state, equity, reason) {
+  const prev = Number(state.startEquity) || 0;
+  state.startEquity = equity;
+  state.startTime = new Date().toISOString();
+  state.transfers = 0;
+  state.makerCapture = 0;
+  state.fees = 0;
+  state.fundingBorrow = 0;
+  state.ledgerPnl = 0;
+  state.markBasis = 0;
+  state.carry = {};
+  state.needPnlBasis = true;
+  state.halted = null;
+  state.haltSwept = false;
+  state.flatSince = 0;
+  state.resetCapLogged = false;
+  const day = new Date().toISOString().slice(0, 10);
+  if (state.resetDay !== day) { state.resetDay = day; state.sessionResets = 0; }
+  state.sessionResets = (Number(state.sessionResets) || 0) + 1;
+  console.log('SESSION reset baseline=$' + Number(equity).toFixed(2) + ' prev=$' + prev.toFixed(2) + ' reason=' + reason);
+}
+function handleControl(state, equity) {
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(controlPath, 'utf8')); }
+  catch { return; }
+  const cmd = raw && raw.cmd;
+  try { fs.renameSync(controlPath, controlPath.replace(/\.json$/, '.' + Date.now() + '.done')); } catch { /* renamed by a racing loop */ }
+  console.log('CONTROL ' + cmd);
+  if (cmd === 'reset-session' && equity > 0) beginSession(state, equity, 'control');
+  else if (cmd === 'halt') { state.halted = 'manual'; state.haltSwept = false; console.log('HALT manual'); }
+}
+function bookIsFlat(book) {
+  for (const p of Object.values(book.positions || {})) {
+    const qty = Math.abs(Number(p.long || 0) - Number(p.short || 0));
+    if (!(qty > 0)) continue;
+    if (VENUE === 'kraken') return false;
+    const mid = Number(p.mid || p.avgLong || p.avgShort || 0);
+    if (holdingClass({ qty, mid, minNotional: Number(p.quoteMin || 1), minSize: Number(p.baseMin || 0) }) !== 'dust') return false;
+  }
+  for (const orders of Object.values(book.mine || {})) if (orders && orders.length) return false;
+  return true;
+}
+function adoptOrphans(state, book) {
+  const tracked = new Set();
+  for (const slot of Object.values(state.orders || {})) {
+    if (slot && slot.bid) tracked.add(slot.bid);
+    if (slot && slot.ask) tracked.add(slot.ask);
+  }
+  let n = 0;
+  for (const [sym, orders] of Object.entries(book.mine || {})) {
+    for (const o of orders || []) {
+      n += 1;
+      if (!o || tracked.has(o.id)) continue;
+      console.log('ORPHAN ' + o.id);
+      const slot = state.orders[sym] || {};
+      if (o.side === 'buy' && !slot.bid) { slot.bid = o.id; slot.bidPx = o.price; slot.bidSz = o.size; }
+      else if (o.side === 'sell' && !slot.ask) { slot.ask = o.id; slot.askPx = o.price; slot.askSz = o.size; }
+      state.orders[sym] = slot;
+      tracked.add(o.id);
+    }
+  }
+  return n;
+}
 async function main() {
   lock();
   console.log('as venue=' + VENUE + ' live=' + LIVE + ' lev=' + (LEV_CAP || 'max') + ' util=' + LEV_UTIL);
@@ -1273,7 +1510,7 @@ async function main() {
     state.equityMarks = [];
     state.pnlModel = 3;
   }
-  if (state.pnlModel !== 4) {
+  if (state.pnlModel !== 4 && state.pnlModel !== 5) {
     state.fundingBorrow = 0;
     state.carry = {};
     state.carryAccount = { usd: 0, since: Date.now(), notional: 0 };
@@ -1284,6 +1521,11 @@ async function main() {
     state.pnlModel = 4;
     rebuildFillsFromLog(state);
     console.log('PNL ledger model 4, funding is rollover only');
+  }
+  if (state.pnlModel !== 5) {
+    state.needPnlBasis = true;
+    state.pnlModel = 5;
+    console.log('PNL equity model 5, marked equity');
   }
   await loadMakerFee();
   let feeAt = Date.now();
@@ -1323,6 +1565,19 @@ async function main() {
       if (book.ml != null && book.ml < ML_CUT) state.cutLatch = true;
       if (book.ml == null || book.ml >= ML_STOP) state.cutLatch = false;
       noteRail(state, mode, book.ml);
+      handleControl(state, book.equity);
+      const resetDay = new Date().toISOString().slice(0, 10);
+      if (state.resetDay !== resetDay) { state.resetDay = resetDay; state.sessionResets = 0; state.resetCapLogged = false; }
+      if (state.halted === 'day-loss' && dayLoss < DAY_LOSS && book.equity > 0) beginSession(state, book.equity, 'day-window');
+      if (state.halted === 'session-loss') {
+        if (bookIsFlat(book)) {
+          if (!state.flatSince) state.flatSince = now;
+          if (now - state.flatSince >= HALT_COOLDOWN) {
+            if ((state.sessionResets || 0) < MAX_RESETS && book.equity > 0) beginSession(state, book.equity, 'flat-cooldown');
+            else if (!state.resetCapLogged) { console.log('SESSION reset capped'); state.resetCapLogged = true; }
+          }
+        } else state.flatSince = 0;
+      }
       if (state.halted && !state.haltSwept) {
         await cancelOurs(book);
         state.haltSwept = true;
@@ -1333,10 +1588,10 @@ async function main() {
       }
       const rail = {
         mode, onRail: !!state.onRail || !!state.halted,
-        forceTouch: mode === 'stop' || mode === 'cut' || mode === 'halt' || !!state.cutLatch,
+        forceTouch: mode === 'stop' || mode === 'cut' || !!state.cutLatch || state.halted === 'day-loss' || state.halted === 'margin-halt',
         halfSize: mode === 'cut',
         ignoreBackoff: mode === 'cut' || mode === 'halt' || !!state.halted || !!state.cutLatch,
-        lossOk: mode === 'cut' || mode === 'halt' || !!state.halted || !!state.cutLatch,
+        lossOk: mode === 'cut' || !!state.cutLatch || state.halted === 'day-loss' || state.halted === 'margin-halt',
         focus: null,
         defer: { sells: [], buys: [] },
         margin: { used: usedMargin(book), slots: MAX_PAIRS * 2 },
@@ -1354,6 +1609,26 @@ async function main() {
       const levGuess = VENUE === 'kraken' ? 5 : 1;
       const clip = clipFor(book.equity, levGuess);
       const chosen = await select(products, book, state);
+      let dustAdded = 0;
+      for (const d of state.dustWatch || []) {
+        if (dustAdded >= DUST_COMBINE_MAX) break;
+        const minN = Number(d.quoteMin || 1);
+        if (!(d.dustUsd > 0) || minN > 10 * d.dustUsd) continue;
+        if (!(d.scan < 400)) continue;
+        chosen.push(d);
+        dustAdded += 1;
+      }
+      const chosenSet = new Set(chosen.map((r) => r.symbol));
+      for (const sym of Object.keys(state.orders || {})) {
+        if (chosenSet.has(sym)) continue;
+        const pos = (book.positions && book.positions[sym]) || {};
+        if (Number(pos.long) > 0 || Number(pos.short) > 0) continue;
+        for (const o of (book.mine && book.mine[sym]) || []) {
+          console.log('CANCEL dropped ' + sym + ' ' + o.id);
+          if (LIVE) { try { await ex.cancelOrder(o.id, VENUE); } catch { /* next loop */ } }
+        }
+        delete state.orders[sym];
+      }
       const halve = now < (state.budgetHalveUntil || 0);
       let budgetLeft = Number(book.cash || 0);
       if (VENUE === 'coinbase') {
@@ -1370,7 +1645,7 @@ async function main() {
         budgetLeft = Math.min(budgetLeft, bidRoom);
         console.log('BUDGET free=' + Number(book.cash || 0).toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetLeft.toFixed(2));
       }
-      const budget = { left: Math.max(0, budgetLeft), slots: MAX_PAIRS };
+      const budget = { left: Math.max(0, budgetLeft), slots: MAX_PAIRS, dustLeft: Math.max(0, budgetLeft) * 0.25 };
       const markets = [];
       const mids = {};
       for (const row of chosen) {
@@ -1444,7 +1719,7 @@ async function main() {
       });
       if (book.equity > 0 && Math.abs(resid) > 0.02 && now - (state.reconLogAt || 0) > 3600 * 1000) {
         const m5 = markoutAvg(state, 'm5');
-        console.log('RECON resid=' + resid.toFixed(2) + ' dust=$' + dustUsd.toFixed(2) + ' inv=$' + inv.toFixed(2) + ' fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' markout5=' + (m5 == null ? '-' : m5.toFixed(1)));
+        console.log('RECON drift parts=resid=' + resid.toFixed(2) + ' dust=$' + dustUsd.toFixed(2) + ' inv=$' + inv.toFixed(2) + ' fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' markout5=' + (m5 == null ? '-' : m5.toFixed(1)));
         state.reconLogAt = now;
       }
       const hour = now - 3600 * 1000;
@@ -1456,6 +1731,25 @@ async function main() {
       const dust = Object.keys(state.belowMin || {});
       const openNotional = openBookNotional(state, book);
       const bookFrac = book.equity > 0 ? openNotional / book.equity : 0;
+      const exBase = Math.max(0, book.equity - dustUsd);
+      const bookEx = exBase > 0 ? openNotional / exBase : 0;
+      const tracked = adoptOrphans(state, book);
+      if (VENUE !== 'kraken' && budgetLeft + 1e-9 < 1 && dustUsd >= 0.3 * Number(book.equity || 0) && now - (state.starvedLogAt || 0) > 3600 * 1000) {
+        console.log('BUDGET starved dust=$' + dustUsd.toFixed(2));
+        state.starvedLogAt = now;
+      }
+      if (now - (state.dustStuckAt || 0) > 3600 * 1000) {
+        for (const d of state.dustWatch || []) {
+          const minN = Number(d.quoteMin || 1);
+          if (!(d.dustUsd > 0)) continue;
+          if (minN > 10 * d.dustUsd || !(d.scan < 400)) console.log('dust-stuck ' + d.symbol + ' $' + Number(d.dustUsd).toFixed(2));
+        }
+        for (const m of markets) {
+          const ps = (state.pairStats && state.pairStats[m.symbol]) || {};
+          console.log('PAIR ' + m.symbol + ' fills=' + (ps.fills || 0) + ' capture=' + Number(ps.capture || 0).toFixed(2) + ' fees=' + Number(ps.fees || 0).toFixed(2) + ' realized=' + Number(ps.realized || 0).toFixed(2) + ' half=' + m.halfBps + ' need=' + Math.round(openingNeedBps()));
+        }
+        state.dustStuckAt = now;
+      }
       pruneState(state, book, now);
       saveState(state);
       postStatus({
@@ -1465,16 +1759,16 @@ async function main() {
           transfers: state.transfers || 0, equityAdj, makerCapture: state.makerCapture || 0,
           fees: state.fees || 0, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
           recon: resid, resid, fills: fillsN, fillsHour: fillsH,
-          netMaker, pricePnl: inv,
+          netMaker, pricePnl: inv, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
         },
         rails: {
           ml: book.ml, liqDistPct: LIQ_MIN * 100, sessionLossPct: sessionLoss * 100,
           dayLossPct: dayLoss * 100, halted: state.halted || null, levBySymbol, onRail: !!state.onRail,
         },
-        bookFrac, dust, markets,
+        bookFrac, dust, markets, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
       });
       const line = markets.map((m) => m.symbol + ' q=' + m.q.toFixed(2) + ' half=' + m.halfBps + 'bp' + (m.halfSrc ? '/' + m.halfSrc : '') + ' sig=' + (m.sigmaBps == null ? 'warmup' : m.sigmaBps + 'bp') + ' floor=' + (m.floorTxt || '-')).join(' ');
-      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' resid=$' + resid.toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' book=' + Math.round(bookFrac * 100) + '% lev=' + (Object.values(levBySymbol)[0] || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + ' | ' + (line || 'no names'));
+      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' resid=$' + resid.toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%) tracked=' + tracked + ' lev=' + (Object.values(levBySymbol)[0] || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + ' | ' + (line || 'no names'));
     } catch (e) {
       console.warn('as loop', e.message);
     }
