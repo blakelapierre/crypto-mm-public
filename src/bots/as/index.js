@@ -540,31 +540,44 @@ async function pollCoinbaseTransfers(state, positions) {
     const bal = Math.abs(Number(acct.balance && acct.balance.amount) || 0);
     if (quoteCcy(ccy) || bal > 0 || (positions && positions[ccy])) rows.push({ id: acct.id, ccy });
   }
+  const origin = Date.parse(state.startTime || '') || 0;
   for (const acct of rows) {
-    let tx;
-    try { tx = await coinbaseRequest(cfg, 'GET', '/v2/accounts/' + acct.id + '/transactions?limit=25'); }
-    catch { continue; }
-    for (const t of (tx && tx.data) || []) {
-      const type = String(t.type || '').toLowerCase();
-      if (/buy|sell|trade|advanced_trade|\bfill\b/.test(type)) continue;
-      if (!/deposit|withdraw|send|receive/.test(type)) continue;
-      if (!t.id || state.seenLedgers[t.id]) continue;
-      const raw = Number(t.amount && t.amount.amount);
-      if (!raw) continue;
-      const neg = /withdraw|send/.test(type) && !/receive/.test(type);
-      let usd = Math.abs(raw);
-      if (!quoteCcy(acct.ccy)) {
-        const mid = positions && positions[acct.ccy] && Number(positions[acct.ccy].mid);
-        if (!(mid > 0)) continue;
-        usd = Math.abs(raw) * mid;
+    const deep = quoteCcy(acct.ccy) && !state.cbTransferBooted;
+    let path = '/v2/accounts/' + acct.id + '/transactions?limit=' + (deep ? 100 : 25);
+    const pages = deep ? 5 : 1;
+    for (let page = 0; page < pages && path; page++) {
+      let tx;
+      try { tx = await coinbaseRequest(cfg, 'GET', path); }
+      catch { break; }
+      let older = false;
+      for (const t of (tx && tx.data) || []) {
+        const type = String(t.type || '').toLowerCase();
+        const ts = Date.parse(t.created_at || '') || 0;
+        if (origin && ts && ts + 120000 < origin) { older = true; continue; }
+        if (/buy|sell|trade|advanced_trade|\bfill\b/.test(type)) continue;
+        if (!/deposit|withdraw|send|receive/.test(type)) continue;
+        if (!t.id || state.seenLedgers[t.id]) continue;
+        const raw = Number(t.amount && t.amount.amount);
+        if (!raw) continue;
+        const neg = /withdraw|send/.test(type) && !/receive/.test(type);
+        let usd = Math.abs(raw);
+        if (!quoteCcy(acct.ccy)) {
+          const mid = positions && positions[acct.ccy] && Number(positions[acct.ccy].mid);
+          if (!(mid > 0)) continue;
+          usd = Math.abs(raw) * mid;
+        }
+        bookTransfer(state, {
+          id: t.id, type, ccy: acct.ccy, amount: raw,
+          usd: (neg ? -1 : 1) * usd,
+          time: t.created_at || new Date().toISOString(),
+        });
       }
-      bookTransfer(state, {
-        id: t.id, type, ccy: acct.ccy, amount: raw,
-        usd: (neg ? -1 : 1) * usd,
-        time: t.created_at || new Date().toISOString(),
-      });
+      if (older || !deep) break;
+      const next = tx && tx.pagination && tx.pagination.next_uri;
+      path = next ? String(next).replace(/^https:\/\/api\.coinbase\.com/, '') : '';
     }
   }
+  state.cbTransferBooted = true;
 }
 function rebuildFillsFromLog(state) {
   let text = '';
