@@ -294,12 +294,13 @@ async function pollFills(state, mids) {
         const sym = symbolOf(d.pair);
         const timeIso = new Date((Number(o.closetm) || Date.now() / 1000) * 1000).toISOString();
         const mid = quoteMid(state, id, sym, timeIso);
-        if (!(mid > 0)) console.log('CAPTURE missing ' + id);
+        const venueFillId = id + ':' + exec;
+        if (!(state.seenFills && state.seenFills[venueFillId]) && !(mid > 0)) console.log('CAPTURE missing ' + id);
         const side = String(d.type || '').toLowerCase();
         const delta = exec - prev;
         const capture = mid > 0 ? (side === 'buy' ? mid - px : px - mid) * delta : null;
         noteFill(state, {
-          venueFillId: id + ':' + exec, time: timeIso,
+          venueFillId, time: timeIso,
           symbol: sym, side, price: px, size: delta, fee: Number(o.fee || 0), feeCcy: 'USD',
           liquidity: 'maker', orderId: id, leverage: Number(String(d.leverage || '').split(':')[0]) || 0,
           capture, mid: mid || null,
@@ -321,10 +322,11 @@ async function pollFills(state, mids) {
     const sym = String(f.product_id || '').split('-')[0].toUpperCase();
     const side = String(f.side || '').toLowerCase();
     const timeIso = f.trade_time || new Date().toISOString();
+    const venueFillId = f.trade_id || f.entry_id;
     const mid = quoteMid(state, f.order_id, sym, timeIso);
-    if (!(mid > 0)) console.log('CAPTURE missing ' + (f.order_id || sym));
+    if (!(state.seenFills && state.seenFills[venueFillId]) && !(mid > 0)) console.log('CAPTURE missing ' + (f.order_id || sym));
     noteFill(state, {
-      venueFillId: f.trade_id || f.entry_id, time: timeIso,
+      venueFillId, time: timeIso,
       symbol: sym, side, price: px, size: sz, fee: Number(f.commission || 0), feeCcy: 'USDC',
       liquidity: String(f.liquidity_indicator || 'MAKER').toLowerCase().includes('taker') ? 'taker' : 'maker',
       orderId: f.order_id, leverage: 0,
