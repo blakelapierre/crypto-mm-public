@@ -24,8 +24,8 @@ Several defects stack. Together they mean the function can't book this deposit, 
 
 Fix:
 - **Source of truth, in order:**
-  - (a) v3 `GET /api/v3/brokerage/portfolios/{uuid}` … or, preferably, the v2 `GET /v2/accounts/{id}/transactions` path fixed as below.
-  - (b) Fallback: v3 `GET /api/v3/brokerage/accounts` (paged with `cursor`/`has_next`) to find every quote account (USD and USDC) by `currency`, then v2 transactions for those ids.
+  - (a) Primary: v2 `GET /v2/accounts/{id}/transactions` for every quote account (USD and USDC) and every held-coin account, fixed as below.
+  - (b) Fallback if v2 is not permitted for the key: v3 `GET /api/v3/brokerage/accounts` (paged with `cursor`/`has_next`) to find every quote account by `currency`, then compare available + hold balances with the persisted balances. Treat balance changes not explained by fills as transfers, via the P0-2 pending path.
   - Use whichever the key's scopes allow. Log `TRANSFER source=<v2|v3> accounts=<n>` once at start.
 - **Sign exactly what is requested:** the JWT `uri` must include the path that is sent, with the query string per the CDP rules. Same for `next_uri`. Add a unit test that signs `/v2/accounts/x/transactions?limit=25`.
 - **Never swallow errors:** log `TRANSFER error <acct ccy> <status> <msg>` (no headers or keys) at most once per 10 min per account. If 3 polls in a row fail, set `state.transferBlind = true` and show `xfer=blind` in status.
@@ -35,20 +35,25 @@ Fix:
 - Write each one to `logs/transfers-as-cb.jsonl` and log `TRANSFER deposit $20.01 USDC id=…`.
 - **Migration:** on first start of v7, replay from `startTime` (Oct 12 09:39Z). The ~$20.01 deposit must be booked once.
 
-## P0-2: fallback when transfers can't be read (both bots)
+## P0-2: fallback when transfers can't be read (both bots): flag, never pause
 
-- **Residual trigger, not just loop jumps.** If `resid` (RECON) exceeds `max($1, 3% of equity)` and no fill explains it (|Δ from fills| < $0.05 over the window):
+**This supersedes v6 P0-3's "pause new risk for that loop / 15 min on an unexplained equity jump" (`state.equityPauseUntil`).** Unknown money never pauses trading. Remove `equityPauseUntil` and its use in `addOk`.
+
+- **Trigger:** `resid` (RECON) exceeds `max($1, 3% of equity)` with no fill explaining it (|Δ from fills| < $0.05 over the window), or one loop's equity jumps the same way. Also checked at startup: compare the persisted `lastEquity` with the first marked equity.
+- **On trigger:**
   - set `state.transferPending = {usd: resid, since}`;
-  - **pause opening orders** (exits and the existing asks keep working);
-  - log `TRANSFER pending $20.01 (resid, no fills)` and add `xfer=pending $X` to the status line. The deploy-watch/status monitor reads that line.
-  - Also arm it at startup, comparing persisted `lastEquity` and `lastSeenAt` with the first marked equity.
+  - log `TRANSFER pending $X (resid, no fills)` once, and add `xfer=pending $X` to the status line for the monitor;
+  - **keep trading normally.** Opening orders, exits and the scanner are not paused.
+- **Provisional capital:**
+  - the pending amount counts in equity for sizing, budget and the book target (≈90% of ex-dust equity);
+  - it is excluded from P&L (`adj`, maker/inventory P&L) and from halt math: session/day loss is computed as `equity − pending − transfers` vs baseline;
+  - it never trips, clears or resets a halt, and never moves `startEquity`.
 - **Resolution:**
-  - (a) A matching ledger transfer arrives (within ±2%): clear the pending state and resume.
-  - (b) After `AS_XFER_PENDING_MAX_MIN` (default 30) with no ledger record: book it as `transfer inferred` in `transfers-<BOT>.jsonl` with `inferred:true`, log `TRANSFER inferred $X`, resume, and keep looking for the real record. When the real record arrives later, swap it in for the inferred row rather than adding to it.
-  - (c) `control.json {"cmd":"book-transfer","usd":20.01}` books it manually.
-- A pending or inferred transfer never counts as P&L, never moves `startEquity`, and never trips or clears a halt.
+  - (a) A matching ledger transfer arrives (within ±2%): replace the pending entry with it and clear `xfer=pending`.
+  - (b) After `AS_XFER_PENDING_MAX_MIN` (default 30) with no ledger record: book it in `transfers-<BOT>.jsonl` with `inferred:true` and log `TRANSFER inferred $X`. When the real record arrives later, it replaces the inferred row rather than being added on top.
+  - (c) `data/<BOT>.control.json {"cmd":"book-transfer","usd":X}` books it manually at any time.
 
-Acceptance: after the v7 restart, as-cb logs `TRANSFER deposit $20.01` (or `pending` → `inferred` within 30 min). Then `transfers ≈ 20.01`, `adj ≈ −$0.24 ± 0.05`, `|resid| ≤ $0.02` and `startEquity` unchanged. Any later transfer error is logged, not silent.
+Acceptance: after the v7 restart, as-cb logs `TRANSFER deposit $20.01`, or `pending` and then `inferred` within 30 min, with no gap in opening orders at any point. Then `transfers ≈ 20.01`, `adj ≈ −$0.24 ± 0.05`, `|resid| ≤ $0.02`, `startEquity` unchanged and no halt state change. No code path pauses opens because of an unexplained equity change. Any transfer API error is logged, not silent.
 
 ## P0-3: as-cb spends the new cash across scanner-chosen markets
 
@@ -59,7 +64,7 @@ Fix:
 - **Slots scale with budget:** `slots = clamp(floor(budget / (venue_min × 1.2)), 1, AS_CB_MAX_PAIRS default 6)`. With ~$14 that is several markets. Clip = `budget × 0.9 / slots`, at least the venue minimum.
 - **Book target:** resting bids + inventory asks ≥ 0.9 × (equity − dust − reserve). Re-plan within one loop of a budget change ≥ $1 (`BOOK replan budget=$x slots=n`).
 - **Wide books (STRK-like):** the v6 `max-dist` cap must use `max(AS_MAX_QUOTE_DIST_BPS, ½ touch spread + need)`. The log still shows `cap=150` on a 196bp case, so it isn't applied. Fix that, and give each line exactly one reason (no `fee-edge half=158 need=110`).
-- Opening orders pause only while `transferPending` (P0-2) is set, not otherwise.
+- Opening orders are never paused by `transferPending` (P0-2). Pending money counts as provisional capital for sizing.
 - Remove the `sell budget` gate (still logged for BASECAT). A sell never consumes budget; dust top-up bids use `buy dust-budget`.
 - Dust top-up (v6 P0-4) uses up to 25% of the new budget, at most 2 names, once a deposit is booked.
 
@@ -79,4 +84,4 @@ Acceptance: within 1h of the deposit being booked, as-cb has bids on ≥ 3 scann
 Acceptance: after restart, `halt … age=` continues from 2:37 PM PT (≈8h+), `phase=B` is shown, and the ADA ask steps toward market within the 1.5% cap. The AVAX dust is either closed or listed as `dust-stuck`, with no per-loop reject or hold lines. Each orphan id is logged once and then resolved.
 
 ## Out of scope / unchanged
-Post-only only; no coin lists; ledger-first transfers (inferred only through P0-2); kill switch thresholds 8%/12%; margin rails 300/200/150, resume 350; no secrets in repo or logs.
+Post-only only; no coin lists; ledger-first transfers (inferred only through P0-2; unknown money never pauses trading); kill switch thresholds 8%/12%; margin rails 300/200/150, resume 350; no secrets in repo or logs.
