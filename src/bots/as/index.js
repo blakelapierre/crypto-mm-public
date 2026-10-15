@@ -11,7 +11,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax, marksForPending } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -82,6 +82,7 @@ const markoutPath = path.join(process.cwd(), 'logs', 'markouts-' + BOT_NAME + '.
 const transferPath = path.join(process.cwd(), 'logs', 'transfers-' + BOT_NAME + '.jsonl');
 const controlPath = path.join(process.cwd(), 'data', BOT_NAME + '.control.json');
 let bookSample = { at: 0, rows: new Map() };
+let bookSampleErrAt = 0;
 
 function ceiling(name) {
   const v = String(process.env[name] ?? 'max').trim().toLowerCase();
@@ -628,6 +629,7 @@ async function pollCoinbaseTransfers(state, positions) {
     logTransferError(state, 'accounts', e);
     if (state.transferFailStreak >= 3) state.transferBlind = true;
     await pollCoinbaseV3Balances(state);
+    if (state.transferSourceLogged === 'v3') state.transferBlind = false;
     return;
   }
   const rows = [];
@@ -1070,7 +1072,8 @@ async function sampleBooks(rows) {
     for (let i = 0; i < ranked.length; i += 20) {
       const chunk = ranked.slice(i, i + 20);
       try {
-        const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?product_ids=' + encodeURIComponent(chunk.map((r) => r.pair).join(',')));
+        const qs = chunk.map((r) => 'product_ids=' + encodeURIComponent(r.pair)).join('&');
+        const data = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/best_bid_ask?' + qs);
         const byPair = new Map(((data && data.pricebooks) || []).map((b) => [b.product_id, b]));
         for (const row of chunk) {
           const b = byPair.get(row.pair);
@@ -1081,7 +1084,12 @@ async function sampleBooks(rows) {
           if (!(mid > 0)) continue;
           out.set(row.symbol, { bid, ask, mid, vol: Number(row.vol24) || 0 });
         }
-      } catch { /* next page */ }
+      } catch (e) {
+        if (Date.now() - bookSampleErrAt > 10 * 60 * 1000) {
+          bookSampleErrAt = Date.now();
+          console.log('SCAN books ' + String((e && e.message) || e).replace(/bearer\s+\S+/ig, '').slice(0, 160));
+        }
+      }
       await sleep(80);
     }
   }
@@ -2252,6 +2260,14 @@ async function main() {
       if (!(state.startEquity > 0) && book.equity > 0) state.startEquity = book.equity;
       ensureBaseline(state, book.equity);
       const now = Date.now();
+      const aligned = marksForPending({
+        marks: state.equityMarks || [],
+        gross: book.equity,
+        pending: pendingOf(state),
+        shifted: state.pendingMarkShift || 0,
+      });
+      state.equityMarks = aligned.marks;
+      state.pendingMarkShift = aligned.shifted;
       const eqRisk = haltEquityNow(book.equity, state);
       const sessionLoss = lossPct(state.startEquity, eqRisk, state.transfers);
       state.equityMarks = state.equityMarks || [];
@@ -2273,6 +2289,16 @@ async function main() {
         state.haltSince = now;
         state.haltAt = now;
         console.log('HALT ' + state.halted);
+      }
+      if (state.halted === 'day-loss' && dayLoss < DAY_LOSS && state.pendingMarkShift && (Number(state.haltEquity) || eqRisk) - eqRisk <= 0.05) {
+        state.halted = null;
+        state.haltSince = 0;
+        state.haltAt = 0;
+        state.haltEquity = 0;
+        state.haltNotional = 0;
+        state.haltSwept = false;
+        state.haltAction = '';
+        console.log('HALT day-loss cleared pending-gap');
       }
       if (!state.halted && book.ml != null && book.ml < ML_HALT) {
         state.halted = 'margin-halt';

@@ -913,6 +913,27 @@ export function pendingTrigger({ resid = 0, equity = 0, fillDelta = 0 } = {}) {
   return 0;
 }
 
+// Pending cash is already inside older equity marks. Shift those marks by the
+// pending amount so a day-loss check does not treat the same cash as a loss.
+// Marks far from the current gross (a real earlier peak) stay put.
+export function marksForPending({ marks = [], gross = 0, pending = 0, shifted = 0 } = {}) {
+  const usd = Number(pending) || 0;
+  const g = Number(gross) || 0;
+  const prev = Number(shifted) || 0;
+  const out = (marks || []).map((m) => ({ t: m.t, eq: Number(m.eq) || 0 }));
+  if (!(usd > 0) || !(g > 0)) {
+    if (prev) return { marks: out.map((m) => ({ t: m.t, eq: m.eq + prev })), shifted: 0 };
+    return { marks: out, shifted: 0 };
+  }
+  if (prev) return { marks: out, shifted: prev };
+  const band = Math.max(1, usd * 0.25);
+  let n = 0;
+  for (const m of out) {
+    if (Math.abs(m.eq - g) <= band) { m.eq -= usd; n += 1; }
+  }
+  return { marks: out, shifted: n ? usd : 0 };
+}
+
 export function haltRiskAction({ notional = 0, equity = 0, haltEquity = 0, equityNow = 0, ageH = 0, maxLev = 2, extraLossPct = 0.02, maxHoldH = 6 } = {}) {
   const eq = Number(equityNow) > 0 ? Number(equityNow) : Number(equity);
   const capN = Math.max(0, Number(maxLev) || 2) * Math.max(0, eq);

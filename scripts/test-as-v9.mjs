@@ -4,7 +4,7 @@ import {
   roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, roundTripNet, pairCooldownMs,
   churnSignal, lifetimeHalt, lifetimePct, resetAllowed, leverageNotch, expectedEdgeRow, rankByExpectedEdge,
   cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd,
-  widenOpenDecision, idleRelax,
+  widenOpenDecision, idleRelax, marksForPending,
 } from '../src/bots/as/quote.js';
 import { coinbaseJwt, coinbaseJwtUri } from '../src/shared/coinbase.js';
 
@@ -71,6 +71,12 @@ check(cbTransferAllowed('send') && cbTransferAllowed('intx_deposit'), 'wallet se
 check(!cbTransferAllowed('advanced_trade_fill') && !cbTransferAllowed('buy'), 'fills are not transfers');
 check(pendingTrigger({ resid: 20.01, equity: 25.5, fillDelta: 0 }) === 20.01, 'a residual with no fill becomes pending capital');
 check(pendingTrigger({ resid: 20, equity: 25, fillDelta: 1 }) === 0, 'a fill explains the residual');
+const shifted = marksForPending({ marks: [{ t: 1, eq: 25.48 }, { t: 2, eq: 25.4 }], gross: 25.48, pending: 19.18 });
+check(Math.abs(shifted.marks[0].eq - (25.48 - 19.18)) < 1e-9 && shifted.shifted === 19.18, 'pending cash is taken out of the day marks');
+const kept = marksForPending({ marks: [{ t: 1, eq: 100 }], gross: 110, pending: 30 });
+check(kept.marks[0].eq === 100 && kept.shifted === 0, 'a real earlier peak is not shifted by a new deposit');
+const restored = marksForPending({ marks: shifted.marks, gross: 25.48, pending: 0, shifted: shifted.shifted });
+check(Math.abs(restored.marks[0].eq - 25.48) < 1e-9 && restored.shifted === 0, 'booking the pending puts the day marks back');
 check(haltRiskAction({ notional: 80, equity: 10, haltEquity: 10, equityNow: 10, ageH: 0.1, maxLev: 2 }) === 'delever', 'a 8x book de-levers to 2x on the halt');
 check(haltRiskAction({ notional: 15, equity: 10, haltEquity: 10, equityNow: 9.7, ageH: 1, maxLev: 2, extraLossPct: 0.02 }) === 'cap-exit', 'another 2% after the halt exits the rest');
 check(haltRiskAction({ notional: 15, equity: 10, haltEquity: 10, equityNow: 10, ageH: 6, maxLev: 2, maxHoldH: 6 }) === 'cap-exit', 'six hours of halt is a cap exit');
