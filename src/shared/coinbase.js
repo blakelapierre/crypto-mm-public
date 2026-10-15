@@ -85,11 +85,13 @@ export function loadCoinbaseSigningKey(cfg) {
   return { privateKey: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }), alg: 'EdDSA' };
 }
 
-// CDP signs the path that is actually requested, query string included.
+// Wallet v2 signs the path that is actually requested, query included (next_uri).
+// Advanced Trade rejects a uri claim that contains the query; sign the path only.
 export function coinbaseJwtUri(method, reqPath) {
   let path = String(reqPath || '');
   path = path.replace(/^https:\/\/api\.coinbase\.com/i, '');
   if (path && !path.startsWith('/')) path = '/' + path;
+  if (path.startsWith('/api/v3/')) path = path.split('?')[0];
   return String(method || 'GET').toUpperCase() + ' api.coinbase.com' + path;
 }
 

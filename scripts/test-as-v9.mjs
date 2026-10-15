@@ -79,6 +79,7 @@ check(slotClipUsd({ budget: 14, slots: 6, venueMin: 1 }) > 1, 'each slot is a sh
 const relaxed = idleRelax({ idleMin: 61, minEdgeBps: 8, volFloor: 250000 });
 check(relaxed.relaxed && relaxed.minEdgeBps === 2 && relaxed.volFloor === 125000, 'an hour of idle cash relaxes edge to break-even plus 2bp and halves volume');
 check(coinbaseJwtUri('GET', '/v2/accounts/x/transactions?limit=25') === 'GET api.coinbase.com/v2/accounts/x/transactions?limit=25', 'the jwt uri keeps the query string');
+check(coinbaseJwtUri('GET', '/api/v3/brokerage/accounts?limit=250') === 'GET api.coinbase.com/api/v3/brokerage/accounts', 'advanced trade signs the path without the query');
 
 const { privateKey } = crypto.generateKeyPairSync('ed25519');
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
