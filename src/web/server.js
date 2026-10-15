@@ -751,7 +751,7 @@ function card(b){
     '<div><label>Hold x</label><b>'+fmt(w.holdRealized)+'</b></div>'+
     '<div><label>Cash '+esc(b.quote||'')+'</label><b>$'+fmtN(w.cash)+'</b></div>'+
     '<div><label>Cash on bids</label><b>$'+fmtN(w.cashHold)+'</b></div>'+
-    '<div><label>Equity</label><b>$'+fmtN(w.equity||p.lastEquity)+'</b></div>'+
+    '<div><label>Equity</label><b>$'+fmtN(w.equity||p.lastEquity)+'</b>'+(p.capitalBaseline?'<span>life '+(Number(p.lifetimePct)>=0?'+':'')+Number(p.lifetimePct||0).toFixed(1)+'% vs $'+fmtN(p.capitalBaseline)+'</span>':'')+'</div>'+
     '<div><label>Fills</label><b>'+(w.fills!=null?String(w.fills):String((b.fills||[]).length))+'</b></div>'+
     '<div><label>Vol buy</label><b>'+fmtN(sumMarkets(b,'buyUsd'))+'</b></div>'+
     '<div><label>Vol sell</label><b>'+fmtN(sumMarkets(b,'sellUsd'))+'</b></div>'+

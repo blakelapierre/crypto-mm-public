@@ -48,7 +48,7 @@ check(haltTimeoutPx({ cost: 100, side: 'long', touch: 90, halfBps: 40, steps: 0,
 
 const wide = widenOpenDecision({ px: 100, side: 'buy', mid: 115, needBps: 110, touch: 100, otherTouch: 130, maxDistBps: 150 });
 check(wide.why === 'ok' && wide.half + 0.5 >= 110, 'a wide book is capped from the mid, not the far touch');
-const far = widenOpenDecision({ px: 100, side: 'buy', mid: 100, needBps: 200, touch: 99.9, otherTouch: 100.1, maxDistBps: 150 });
+const far = widenOpenDecision({ px: 70, side: 'buy', mid: 100, needBps: 50, touch: 99.5, otherTouch: 100.5, maxDistBps: 150 });
 check(far.why === 'max-dist' && far.half + 0.5 >= 200, 'distance past the cap is max-dist even when the half would have paid');
 check(openGateWhy(far).startsWith('max-dist') && !openGateWhy(far).includes('fee-edge'), 'a max-dist block is not called a fee miss');
 check(openGateWhy({ why: 'below-need', half: 40, need: 110 }) === 'fee-edge half=40 need=110', 'fee-edge is printed only when the sent half is short');

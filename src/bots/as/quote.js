@@ -631,36 +631,38 @@ function snapOpen(px, inc, side) {
 }
 
 // why is ok, max-dist, below-need, or no-mid. half is the half that would have been sent.
-export function widenOpenDecision({ px = 0, side = 'buy', mid = 0, needBps = 0, touch = 0, otherTouch = 0, maxDistBps = 150, inc = 0 } = {}) {
+export function widenOpenDecision({ px = 0, side = 'buy', mid = 0, needBps = 0, touch = 0, otherTouch = 0, maxDistBps = 150, inc = 0, spreadMedBps = 0 } = {}) {
   const m = Number(mid);
   const need = Math.max(0, Number(needBps) || 0);
   const capBase = Math.max(0, Number(maxDistBps) || 0);
-  if (!(m > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0 };
+  if (!(m > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0, spreadMed: 0 };
   const buy = String(side) !== 'sell';
   const raw = buy ? m * (1 - need / 10000) : m * (1 + need / 10000);
   let next = buy ? Math.min(Number(px) > 0 ? Number(px) : raw, raw) : Math.max(Number(px) > 0 ? Number(px) : raw, raw);
   next = snapOpen(next, inc, buy ? 'buy' : 'sell');
   if (buy && !(next < m)) next = snapOpen(raw, inc, 'buy');
   if (!buy && !(next > m)) next = snapOpen(raw, inc, 'sell');
-  if (!(next > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0 };
+  if (!(next > 0)) return { px: 0, why: 'no-mid', need, distTouch: 0, cap: capBase, half: 0, spreadMed: 0 };
   const half = Math.abs(next - m) / m * 10000;
   const bid = buy ? Number(touch) || 0 : Number(otherTouch) || 0;
   const ask = buy ? Number(otherTouch) || 0 : Number(touch) || 0;
   const distTouch = Number(touch) > 0 ? Math.abs(next - Number(touch)) / m * 10000 : 0;
   const touchSpread = bid > 0 && ask > bid ? (ask - bid) / m * 10000 : 0;
+  const spreadMed = Number(spreadMedBps) > 0 ? Number(spreadMedBps) : touchSpread;
   const wide = need > 0 && touchSpread > 2 * need;
-  const cap = wide ? Math.max(capBase, touchSpread / 2 + need) : capBase;
+  const cap = Math.max(capBase, spreadMed / 2 + need);
   const measured = wide ? half : distTouch;
-  if (measured > cap + 1e-6) return { px: 0, why: 'max-dist', need, distTouch, cap, half };
-  if (half + 0.5 < need) return { px: 0, why: 'below-need', need, distTouch, cap, half };
-  return { px: next, why: 'ok', need, distTouch, cap, half };
+  if (measured > cap + 1e-6) return { px: 0, why: 'max-dist', need, distTouch, cap, half, spreadMed };
+  if (half + 0.5 < need) return { px: 0, why: 'below-need', need, distTouch, cap, half, spreadMed };
+  return { px: next, why: 'ok', need, distTouch, cap, half, spreadMed };
 }
 
 export function openGateWhy(decision) {
   if (!decision || decision.why === 'ok') return '';
   const need = Math.round(Number(decision.need) || 0);
   if (decision.why === 'max-dist') {
-    return 'max-dist need=' + need + ' dist_touch=' + Math.round(Number(decision.distTouch) || 0) + ' cap=' + Math.round(Number(decision.cap) || 0);
+    const med = Number(decision.spreadMed) > 0 ? ' spread_med=' + Math.round(Number(decision.spreadMed)) : '';
+    return 'max-dist need=' + need + ' dist_touch=' + Math.round(Number(decision.distTouch) || 0) + ' cap=' + Math.round(Number(decision.cap) || 0) + med;
   }
   if (decision.why === 'below-need') {
     const half = Number(decision.half) || 0;
@@ -718,6 +720,234 @@ export function positionAboveMin({ qty = 0, mid = 0, minNotional = 1, minSize = 
   if (!(m > 0)) return true;
   return q * m + 1e-12 >= Math.max(0, Number(minNotional) || 0);
 }
+
+// Round trip is both fees plus the minimum edge. One fee is not a close.
+export function roundTripPadBps({ feeBps = 0, minEdgeBps = 8 } = {}) {
+  return 2 * Math.max(0, Number(feeBps) || 0) + Math.max(0, Number(minEdgeBps) || 0);
+}
+
+function snapAway(px, tick, dir) {
+  const t = Number(tick) > 0 ? Number(tick) : 0;
+  if (!(t > 0) || !(Number(px) > 0)) return Number(px) || 0;
+  if (dir > 0) return Math.ceil(Number(px) / t - 1e-12) * t;
+  return Math.floor(Number(px) / t + 1e-12) * t;
+}
+
+// Long close ask is at least this. Short close bid is at most this. Rounded away from entry.
+export function roundTripFloorPx({ entry = 0, side = 'long', feeBps = 0, minEdgeBps = 8, tick = 0 } = {}) {
+  const e = Number(entry);
+  if (!(e > 0)) return 0;
+  const pad = roundTripPadBps({ feeBps, minEdgeBps }) / 10000;
+  const short = side === 'short' || side === 'buy';
+  const raw = short ? e * (1 - pad) : e * (1 + pad);
+  return snapAway(raw, tick, short ? -1 : 1);
+}
+
+// After a fill, the opposite order cannot sit tighter than fill ± the same pad.
+export function oppositeFloorPx({ fillPx = 0, side = 'buy', feeBps = 0, minEdgeBps = 8, tick = 0 } = {}) {
+  const f = Number(fillPx);
+  if (!(f > 0)) return 0;
+  const pad = roundTripPadBps({ feeBps, minEdgeBps }) / 10000;
+  const buy = String(side || '').toLowerCase() === 'buy';
+  const raw = buy ? f * (1 + pad) : f * (1 - pad);
+  return snapAway(raw, tick, buy ? 1 : -1);
+}
+
+const RISK_EXEMPT = new Set(['halt-delever', 'halt-cap', 'day-kill', 'lifetime-rail', 'liq']);
+
+export function riskExempt(tag) {
+  return RISK_EXEMPT.has(String(tag || ''));
+}
+
+// A close (or a requote) inside the round-trip floor is not sent unless the tag is a defined risk exit.
+export function edgeGate({ px = 0, floor = 0, side = 'sell', risk = '' } = {}) {
+  if (riskExempt(risk)) return { ok: true, why: '' };
+  const p = Number(px);
+  const f = Number(floor);
+  if (!(p > 0) || !(f > 0)) return { ok: true, why: '' };
+  const sell = String(side || '') !== 'buy';
+  const through = sell ? p + 1e-12 < f : p - 1e-12 > f;
+  if (!through) return { ok: true, why: '' };
+  return { ok: false, why: 'edge need=' + f + ' have=' + p };
+}
+
+// (exit − entry) × qty − both fees. Short profits when exit is below entry.
+export function roundTripNet({ entry = 0, exit = 0, qty = 0, feeBps = 0, side = 'long' } = {}) {
+  const e = Number(entry);
+  const x = Number(exit);
+  const q = Math.abs(Number(qty) || 0);
+  if (!(e > 0) || !(x > 0) || !(q > 0)) return 0;
+  const short = side === 'short' || side === 'buy';
+  const gross = short ? (e - x) * q : (x - e) * q;
+  const fees = (e + x) * q * (Math.max(0, Number(feeBps) || 0) / 10000);
+  return gross - fees;
+}
+
+export function pairCooldownMs({ losses24h = 0, losing = false, cooldownMin = 60 } = {}) {
+  if (!(losing || Number(losses24h) >= 2)) return 0;
+  if (Number(losses24h) >= 2) return 6 * 3600 * 1000;
+  return Math.max(0, Number(cooldownMin) || 60) * 60 * 1000;
+}
+
+export function churnSignal({ fills = 0, fees = 0, capture = 0, minFills = 6 } = {}) {
+  if ((Number(fills) || 0) + 1e-9 < (Number(minFills) || 6)) return false;
+  return (Number(fees) || 0) - (Number(capture) || 0) > 0;
+}
+
+export function lifetimePct({ equity = 0, baseline = 0 } = {}) {
+  const b = Number(baseline);
+  if (!(b > 0)) return 0;
+  return ((Number(equity) || 0) - b) / b;
+}
+
+export function lifetimeHalt({ equity = 0, baseline = 0, ddPct = 0.25 } = {}) {
+  const b = Number(baseline);
+  if (!(b > 0)) return false;
+  return lifetimePct({ equity, baseline: b }) <= -Math.abs(Number(ddPct) || 0.25) + 1e-12;
+}
+
+export function lifeText({ equity = 0, baseline = 0 } = {}) {
+  const b = Number(baseline) || 0;
+  const e = Number(equity) || 0;
+  const p = lifetimePct({ equity: e, baseline: b }) * 100;
+  return 'life=$' + e.toFixed(2) + ' vs $' + b.toFixed(2) + ' (' + (p >= 0 ? '+' : '') + p.toFixed(1) + '%)';
+}
+
+export function resetAllowed({ resets = [], now = 0, max = 1, windowMs = 24 * 3600 * 1000 } = {}) {
+  const t = Number(now) || 0;
+  const recent = (resets || []).filter((x) => t - Number(x) < Number(windowMs));
+  return recent.length < Math.max(0, Number(max) || 0);
+}
+
+export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost = false, maxLev = 5, stepMs = 2 * 3600 * 1000, notches = null } = {}) {
+  const cap = Math.max(2, Number(maxLev) || 5);
+  const ladder = (notches && notches.length ? notches : [2, 3, 5, cap]).map((n) => Math.min(cap, Number(n) || 2));
+  if (ladder[ladder.length - 1] < cap) ladder.push(cap);
+  let i = Math.max(0, Math.min(ladder.length - 1, Math.floor(Number(step) || 0)));
+  if (lost) return { step: i, lev: ladder[i], advanced: false };
+  if (positive && Number(elapsedMs) + 1e-9 >= Number(stepMs) && i + 1 < ladder.length) {
+    i += 1;
+    return { step: i, lev: ladder[i], advanced: true };
+  }
+  return { step: i, lev: ladder[i], advanced: false };
+}
+
+// Expected half is the wider of the touch and k × σ over the hold. Quoting past the touch is allowed.
+export function expectedEdgeRow(row, opts = {}) {
+  const fee = Math.max(0, Number(opts.feeBps) || 0);
+  const minEdge = Math.max(0, Number(opts.minEdgeBps) || 0);
+  const k = Number(opts.k) > 0 ? Number(opts.k) : 1.5;
+  const tau = Number(opts.tauMin) > 0 ? Number(opts.tauMin) : 15;
+  const kappa = Number(opts.kappa) > 0 ? Number(opts.kappa) : 1.5;
+  const quotedHalf = Math.max(0, Number(row && row.spreadBps) || 0) / 2;
+  const sig = Math.max(0, Number(row && row.sigma) || 0);
+  const horizonBps = sig * Math.sqrt(tau) * 10000;
+  const need = roundTripPadBps({ feeBps: fee, minEdgeBps: minEdge });
+  const expHalf = Math.max(quotedHalf, k * horizonBps, need);
+  const extra = Math.max(0, expHalf - quotedHalf);
+  const fillp = Math.exp(-kappa * extra / 100);
+  const expEdge = fillp * (2 * expHalf - 2 * fee);
+  const tradeable = expEdge > 0 && expHalf + 1e-9 >= need;
+  return { expHalf, need, fillp, expEdge, tradeable, quotedHalf };
+}
+
+export function rankByExpectedEdge(rows, opts = {}) {
+  const minVol = Math.max(0, Number(opts.minVol) || 0);
+  const maxSpread = Number(opts.maxSpreadBps) > 0 ? Number(opts.maxSpreadBps) : Infinity;
+  const maxPairs = Math.max(0, Number(opts.maxPairs) || 0);
+  const rejected = { feeSpread: 0, vol: 0, tick: 0, wide: 0, edge: 0 };
+  const scored = [];
+  const reasons = [];
+  const considered = [];
+  for (const row of rows || []) {
+    const tickBps = Number(row.tickBps) || 0;
+    const vol = Number(row.vol24) || 0;
+    const spread = Number(row.spreadBps) || 0;
+    let reason = '';
+    if (tickBps > 10) { rejected.tick += 1; reason = 'tick'; }
+    else if (vol + 1e-9 < minVol) { rejected.vol += 1; reason = 'vol'; }
+    else if (spread > maxSpread) { rejected.wide += 1; reason = 'wide'; }
+    else {
+      const e = expectedEdgeRow(row, opts);
+      considered.push({ symbol: row.symbol, ...e, edge: e.expEdge, vol24: vol });
+      if (!e.tradeable) { rejected.edge += 1; rejected.feeSpread += 1; reason = 'fee-spread'; }
+      else scored.push({ ...row, ...e, edge: e.expEdge, score: e.expEdge });
+    }
+    if (reason) reasons.push({ symbol: row.symbol, reason, val: reason === 'vol' ? vol : reason === 'tick' ? tickBps : spread, need: roundTripPadBps({ feeBps: opts.feeBps, minEdgeBps: opts.minEdgeBps }) });
+  }
+  scored.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
+  considered.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
+  return {
+    picked: maxPairs > 0 ? scored.slice(0, maxPairs) : scored,
+    rejected,
+    feeSpread: reasons.filter((r) => r.reason === 'fee-spread').map((r) => r.symbol),
+    best: considered[0] ? { symbol: considered[0].symbol, edge: considered[0].expEdge } : null,
+    best5: considered.slice(0, 5),
+    evaluated: (rows || []).length,
+    reasons,
+  };
+}
+
+export function cbTransferAllowed(type) {
+  const t = String(type || '').toLowerCase();
+  if (/buy|sell|trade|advanced_trade_fill|retail_simple_dust|interest|staking_reward/.test(t)) return false;
+  return /send|receive|fiat_deposit|fiat_withdrawal|deposit|withdrawal|transfer|exchange_deposit|exchange_withdrawal|pro_deposit|pro_withdrawal|intx_deposit|intx_withdrawal/.test(t);
+}
+
+// Sign comes from the amount. A send onto this account is a positive deposit.
+export function transferUsd({ amount = 0, px = 1, status = 'completed' } = {}) {
+  const st = String(status || 'completed').toLowerCase();
+  if (st && st !== 'completed') return 0;
+  const a = Number(amount);
+  if (!Number.isFinite(a) || a === 0) return 0;
+  const p = Number(px);
+  if (!(p > 0)) return 0;
+  return Math.sign(a) * Math.abs(a) * p;
+}
+
+export function pendingTrigger({ resid = 0, equity = 0, fillDelta = 0 } = {}) {
+  if (Math.abs(Number(fillDelta) || 0) >= 0.05) return 0;
+  const thresh = Math.max(1, Math.abs(Number(equity) || 0) * 0.03);
+  const r = Number(resid) || 0;
+  if (Math.abs(r) > thresh) return r;
+  return 0;
+}
+
+export function haltRiskAction({ notional = 0, equity = 0, haltEquity = 0, equityNow = 0, ageH = 0, maxLev = 2, extraLossPct = 0.02, maxHoldH = 6 } = {}) {
+  const eq = Number(equityNow) > 0 ? Number(equityNow) : Number(equity);
+  const capN = Math.max(0, Number(maxLev) || 2) * Math.max(0, eq);
+  const n = Math.abs(Number(notional) || 0);
+  const base = Number(haltEquity) || 0;
+  const lossPct = base > 0 ? (base - eq) / base : 0;
+  if (lossPct > Number(extraLossPct) + 1e-12 || Number(ageH) + 1e-9 >= Number(maxHoldH)) return 'cap-exit';
+  if (capN > 0 && n > capN + 1e-6) return 'delever';
+  return 'hold';
+}
+
+export function bookSlotsScaled({ budget = 0, venueMin = 1, maxPairs = 6 } = {}) {
+  const floorUsd = Math.max(0.01, (Number(venueMin) || 1) * 1.2);
+  const n = Math.floor(Math.max(0, Number(budget) || 0) / floorUsd);
+  const cap = Math.max(1, Number(maxPairs) || 1);
+  return Math.max(1, Math.min(cap, Math.max(n, 1)));
+}
+
+export function slotClipUsd({ budget = 0, slots = 1, venueMin = 1 } = {}) {
+  const n = Math.max(1, Number(slots) || 1);
+  const clip = Math.max(0, Number(budget) || 0) * 0.9 / n;
+  const min = Math.max(0, Number(venueMin) || 0);
+  if (clip + 1e-9 < min) return min > 0 && clip + 1e-9 < min ? 0 : clip;
+  return clip;
+}
+
+export function idleRelax({ idleMin = 0, minEdgeBps = 8, volFloor = 0 } = {}) {
+  if (Number(idleMin) + 1e-9 < 60) return { minEdgeBps: Number(minEdgeBps) || 0, volFloor: Number(volFloor) || 0, relaxed: false };
+  return {
+    minEdgeBps: Math.min(Number(minEdgeBps) || 0, 2),
+    volFloor: Math.max(0, Number(volFloor) || 0) / 2,
+    relaxed: true,
+  };
+}
+
 
 
 

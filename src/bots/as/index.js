@@ -11,7 +11,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -57,12 +57,21 @@ const MAX_QUOTE_DIST = envNum('AS_MAX_QUOTE_DIST_BPS', 150);
 const STOP_SIGMA = envNum('AS_STOP_SIGMA', 3);
 const STOP_PCT = envNum('AS_STOP_PCT', 3) / 100;
 const HALT_COOLDOWN = envNum('AS_HALT_COOLDOWN_MIN', 60) * 60 * 1000;
-const MAX_RESETS = Math.max(0, envNum('AS_MAX_SESSION_RESETS_PER_DAY', 2));
 const MAX_Q = envNum('AS_MAX_Q', 2);
 const DUST_COMBINE_MAX = Math.max(0, envNum('AS_DUST_COMBINE_MAX', 2));
 const HALT_HOLD_MS = envNum('AS_HALT_HOLD_H', 6) * 3600 * 1000;
 const HALT_MAX_MS = envNum('AS_HALT_MAX_H', 24) * 3600 * 1000;
 const HALT_EXIT_LOSS = envNum('AS_HALT_MAX_EXIT_LOSS_PCT', 1.5) / 100;
+const HALT_MAX_LEV = envNum('AS_HALT_MAX_LEV', 2);
+const HALT_EXTRA_LOSS = envNum('AS_HALT_EXTRA_LOSS_PCT', 2) / 100;
+const HALT_MAX_HOLD_H = envNum('AS_HALT_MAX_HOLD_H', 6);
+const XFER_PENDING_MS = envNum('AS_XFER_PENDING_MAX_MIN', 30) * 60 * 1000;
+const CB_MAX_PAIRS = Math.max(1, envNum('AS_CB_MAX_PAIRS', 6));
+const MAX_RESETS = Math.max(0, envNum('AS_MAX_RESETS_PER_DAY', 1));
+const RESET_LEV = envNum('AS_RESET_LEV', 2);
+const LIFETIME_DD = envNum('AS_LIFETIME_DD_PCT', 25) / 100;
+const PAIR_COOLDOWN_MIN = envNum('AS_PAIR_COOLDOWN_MIN', 60);
+const SCAN_ALERT_H = envNum('AS_SCAN_ALERT_H', 6);
 const BOT_NAME = process.env.BOT || 'as';
 let makerFeeBps = FEE_BPS;
 const statePath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.json');
@@ -149,16 +158,17 @@ function openingNeedBps() {
     minEdgeBps: MIN_EDGE, minHalfBps: MIN_HALF_BPS,
   });
 }
-function widenOpen(px, side, mid, inc, needBps, touch, otherTouch) {
+function widenOpen(px, side, mid, inc, needBps, touch, otherTouch, spreadMed) {
   return widenOpenDecision({
-    px, side, mid, needBps, touch, otherTouch, maxDistBps: MAX_QUOTE_DIST, inc,
+    px, side, mid, needBps, touch, otherTouch, maxDistBps: MAX_QUOTE_DIST, inc, spreadMedBps: spreadMed,
   });
 }
 function gateText(decision) {
   if (!decision || decision.why === 'ok') return '';
   const need = Math.round(Number(decision.need) || 0);
   if (decision.why === 'max-dist') {
-    return 'max-dist need=' + need + ' dist_touch=' + Math.round(Number(decision.distTouch) || 0) + ' cap=' + Math.round(Number(decision.cap) || 0);
+    const med = Number(decision.spreadMed) > 0 ? ' spread_med=' + Math.round(Number(decision.spreadMed)) : '';
+    return 'max-dist need=' + need + ' dist_touch=' + Math.round(Number(decision.distTouch) || 0) + ' cap=' + Math.round(Number(decision.cap) || 0) + med;
   }
   if (decision.why === 'below-need' && Number(decision.half) + 0.5 < Number(decision.need)) {
     return 'fee-edge half=' + Math.round(Number(decision.half) || 0) + ' need=' + need;
@@ -207,12 +217,17 @@ function warmSpreads(state) {
 }
 function logTransfer(rec) {
   const usd = Number(rec.usd) || 0;
-  const kind = /withdraw|send/i.test(rec.type) && !/receive/i.test(rec.type) ? 'withdrawal' : 'deposit';
-  console.log('TRANSFER ' + kind + ' $' + usd.toFixed(2) + ' ' + (rec.ccy || '') + ' id=' + rec.id);
+  const kind = usd < 0 ? 'withdrawal' : 'deposit';
+  if (rec.inferred) console.log('TRANSFER inferred $' + usd.toFixed(2));
+  else console.log('TRANSFER ' + kind + ' $' + Math.abs(usd).toFixed(2) + ' ' + (rec.ccy || '') + ' id=' + rec.id);
   try {
     fs.mkdirSync(path.dirname(transferPath), { recursive: true });
-    fs.appendFileSync(transferPath, JSON.stringify({ id: rec.id, type: rec.type, ccy: rec.ccy, amount: rec.amount, usd, time: rec.time || new Date().toISOString() }) + '\n');
+    fs.appendFileSync(transferPath, JSON.stringify({ id: rec.id, type: rec.type, ccy: rec.ccy, amount: rec.amount, usd, inferred: !!rec.inferred, time: rec.time || new Date().toISOString() }) + '\n');
   } catch { /* keep going */ }
+}
+function bumpBaseline(state, usd) {
+  state.lifetimeTransfers = (Number(state.lifetimeTransfers) || 0) + usd;
+  if (Number(state.originEquity) > 0) state.capitalBaseline = Number(state.originEquity) + Number(state.lifetimeTransfers);
 }
 function bookTransfer(state, rec) {
   const id = String(rec.id || '');
@@ -221,9 +236,25 @@ function bookTransfer(state, rec) {
   if (state.seenLedgers[id]) return false;
   const usd = Number(rec.usd) || 0;
   if (!usd) return false;
+  const inf = state.inferredOpen;
+  if (inf && !rec.inferred && Math.abs(usd - Number(inf.usd)) <= Math.max(0.02, Math.abs(Number(inf.usd)) * 0.02)) {
+    state.transfers = (Number(state.transfers) || 0) - Number(inf.usd);
+    bumpBaseline(state, -Number(inf.usd));
+    console.log('TRANSFER replace inferred ' + inf.id);
+    state.inferredOpen = null;
+  }
+  const pending = state.transferPending;
+  if (pending && !rec.inferred && Math.abs(usd - Number(pending.usd)) <= Math.max(0.02, Math.abs(Number(pending.usd)) * 0.02)) {
+    state.transferPending = null;
+  }
   state.transfers = (state.transfers || 0) + usd;
   state.transferThisLoop = (state.transferThisLoop || 0) + usd;
+  bumpBaseline(state, usd);
   state.seenLedgers[id] = true;
+  if (rec.inferred) {
+    state.inferredOpen = { id, usd };
+    state.transferPending = null;
+  }
   logTransfer(rec);
   return true;
 }
@@ -330,9 +361,27 @@ function noteFill(state, row) {
     const have = buy ? Number(prev && prev.shortQty) || 0 : Number(prev && prev.longQty) || 0;
     const closeQty = Math.min(have, Number(row.size) || 0);
     const avg = buy ? entryAvg(prev, 'short') : entryAvg(prev, 'long');
-    const gross = avg > 0 ? (buy ? avg - Number(row.price) : Number(row.price) - avg) * closeQty : 0;
-    row.realized = gross - (Number(row.fee) || 0);
+    row.realized = roundTripNet({
+      entry: avg, exit: Number(row.price), qty: closeQty, feeBps: makerFeeBps, side: buy ? 'short' : 'long',
+    });
+    if ((effect === 'close' || effect === 'flip') && closeQty > 0) {
+      const now = Date.now();
+      state.recentTrips = state.recentTrips || [];
+      state.recentTrips.push({ t: now, sym: row.symbol, net: row.realized });
+      state.recentTrips = state.recentTrips.filter((t) => now - t.t < 48 * 3600 * 1000);
+      if (row.realized < 0) {
+        state.pairLosses = state.pairLosses || {};
+        const arr = (state.pairLosses[row.symbol] || []).filter((t) => now - t < 24 * 3600 * 1000);
+        arr.push(now);
+        state.pairLosses[row.symbol] = arr;
+        const cd = pairCooldownMs({ losing: true, losses24h: arr.length, cooldownMin: PAIR_COOLDOWN_MIN });
+        state.pairCooldown = state.pairCooldown || {};
+        state.pairCooldown[row.symbol] = now + cd;
+      }
+    }
   }
+  state.lastFill = state.lastFill || {};
+  state.lastFill[row.symbol] = { side: row.side, price: row.price, time: row.time, size: row.size };
   const next = applyEntry(prev, row);
   state.entry = state.entry || {};
   state.entry[row.symbol] = next;
@@ -343,6 +392,22 @@ function noteFill(state, row) {
   ps.fees += Number(row.fee) || 0;
   ps.realized += Number(row.realized) || 0;
   state.pairStats[row.symbol] = ps;
+  state.pairWindow = state.pairWindow || {};
+  const nowFill = Date.now();
+  const windowRows = (state.pairWindow[row.symbol] || []).filter((x) => nowFill - x.t < 3600 * 1000);
+  windowRows.push({ t: nowFill, fee: Number(row.fee) || 0, capture: Number(row.capture) || 0 });
+  state.pairWindow[row.symbol] = windowRows;
+  const winFees = windowRows.reduce((s, x) => s + x.fee, 0);
+  const winCap = windowRows.reduce((s, x) => s + x.capture, 0);
+  if (churnSignal({ fills: windowRows.length, fees: winFees, capture: winCap })) {
+    state.churnLogged = state.churnLogged || {};
+    if (nowFill - (state.churnLogged[row.symbol] || 0) > 3600 * 1000) {
+      state.churnLogged[row.symbol] = nowFill;
+      console.log('CHURN ' + row.symbol + ' fills=' + windowRows.length + ' fees=$' + winFees.toFixed(2) + ' capture=$' + winCap.toFixed(2));
+      state.pairCooldown = state.pairCooldown || {};
+      state.pairCooldown[row.symbol] = nowFill + pairCooldownMs({ losing: true, losses24h: 1, cooldownMin: PAIR_COOLDOWN_MIN });
+    }
+  }
   state.fillOrders = state.fillOrders || [];
   if (row.orderId) state.fillOrders.push(String(row.orderId));
   if (state.fillOrders.length > 2000) state.fillOrders.splice(0, state.fillOrders.length - 2000);
@@ -454,10 +519,8 @@ function ingestLedger(state, id, type, row, positions) {
   const fee = Number(row.fee || 0);
   if (type === 'deposit' || type === 'withdrawal') {
     const usd = Number(amt) || 0;
-    state.transfers = (state.transfers || 0) + usd;
-    state.transferThisLoop = (state.transferThisLoop || 0) + usd;
-    state.seenLedgers[id] = true;
-    if (usd) logTransfer({ id, type, ccy: (row && row.asset) || 'USD', amount: usd, usd, time: row && row.time ? new Date(Number(row.time) * 1000).toISOString() : new Date().toISOString() });
+    if (usd) bookTransfer(state, { id, type, ccy: (row && row.asset) || 'USD', amount: usd, usd, time: row && row.time ? new Date(Number(row.time) * 1000).toISOString() : new Date().toISOString() });
+    else state.seenLedgers[id] = true;
     return;
   }
   if (type === 'rollover') {
@@ -528,56 +591,155 @@ function quoteCcy(code) {
   const c = String(code || '').toUpperCase();
   return c === 'USD' || c === 'USDC' || c === String(cfg.quote || '').toUpperCase();
 }
+function logTransferError(state, ccy, err) {
+  const raw = String((err && err.message) || err || 'error');
+  const status = (raw.match(/Coinbase (\d{3})/) || raw.match(/\b(\d{3})\b/) || [])[1] || 'err';
+  const msg = raw.replace(/bearer\s+\S+/ig, '').replace(/key|secret|authorization/ig, '').slice(0, 160);
+  state.transferErrAt = state.transferErrAt || {};
+  const now = Date.now();
+  if (now - (state.transferErrAt[ccy] || 0) < 10 * 60 * 1000) return;
+  state.transferErrAt[ccy] = now;
+  console.log('TRANSFER error ' + ccy + ' ' + status + ' ' + msg);
+}
+async function coinbaseAccounts() {
+  let path = '/v2/accounts?limit=100';
+  const out = [];
+  for (let i = 0; i < 20 && path; i++) {
+    const page = await coinbaseRequest(cfg, 'GET', path);
+    for (const acct of (page && page.data) || []) if (acct && acct.id) out.push(acct);
+    const next = page && page.pagination && page.pagination.next_uri;
+    path = next ? String(next).replace(/^https:\/\/api\.coinbase\.com/i, '') : '';
+  }
+  return out;
+}
 async function pollCoinbaseTransfers(state, positions) {
   state.seenLedgers = state.seenLedgers || {};
-  let accts;
-  try { accts = await coinbaseRequest(cfg, 'GET', '/v2/accounts?limit=100'); }
-  catch (e) { console.warn('transfer history', e.message); return; }
+  state.cbTxCursor = state.cbTxCursor || {};
+  if (!state.transferSourceLogged) {
+    state.transferSourceLogged = 'pending';
+  }
+  let accts = [];
+  try {
+    accts = await coinbaseAccounts();
+    state.transferFailStreak = 0;
+    state.transferBlind = false;
+  } catch (e) {
+    state.transferFailStreak = (Number(state.transferFailStreak) || 0) + 1;
+    logTransferError(state, 'accounts', e);
+    if (state.transferFailStreak >= 3) state.transferBlind = true;
+    await pollCoinbaseV3Balances(state);
+    return;
+  }
   const rows = [];
-  for (const acct of (accts && accts.data) || []) {
-    if (!acct || !acct.id) continue;
+  const seenCcy = new Set();
+  for (const acct of accts) {
     const ccy = String((acct.currency && acct.currency.code) || acct.currency || '').toUpperCase();
     const bal = Math.abs(Number(acct.balance && acct.balance.amount) || 0);
+    seenCcy.add(ccy);
     if (quoteCcy(ccy) || bal > 0 || (positions && positions[ccy])) rows.push({ id: acct.id, ccy });
   }
+  for (const ccy of ['USD', 'USDC', String(cfg.quote || '').toUpperCase()]) {
+    if (!ccy || seenCcy.has(ccy)) continue;
+    const acct = accts.find((a) => String((a.currency && a.currency.code) || a.currency || '').toUpperCase() === ccy);
+    if (acct && acct.id) rows.push({ id: acct.id, ccy });
+  }
+  if (state.transferSourceLogged === 'pending') {
+    console.log('TRANSFER source=v2 accounts=' + rows.length);
+    state.transferSourceLogged = 'v2';
+  }
   const origin = Date.parse(state.startTime || '') || 0;
+  let failures = 0;
   for (const acct of rows) {
-    const deep = quoteCcy(acct.ccy) && !state.cbTransferBooted;
-    let path = '/v2/accounts/' + acct.id + '/transactions?limit=' + (deep ? 100 : 25);
-    const pages = deep ? 5 : 1;
-    for (let page = 0; page < pages && path; page++) {
+    const cursor = state.cbTxCursor[acct.id] || '';
+    let path = '/v2/accounts/' + acct.id + '/transactions?limit=100';
+    let newest = cursor;
+    let failed = false;
+    for (let page = 0; page < 10 && path; page++) {
       let tx;
       try { tx = await coinbaseRequest(cfg, 'GET', path); }
-      catch { break; }
-      let older = false;
+      catch (e) {
+        failed = true;
+        failures += 1;
+        logTransferError(state, acct.ccy || acct.id, e);
+        break;
+      }
+      let stop = false;
       for (const t of (tx && tx.data) || []) {
         const type = String(t.type || '').toLowerCase();
         const ts = Date.parse(t.created_at || '') || 0;
-        if (origin && ts && ts + 120000 < origin) { older = true; continue; }
-        if (/buy|sell|trade|advanced_trade|\bfill\b/.test(type)) continue;
-        if (!/deposit|withdraw|send|receive/.test(type)) continue;
+        const stamp = (t.created_at || '') + '|' + (t.id || '');
+        if (stamp > newest) newest = stamp;
+        if (cursor && stamp <= cursor) { stop = true; continue; }
+        if (origin && ts && ts + 120000 < origin) { stop = true; continue; }
+        if (!cbTransferAllowed(type)) continue;
         if (!t.id || state.seenLedgers[t.id]) continue;
         const raw = Number(t.amount && t.amount.amount);
         if (!raw) continue;
-        const neg = /withdraw|send/.test(type) && !/receive/.test(type);
-        let usd = Math.abs(raw);
+        let px = 1;
         if (!quoteCcy(acct.ccy)) {
-          const mid = positions && positions[acct.ccy] && Number(positions[acct.ccy].mid);
-          if (!(mid > 0)) continue;
-          usd = Math.abs(raw) * mid;
+          px = positions && positions[acct.ccy] && Number(positions[acct.ccy].mid);
+          if (!(px > 0)) continue;
         }
+        const usd = transferUsd({ amount: raw, px, status: t.status || 'completed' });
+        if (!usd) continue;
         bookTransfer(state, {
-          id: t.id, type, ccy: acct.ccy, amount: raw,
-          usd: (neg ? -1 : 1) * usd,
+          id: t.id, type, ccy: acct.ccy, amount: raw, usd,
           time: t.created_at || new Date().toISOString(),
         });
       }
-      if (older || !deep) break;
+      if (stop) break;
       const next = tx && tx.pagination && tx.pagination.next_uri;
-      path = next ? String(next).replace(/^https:\/\/api\.coinbase\.com/, '') : '';
+      path = next ? String(next).replace(/^https:\/\/api\.coinbase\.com/i, '') : '';
+    }
+    if (!failed && newest) state.cbTxCursor[acct.id] = newest;
+  }
+  if (failures > 0 && failures >= rows.length && rows.length) {
+    state.transferFailStreak = (Number(state.transferFailStreak) || 0) + 1;
+    if (state.transferFailStreak >= 3) {
+      state.transferBlind = true;
+      await pollCoinbaseV3Balances(state);
+    }
+  } else if (rows.length) {
+    state.transferFailStreak = 0;
+    state.transferBlind = false;
+  }
+}
+async function pollCoinbaseV3Balances(state) {
+  let cursor = '';
+  const bals = {};
+  try {
+    for (let i = 0; i < 10; i++) {
+      const path = '/api/v3/brokerage/accounts?limit=250' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      const data = await coinbaseRequest(cfg, 'GET', path);
+      for (const a of (data && data.accounts) || []) {
+        const ccy = String(a.currency || '').toUpperCase();
+        if (!quoteCcy(ccy)) continue;
+        const avail = Number(a.available_balance && a.available_balance.value) || 0;
+        const hold = Number(a.hold && a.hold.value) || 0;
+        bals[ccy] = (bals[ccy] || 0) + avail + hold;
+      }
+      if (!data || !data.has_next || !data.cursor) break;
+      cursor = data.cursor;
+    }
+  } catch (e) {
+    logTransferError(state, 'v3', e);
+    state.transferBlind = true;
+    return;
+  }
+  if (state.transferSourceLogged !== 'v2') {
+    console.log('TRANSFER source=v3 accounts=' + Object.keys(bals).length);
+    state.transferSourceLogged = 'v3';
+  }
+  state.cbBalances = state.cbBalances || {};
+  for (const [ccy, bal] of Object.entries(bals)) {
+    const prev = Number(state.cbBalances[ccy]);
+    state.cbBalances[ccy] = bal;
+    if (!(prev > 0)) continue;
+    const delta = bal - prev;
+    if (Math.abs(delta) > Math.max(1, Math.abs(prev) * 0.03) && !(state.transferThisLoop)) {
+      state.transferPending = state.transferPending || { usd: delta, since: Date.now() };
     }
   }
-  state.cbTransferBooted = true;
 }
 function rebuildFillsFromLog(state) {
   let text = '';
@@ -946,8 +1108,30 @@ function logScan(state, decision) {
     state.feeSpreadLog[sym] = now;
     console.log('GATE ' + sym + ' both fee-spread');
   }
+  const diag = 'SCAN source=' + (decision.source || 'api') + ' n=' + (decision.raw ?? 0) + ' after_products=' + (decision.afterProducts ?? 0) + ' after_quote=' + (decision.afterQuote ?? 0);
+  const rejSum = ['feeSpread', 'vol', 'tick', 'wide', 'edge'].reduce((s, k) => s + Number((decision.rejected || {})[k] || 0), 0);
+  const emptyScan = !(decision.raw > 0) || (!(decision.picked || []).length && rejSum === 0 && !(decision.evaluated > 0));
+  if (emptyScan && now - (state.scanEmptyAt || 0) > 10 * 60 * 1000) {
+    state.scanEmptyAt = now;
+    console.log('SCAN empty ' + diag + ' after_filters=' + (decision.evaluated || 0));
+  }
+  if (!(decision.picked || []).length) {
+    state.scanRejectLog = state.scanRejectLog || {};
+    const top = (decision.reasons || []).slice(0, 20);
+    for (const r of top) {
+      const key = r.symbol + '|' + r.reason;
+      if (now - (state.scanRejectLog[key] || 0) < 10 * 60 * 1000) continue;
+      state.scanRejectLog[key] = now;
+      console.log('SCAN reject ' + r.symbol + ' reason=' + r.reason + ' val=' + Number(r.val || 0).toFixed(1) + ' need=' + Number(r.need || 0).toFixed(1));
+    }
+    state.lastRejects = top.map((r) => r.symbol + ':' + r.reason);
+  }
   if (now - (state.scanLogAt || 0) < 3600 * 1000) return;
   state.scanLogAt = now;
+  console.log(diag);
+  for (const b of decision.best5 || []) {
+    console.log('SCAN best ' + b.symbol + ' exp_edge=' + Number(b.expEdge).toFixed(1) + ' need=' + Number(b.need).toFixed(1) + ' fillp=' + Number(b.fillp).toFixed(2));
+  }
   const rej = decision.rejected || { feeSpread: 0, vol: 0, tick: 0 };
   const n = (rej.feeSpread || 0) + (rej.vol || 0) + (rej.tick || 0) + (rej.wide || 0);
   const picked = (decision.picked || []).map((p) => p.symbol + ':' + Number(p.edge).toFixed(0) + ':' + Math.round(Number(p.vol24) || 0)).join(',');
@@ -955,7 +1139,27 @@ function logScan(state, decision) {
   if (!(decision.picked || []).length) {
     const best = decision.best;
     console.log('SCAN none-tradeable best=' + (best && best.symbol || '-') + ' edge=' + (best ? Number(best.edge).toFixed(1) : '-') + 'bp');
+    if (!state.noneSince) state.noneSince = now;
+    const hours = (now - state.noneSince) / 3600000;
+    if (hours > SCAN_ALERT_H && !state.scanAlerted) {
+      state.scanAlerted = true;
+      console.log('SCAN alert none-tradeable for=' + hours.toFixed(1) + 'h');
+    }
+  } else {
+    state.noneSince = 0;
+    state.scanAlerted = false;
   }
+}
+function scanReason(row, fee, minEdge, minVol, maxSpread) {
+  const tick = Number(row.tickBps) || 0;
+  const vol = Number(row.vol24) || 0;
+  const spread = Number(row.spreadBps) || 0;
+  const need = roundTripPadBps({ feeBps: fee, minEdgeBps: minEdge });
+  if (tick > 10) return { symbol: row.symbol, reason: 'tick', val: tick, need };
+  if (vol + 1e-9 < minVol) return { symbol: row.symbol, reason: 'vol', val: vol, need };
+  if (spread > maxSpread) return { symbol: row.symbol, reason: 'wide', val: spread, need };
+  if (spread - 2 * fee + 1e-9 < minEdge) return { symbol: row.symbol, reason: 'fee-spread', val: spread, need };
+  return null;
 }
 async function select(products, book, state) {
   warmSpreads(state);
@@ -991,7 +1195,6 @@ async function select(products, book, state) {
   const candidates = [];
   for (const [symbol, rec] of Object.entries(products)) {
     if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) continue;
-    if (VENUE === 'kraken' && !rec.shortable) continue;
     candidates.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol), scan: rank.has(symbol) ? rank.get(symbol) : 999 });
   }
   const dustRows = (state.dustWatch || []).filter((d) => !candidates.some((c) => c.symbol === d.symbol) && !held.some((h) => h.symbol === d.symbol));
@@ -1001,14 +1204,35 @@ async function select(products, book, state) {
     const b = books.get(row.symbol);
     if (b) measured.push(spreadRow(state, row, b));
   }
-  if (!measured.some((r) => Number(r.vol24) > 0)) {
-    for (const r of measured) r.vol24 = MIN_VOL;
+  const scanTs = Number(scan && (scan.ts || scan.at)) || 0;
+  const scanFresh = scanTs > 0 && Date.now() - scanTs < 2 * 3600 * 1000 && ((scan && scan.ranked) || []).length > 0;
+  const relax = state.scanRelax || {};
+  const minEdge = VENUE === 'kraken' ? MIN_EDGE : (Number(relax.minEdgeBps) > 0 ? Number(relax.minEdgeBps) : MIN_EDGE);
+  const minVol = Number(relax.volFloor) > 0 ? Number(relax.volFloor) : MIN_VOL;
+  if (VENUE !== 'kraken' && measured.length && !measured.some((r) => Number(r.vol24) > 0)) {
+    for (const r of measured) r.vol24 = minVol;
   }
-  const decision = rankByNetEdge(measured, {
-    feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, minVol: MIN_VOL,
-    maxSpreadBps: MAX_SPREAD * 10000, targetVol: SCAN_TARGET_VOL,
-    evalN: SCAN_EVAL_N, maxPairs: MAX_PAIRS,
-  });
+  const decision = VENUE === 'kraken'
+    ? rankByExpectedEdge(measured, {
+      feeBps: makerFeeBps, minEdgeBps: minEdge, minVol, maxSpreadBps: MAX_SPREAD * 10000,
+      maxPairs: MAX_PAIRS, k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
+    })
+    : rankByNetEdge(measured, {
+      feeBps: makerFeeBps, minEdgeBps: minEdge, minVol,
+      maxSpreadBps: MAX_SPREAD * 10000, targetVol: SCAN_TARGET_VOL,
+      evalN: Math.max(SCAN_EVAL_N, measured.length), maxPairs: CB_MAX_PAIRS,
+    });
+  if (!decision.reasons) {
+    decision.reasons = measured
+      .slice()
+      .sort((a, b) => (Number(b.vol24) || 0) - (Number(a.vol24) || 0))
+      .map((row) => scanReason(row, makerFeeBps, minEdge, minVol, MAX_SPREAD * 10000))
+      .filter(Boolean);
+  }
+  decision.raw = Object.keys(products || {}).length;
+  decision.afterProducts = candidates.length;
+  decision.afterQuote = measured.length;
+  decision.source = scanFresh ? 'file' : 'api';
   logScan(state, decision);
   const dustMeasured = [];
   for (const row of dustRows) {
@@ -1111,7 +1335,13 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
       state.stepAway[key] = (Number(state.stepAway[key]) || 0) + 1;
     }
     if (/unknown asset pair/i.test(String(why))) { state.skip = state.skip || {}; state.skip[row.symbol] = true; }
-    console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
+    if (reason === 'below-min') {
+      state.belowMinLog = state.belowMinLog || {};
+      if (Date.now() - (state.belowMinLog[row.symbol + ':' + side] || 0) > 3600 * 1000) {
+        state.belowMinLog[row.symbol + ':' + side] = Date.now();
+        console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
+      }
+    } else console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
     if (reason !== 'below-min' && reason !== 'too-far') armBackoff(state, row.symbol, reason);
     if (side === 'buy') slot.bid = null; else slot.ask = null;
   }
@@ -1175,7 +1405,7 @@ function carryBpsPerHour(state, sym, notional) {
 }
 function logHold(state, sym, ageMin, carryUsd) {
   state.holdLogAt = state.holdLogAt || {};
-  if (Date.now() - (state.holdLogAt[sym] || 0) < 5 * 60 * 1000) return;
+  if (Date.now() - (state.holdLogAt[sym] || 0) < 60 * 60 * 1000) return;
   state.holdLogAt[sym] = Date.now();
   console.log('HOLD ' + sym + ' ' + Math.round(ageMin) + ' carry=$' + Number(carryUsd || 0).toFixed(2));
 }
@@ -1311,18 +1541,39 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     ml: book.ml, cut: ML_CUT, adverseFrac: Math.max(adverseLong, adverseShort), sigmaMove,
     stopSigma: STOP_SIGMA, stopPct: STOP_PCT, ageMin: ageMinNow, maxHoldMin: MAX_HOLD_MIN, haltKind,
   });
-  const costLong = costFloorPx({ entry: longAvg, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
-  const costShort = costFloorPx({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
-  if (VENUE === 'kraken' && Number(pos.long) > 0 && costLong > 0) {
-    if (!risk) askPx = Math.max(askPx, costLong);
-    else askPx = stepToward({ from: costLong, to: (s.bid || mid) + inc, halfBps: plan.bps, steps: riskStep(state, row.symbol + ':sell'), entry: longAvg || mid });
-  }
-  if (VENUE === 'kraken' && Number(pos.short) > 0 && costShort > 0) {
-    if (!risk) bidPx = Math.min(bidPx, costShort);
-    else bidPx = stepToward({ from: costShort, to: Math.max(0, (s.ask || mid) - inc), halfBps: plan.bps, steps: riskStep(state, row.symbol + ':buy'), entry: shortAvg || mid });
+  const costLong = roundTripFloorPx({ entry: longAvg, side: 'long', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
+  const costShort = roundTripFloorPx({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
+  const lastFill = state.lastFill && state.lastFill[row.symbol];
+  const oppAsk = lastFill && String(lastFill.side) === 'buy'
+    ? oppositeFloorPx({ fillPx: lastFill.price, side: 'buy', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc }) : 0;
+  const oppBid = lastFill && String(lastFill.side) === 'sell'
+    ? oppositeFloorPx({ fillPx: lastFill.price, side: 'sell', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc }) : 0;
+  let riskTag = '';
+  if (state.halted === 'day-loss') riskTag = 'day-kill';
+  else if (state.halted === 'lifetime-dd') riskTag = 'lifetime-rail';
+  else if (state.halted && state.haltAction === 'delever') riskTag = 'halt-delever';
+  else if (state.halted && state.haltAction === 'cap-exit') riskTag = 'halt-cap';
+  else if (rail.mode === 'cut' && book.ml != null && book.ml < ML_HALT) riskTag = 'liq';
+  const exempt = riskExempt(riskTag);
+  if (!exempt) {
+    if (Number(pos.long) > 0 && costLong > 0) askPx = Math.max(askPx, costLong, oppAsk || 0);
+    if (Number(pos.short) > 0 && costShort > 0) bidPx = Math.min(bidPx, costShort);
+    if (Number(pos.short) > 0 && oppBid > 0) bidPx = Math.min(bidPx, oppBid);
+    if (!(Number(pos.long) > 0) && oppAsk > 0) askPx = Math.max(askPx, oppAsk);
+    if (!(Number(pos.short) > 0) && oppBid > 0) bidPx = Math.min(bidPx, oppBid);
+  } else if (riskTag === 'halt-delever') {
+    if (Number(pos.long) > 0 && s.ask > 0) askPx = s.ask;
+    if (Number(pos.short) > 0 && s.bid > 0) bidPx = s.bid;
+  } else if (riskTag) {
+    if (Number(pos.long) > 0) {
+      askPx = stepToward({ from: costLong || askPx, to: s.ask || mid, halfBps: plan.bps, steps: riskStep(state, row.symbol + ':halt-sell'), entry: longAvg || mid });
+    }
+    if (Number(pos.short) > 0) {
+      bidPx = stepToward({ from: costShort || bidPx, to: s.bid || mid, halfBps: plan.bps, steps: riskStep(state, row.symbol + ':halt-buy'), entry: shortAvg || mid });
+    }
   }
   let haltExit = '';
-  if (state.halted === 'session-loss' && state.haltPhase === 'B') {
+  if (!exempt && state.halted === 'session-loss' && state.haltPhase === 'B') {
     if (Number(pos.long) > 0 && (costLong > 0 || longAvg > 0)) {
       const cost = costLong || longAvg;
       const steps = riskStep(state, row.symbol + ':halt-sell');
@@ -1348,28 +1599,29 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       state.haltLossPlan[row.symbol + ':short'] = Math.max(0, (bidPx - cost) * Number(pos.short));
     }
   }
-  const needBps = openingNeedBps();
+  const spreadMed = median(((state.spreads && state.spreads[row.symbol]) || []).slice(-30));
+  const needBps = Math.max(openingNeedBps(), roundTripPadBps({ feeBps: makerFeeBps, minEdgeBps: MIN_EDGE }));
   let blockOpenBuy = false;
   let blockOpenSell = false;
   let openBuyWhy = '';
   let openSellWhy = '';
-  if (!(Number(pos.short) > 0)) {
-    const w = widenOpen(bidPx, 'buy', mid, inc, needBps, s.bid, s.ask);
+  if (!(Number(pos.short) > 0) && !exempt) {
+    const w = widenOpen(bidPx, 'buy', mid, inc, needBps, s.bid, s.ask, spreadMed);
     if (w.why !== 'ok') { blockOpenBuy = true; openBuyWhy = gateText(w); }
     else bidPx = w.px;
   }
-  if (!(Number(pos.long) > 0)) {
-    const w = widenOpen(askPx, 'sell', mid, inc, needBps, s.ask, s.bid);
+  if (!(Number(pos.long) > 0) && !exempt) {
+    const w = widenOpen(askPx, 'sell', mid, inc, needBps, s.ask, s.bid, spreadMed);
     if (w.why !== 'ok') { blockOpenSell = true; openSellWhy = gateText(w); }
     else askPx = w.px;
   }
   if (s.bid > 0 && askPx > 0 && askPx <= s.bid) askPx = s.bid + inc;
   if (s.ask > 0 && bidPx > 0 && bidPx >= s.ask) bidPx = s.ask - inc;
-  if (haltExit && Number(pos.long) > 0) {
+  if (haltExit && !exempt && Number(pos.long) > 0) {
     const bound = haltExitBound({ cost: costLong || longAvg, side: 'long', maxLossPct: HALT_EXIT_LOSS, equity: book.equity, qty: Number(pos.long), haltLossUsed: haltLossUsed(state, row.symbol) });
     if (bound > 0 && askPx + 1e-12 < bound) askPx = bound;
   }
-  if (haltExit && Number(pos.short) > 0) {
+  if (haltExit && !exempt && Number(pos.short) > 0) {
     const bound = haltExitBound({ cost: costShort || shortAvg, side: 'short', maxLossPct: HALT_EXIT_LOSS, equity: book.equity, qty: Number(pos.short), haltLossUsed: haltLossUsed(state, row.symbol + ':short') });
     if (bound > 0 && bidPx - 1e-12 > bound) bidPx = bound;
   }
@@ -1416,14 +1668,14 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       }
       const slots = Math.max(1, Number(budget && budget.slots) || 1);
       const left = Math.max(0, Number(budget && budget.left) || 0);
-      const wantUsd = openClipUsd({ budget: left, slots, clipMax: CLIP_CAP, venueMin: minUsd });
+      const wantUsd = slotClipUsd({ budget: left, slots, venueMin: minUsd });
       if (addOk && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
       if (budget) budget.slots = Math.max(1, slots - 1);
     } else if (!reduce) {
       const cap = liqNotionalCap(book.equity, lev || 2, LIQ_MIN);
       const sz = Math.min(clip, cap) / mid;
       if (q < MAX_Q) buySz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
-      if (q > -MAX_Q) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
+      if (q > -MAX_Q && row.shortable !== false) sellSz = formatVolume(Math.max(sz, Number(row.ordermin) || 0), lot);
       if (buySz * bidPx > cap || sellSz * askPx > cap) {
         console.log('RAIL liq ' + row.symbol);
         if (buySz * bidPx > cap) buySz = 0;
@@ -1444,9 +1696,52 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (Number(pos.long) > 0) sellSz = fitReduce(sellSz, askPx, Number(pos.long));
     if (Number(pos.short) > 0) buySz = fitReduce(buySz, bidPx, Number(pos.short));
   }
+  const rampLev = state.levRamp && Number(state.levRamp.lev) > 0 ? Number(state.levRamp.lev) : 0;
   const posLev = Number(pos.lev) >= 2 ? Number(pos.lev) : 0;
-  const buyLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':buy'] || lev) : 0;
-  const sellLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':sell'] || lev) : 0;
+  let buyLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':buy'] || lev) : 0;
+  let sellLev = VENUE === 'kraken' ? (posLev || state.levOk[row.symbol + ':sell'] || lev) : 0;
+  if (rampLev > 0 && VENUE === 'kraken') {
+    if (opensRisk(Number(pos.long || 0) - Number(pos.short || 0), 'buy')) buyLev = Math.min(buyLev || rampLev, rampLev);
+    if (opensRisk(Number(pos.long || 0) - Number(pos.short || 0), 'sell')) sellLev = Math.min(sellLev || rampLev, rampLev);
+  }
+  const orderminNow = Number(row.ordermin || row.baseMin || 0);
+  const dustShort = VENUE === 'kraken' && Number(pos.short) > 0 && orderminNow > 0 && Number(pos.short) + 1e-12 < orderminNow;
+  const dustLong = VENUE === 'kraken' && Number(pos.long) > 0 && orderminNow > 0 && Number(pos.long) + 1e-12 < orderminNow;
+  if (dustShort || dustLong) {
+    const minNotional = orderminNow * (mid || 0);
+    const afford = minNotional > 0 && minNotional <= 0.005 * Number(book.equity || 0);
+    if (dustShort) {
+      if (buySz > 0 && opensRisk(Number(pos.long || 0) - Number(pos.short || 0), 'buy')) buySz = formatVolume(Number(buySz) + Number(pos.short), lot);
+      else if (afford && (addOk || state.halted)) buySz = formatVolume(orderminNow, lot);
+      else buySz = 0;
+      sellSz = 0;
+    }
+    if (dustLong) {
+      if (sellSz > 0) sellSz = formatVolume(Number(sellSz) + Number(pos.long), lot);
+      else if (afford) sellSz = formatVolume(orderminNow, lot);
+      else sellSz = 0;
+    }
+  }
+  if (riskTag === 'halt-delever') {
+    const eqNow = Math.max(0, Number(book.equity || 0) - (state.transferPending && !state.transferPending.inferred ? Number(state.transferPending.usd) || 0 : 0));
+    const capN = HALT_MAX_LEV * eqNow;
+    if (Number(pos.long) > 0 && askPx > 0) {
+      const excess = Math.max(0, Number(pos.long) * mid - capN);
+      sellSz = excess > 0 ? formatVolume(excess / askPx, lot) : 0;
+      buySz = 0;
+    }
+    if (Number(pos.short) > 0 && bidPx > 0) {
+      const excess = Math.max(0, Number(pos.short) * mid - capN);
+      buySz = excess > 0 ? formatVolume(excess / bidPx, lot) : 0;
+      sellSz = 0;
+    }
+  }
+  const cooling = (state.pairCooldown && state.pairCooldown[row.symbol] || 0) > Date.now();
+  if (cooling) {
+    const netNow = Number(pos.long || 0) - Number(pos.short || 0);
+    if (buySz > 0 && opensRisk(netNow, 'buy')) buySz = 0;
+    if (sellSz > 0 && opensRisk(netNow, 'sell')) sellSz = 0;
+  }
   const mine = book.mine[row.symbol] || [];
   const klassNow = holdingClass({ qty: Number(pos.long) || 0, mid, minNotional: minUsd, minSize: Number(row.baseMin || row.ordermin || 0) });
   if (klassNow === 'inventory' && state.belowMin) delete state.belowMin[row.symbol];
@@ -1577,8 +1872,8 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const floorTxt = pxText(floorPx);
   const sellThrough = !!(risk && Number(pos.long) > 0 && costLong > 0 && askPx + 1e-12 < costLong);
   const buyThrough = !!(risk && Number(pos.short) > 0 && costShort > 0 && bidPx - 1e-12 > costShort);
-  const sellRisk = haltExit && Number(pos.long) > 0 ? 'halt-timeout' : (sellThrough ? risk : '');
-  const buyRisk = haltExit && Number(pos.short) > 0 ? 'halt-timeout' : (buyThrough ? risk : '');
+  const sellRisk = riskTag && Number(pos.long) > 0 ? riskTag : (haltExit && Number(pos.long) > 0 ? 'halt-timeout' : (sellThrough ? risk : ''));
+  const buyRisk = riskTag && Number(pos.short) > 0 ? riskTag : (haltExit && Number(pos.short) > 0 ? 'halt-timeout' : (buyThrough ? risk : ''));
   const sellLoss = lossOk && hardLong > 0 && askPx + 1e-12 < hardLong ? Math.round((askPx / longAvg - 1) * 10000) : null;
   const buyLoss = lossOk && hardShort > 0 && bidPx - 1e-12 > hardShort ? Math.round((1 - bidPx / shortAvg) * 10000) : null;
   const sigmaBps = s.sigmaWarmup ? null : Math.round((s.sigma || 0) * 10000);
@@ -1590,7 +1885,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     console.log('DUST topup ' + row.symbol + ' bid=$' + (buySz * bidPx).toFixed(2));
   }
   if (state.dustArmed && state.dustArmed[row.symbol] && sellSz > 0 && Number(pos.long) > 0) {
-    const floor = costFloorPx({ entry: longAvg || mid, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
+    const floor = roundTripFloorPx({ entry: longAvg || mid, side: 'long', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
     if (floor > 0 && askPx + 1e-12 < floor) askPx = formatPrice(floor, row.pairDecimals ?? 8);
     state.dustExitLogged = state.dustExitLogged || {};
     if (!state.dustExitLogged[row.symbol]) {
@@ -1599,6 +1894,15 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     }
   }
   if (quiet) { gate('buy', 'backoff'); gate('sell', 'backoff'); }
+  if (cooling) {
+    const netNow = Number(pos.long || 0) - Number(pos.short || 0);
+    if (opensRisk(netNow, 'buy')) gate('buy', 'cooldown');
+    if (opensRisk(netNow, 'sell')) gate('sell', 'cooldown');
+  }
+  const sellEdge = edgeGate({ px: askPx, floor: Math.max(costLong || 0, oppAsk || 0), side: 'sell', risk: sellRisk });
+  const buyEdge = edgeGate({ px: bidPx, floor: Math.max(costShort || 0, oppBid || 0) ? Math.min(...[costShort, oppBid].filter((n) => n > 0)) : 0, side: 'buy', risk: buyRisk });
+  if (sellSz > 0 && !sellEdge.ok) { sellSz = 0; gate('sell', sellEdge.why); }
+  if (buySz > 0 && !buyEdge.ok) { buySz = 0; gate('buy', buyEdge.why); }
   if (!(buySz > 0) && !gates.some((g) => g.startsWith('buy '))) {
     if (row.dustBid) gate('buy', 'dust-budget');
     else if (state.halted) gate('buy', 'halt');
@@ -1650,15 +1954,9 @@ function usedMargin(book) {
 }
 function openBookNotional(state, book) {
   let n = 0;
-  const seen = new Set();
-  for (const [sym, slot] of Object.entries(state.orders || {})) {
-    if (slot && slot.bid && slot.bidPx > 0 && slot.bidSz > 0) { n += slot.bidPx * slot.bidSz; seen.add(sym + ':buy'); }
-    if (slot && slot.ask && slot.askPx > 0 && slot.askSz > 0) { n += slot.askPx * slot.askSz; seen.add(sym + ':sell'); }
-  }
-  for (const [sym, orders] of Object.entries((book && book.mine) || {})) {
+  for (const orders of Object.values((book && book.mine) || {})) {
     for (const o of orders || []) {
-      if (seen.has(sym + ':' + o.side)) continue;
-      n += Number(o.price || 0) * Number(o.size || 0);
+      if (o && Number(o.price) > 0 && Number(o.size) > 0) n += Number(o.price) * Number(o.size);
     }
   }
   return n;
@@ -1734,14 +2032,24 @@ function beginSession(state, equity, reason) {
   state.halted = null;
   state.haltSwept = false;
   state.haltSince = 0;
+  state.haltAt = 0;
+  state.haltEquity = 0;
+  state.haltNotional = 0;
+  state.haltAction = '';
   state.haltPhase = '';
   state.haltLossPlan = {};
   state.flatSince = 0;
   state.resetCapLogged = false;
+  state.equityPauseUntil = 0;
+  const now = Date.now();
+  state.resetTimes = state.resetTimes || [];
+  state.resetTimes.push(now);
+  state.resetTimes = state.resetTimes.filter((t) => now - t < 48 * 3600 * 1000);
+  state.levRamp = { step: 0, lev: RESET_LEV, since: now };
   const day = new Date().toISOString().slice(0, 10);
   if (state.resetDay !== day) { state.resetDay = day; state.sessionResets = 0; }
   state.sessionResets = (Number(state.sessionResets) || 0) + 1;
-  console.log('SESSION reset baseline=$' + Number(equity).toFixed(2) + ' prev=$' + prev.toFixed(2) + ' reason=' + reason);
+  console.log('SESSION reset baseline=$' + Number(equity).toFixed(2) + ' prev=$' + prev.toFixed(2) + ' reason=' + reason + ' lev=' + RESET_LEV);
 }
 function handleControl(state, equity) {
   let raw = null;
@@ -1752,6 +2060,10 @@ function handleControl(state, equity) {
   console.log('CONTROL ' + cmd);
   if (cmd === 'reset-session' && equity > 0) beginSession(state, equity, 'control');
   else if (cmd === 'halt') { state.halted = 'manual'; state.haltSwept = false; console.log('HALT manual'); }
+  else if (cmd === 'book-transfer') {
+    const usd = Number(raw.usd);
+    if (usd) bookTransfer(state, { id: 'control-' + Date.now(), type: usd < 0 ? 'withdrawal' : 'deposit', ccy: cfg.quote, amount: usd, usd, time: new Date().toISOString() });
+  }
 }
 function bookIsFlat(book) {
   for (const p of Object.values(book.positions || {})) {
@@ -1790,20 +2102,105 @@ function adoptOrphans(state, book) {
     if (slot && slot.bid) tracked.add(slot.bid);
     if (slot && slot.ask) tracked.add(slot.ask);
   }
+  state.orphanLogged = state.orphanLogged || {};
   let n = 0;
   for (const [sym, orders] of Object.entries(book.mine || {})) {
     for (const o of orders || []) {
       n += 1;
       if (!o || tracked.has(o.id)) continue;
-      console.log('ORPHAN ' + o.id);
+      if (!state.orphanLogged[o.id]) {
+        console.log('ORPHAN ' + o.id);
+        state.orphanLogged[o.id] = true;
+      }
       const slot = state.orders[sym] || {};
-      if (o.side === 'buy' && !slot.bid) { slot.bid = o.id; slot.bidPx = o.price; slot.bidSz = o.size; }
-      else if (o.side === 'sell' && !slot.ask) { slot.ask = o.id; slot.askPx = o.price; slot.askSz = o.size; }
-      state.orders[sym] = slot;
-      tracked.add(o.id);
+      const free = o.side === 'buy' ? !slot.bid : o.side === 'sell' ? !slot.ask : false;
+      if (free) {
+        if (o.side === 'buy') { slot.bid = o.id; slot.bidPx = o.price; slot.bidSz = o.size; }
+        else { slot.ask = o.id; slot.askPx = o.price; slot.askSz = o.size; }
+        state.orders[sym] = slot;
+        tracked.add(o.id);
+      } else {
+        state.orphanCancel = state.orphanCancel || [];
+        if (!state.orphanCancel.includes(o.id)) state.orphanCancel.push(o.id);
+      }
     }
   }
   return n;
+}
+function dropStaleOrders(state, book) {
+  const live = new Set();
+  for (const orders of Object.values((book && book.mine) || {})) {
+    for (const o of orders || []) if (o && o.id) live.add(o.id);
+  }
+  state.staleSeen = state.staleSeen || {};
+  for (const [sym, slot] of Object.entries(state.orders || {})) {
+    if (!slot) continue;
+    for (const side of ['bid', 'ask']) {
+      const id = slot[side];
+      if (!id) continue;
+      if (live.has(id)) { delete state.staleSeen[id]; continue; }
+      state.staleSeen[id] = (Number(state.staleSeen[id]) || 0) + 1;
+      if (state.staleSeen[id] < 2) continue;
+      const px = side === 'bid' ? slot.bidPx : slot.askPx;
+      const name = side === 'bid' ? 'buy' : 'sell';
+      console.log('ORDER stale ' + sym + ' ' + name + ' ' + px + ' dropped');
+      console.log('RECON order ' + id + ' local=open exch=missing → drop');
+      slot[side] = null;
+      if (side === 'bid') { slot.bidPx = 0; slot.bidSz = 0; }
+      else { slot.askPx = 0; slot.askSz = 0; }
+      delete state.staleSeen[id];
+    }
+  }
+}
+function positionNotional(book) {
+  let n = 0;
+  for (const p of Object.values((book && book.positions) || {})) {
+    const qty = Math.abs(Number(p.long || 0) - Number(p.short || 0));
+    const mid = Number(p.mid || p.avgLong || p.avgShort || 0);
+    if (qty > 0 && mid > 0) n += qty * mid;
+    else if (Number(p.value) > 0) n += Number(p.value);
+  }
+  return n;
+}
+function pendingOf(state) {
+  const p = state.transferPending;
+  if (!p || p.inferred) return 0;
+  return Number(p.usd) || 0;
+}
+function haltEquityNow(equity, state) {
+  return (Number(equity) || 0) - pendingOf(state);
+}
+function lifeBase(state) {
+  if (Number(state.capitalBaseline) > 0) return Number(state.capitalBaseline);
+  return (Number(state.originEquity) || Number(state.startEquity) || 0) + (Number(state.lifetimeTransfers) || 0);
+}
+function canAutoReset(state, now) {
+  if (state.halted === 'lifetime-dd') return false;
+  return resetAllowed({ resets: state.resetTimes || [], now, max: MAX_RESETS, windowMs: 24 * 3600 * 1000 });
+}
+function noteHaltStart(state, now, book) {
+  if (!(state.haltAt > 0)) state.haltAt = state.haltSince > 0 ? state.haltSince : now;
+  if (!(state.haltSince > 0)) state.haltSince = state.haltAt;
+  if (!(state.haltEquity > 0)) state.haltEquity = haltEquityNow(book.equity, state);
+  if (!(state.haltNotional > 0)) state.haltNotional = positionNotional(book);
+}
+function ensureBaseline(state, equity) {
+  if (Number(state.capitalBaseline) > 0 && Number(state.originEquity) > 0) return;
+  const origin = Number(state.originEquity) > 0 ? Number(state.originEquity) : (Number(state.startEquity) > 0 ? Number(state.startEquity) : equity);
+  state.originEquity = origin;
+  const already = Number(state.lifetimeTransfers);
+  state.lifetimeTransfers = Number.isFinite(already) ? already : (Number(state.transfers) || 0);
+  state.capitalBaseline = origin + Number(state.lifetimeTransfers);
+}
+function migrateV9(state) {
+  if (state.specV9) return;
+  state.specV9 = true;
+  state.cbTxCursor = {};
+  state.cbTransferBooted = false;
+  state.transferSourceLogged = '';
+  if (!(state.resetTimes || []).length && (state.sessionResets || 0) > 0) state.resetTimes = [Date.now()];
+  if (!state.levRamp) state.levRamp = { step: 0, lev: RESET_LEV, since: Date.now() };
+  state.equityPauseUntil = 0;
 }
 async function main() {
   lock();
@@ -1843,6 +2240,7 @@ async function main() {
     state.pnlModel = 5;
     console.log('PNL equity model 5, marked equity');
   }
+  migrateV9(state);
   await loadMakerFee();
   let feeAt = Date.now();
   for (;;) {
@@ -1850,26 +2248,39 @@ async function main() {
       if (Date.now() - productsAt > 3600 * 1000) { products = await ex.getProducts(VENUE); productsAt = Date.now(); }
       if (Date.now() - feeAt > 3600 * 1000) { await loadMakerFee(); feeAt = Date.now(); }
       let book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
+      state.ordersSyncedAt = Date.now();
       if (!(state.startEquity > 0) && book.equity > 0) state.startEquity = book.equity;
-      const sessionLoss = lossPct(state.startEquity, book.equity, state.transfers);
-      state.equityMarks = state.equityMarks || [];
+      ensureBaseline(state, book.equity);
       const now = Date.now();
+      const eqRisk = haltEquityNow(book.equity, state);
+      const sessionLoss = lossPct(state.startEquity, eqRisk, state.transfers);
+      state.equityMarks = state.equityMarks || [];
       if (!state.equityMarks.length || now - state.equityMarks[state.equityMarks.length - 1].t > 60000) {
-        state.equityMarks.push({ t: now, eq: book.equity });
+        state.equityMarks.push({ t: now, eq: eqRisk });
       }
       state.equityMarks = state.equityMarks.filter((m) => now - m.t < 26 * 3600 * 1000);
       const dayBase = (state.equityMarks.find((m) => now - m.t >= 24 * 3600 * 1000) || state.equityMarks[0] || {}).eq || state.startEquity;
-      const dayLoss = lossPct(dayBase, book.equity, 0);
+      const dayLoss = lossPct(dayBase, eqRisk, 0);
+      const life = lifetimePct({ equity: eqRisk, baseline: lifeBase(state) });
+      if (!state.halted && lifetimeHalt({ equity: eqRisk, baseline: lifeBase(state), ddPct: LIFETIME_DD })) {
+        state.halted = 'lifetime-dd';
+        state.haltSince = now;
+        state.haltAt = now;
+        console.log('HALT lifetime-dd');
+      }
       if (!state.halted && (sessionLoss >= SESSION_LOSS || dayLoss >= DAY_LOSS)) {
         state.halted = sessionLoss >= SESSION_LOSS ? 'session-loss' : 'day-loss';
         state.haltSince = now;
+        state.haltAt = now;
         console.log('HALT ' + state.halted);
       }
       if (!state.halted && book.ml != null && book.ml < ML_HALT) {
         state.halted = 'margin-halt';
         state.haltSince = now;
+        state.haltAt = now;
         console.log('HALT margin-halt ml=' + book.ml);
       }
+      if (state.halted) noteHaltStart(state, now, book);
       if (state.halted && !(state.haltSince > 0)) state.haltSince = now;
       const wasOnRail = !!state.onRail;
       if (book.ml != null && book.ml < ML_STOP) state.onRail = true;
@@ -1887,24 +2298,27 @@ async function main() {
       handleControl(state, book.equity);
       const resetDay = new Date().toISOString().slice(0, 10);
       if (state.resetDay !== resetDay) { state.resetDay = resetDay; state.sessionResets = 0; state.resetCapLogged = false; }
-      if (state.halted === 'day-loss' && dayLoss < DAY_LOSS && book.equity > 0) beginSession(state, book.equity, 'day-window');
+      if (state.halted === 'day-loss' && dayLoss < DAY_LOSS && book.equity > 0 && !state.transferPending) beginSession(state, book.equity, 'day-window');
       if (state.halted === 'session-loss') {
-        state.haltPhase = haltPhase({ halted: 'session-loss', since: state.haltSince, now, holdMs: HALT_HOLD_MS, maxMs: HALT_MAX_MS });
+        state.haltPhase = haltPhase({ halted: 'session-loss', since: state.haltAt || state.haltSince, now, holdMs: HALT_HOLD_MS, maxMs: HALT_MAX_MS });
         if (bookIsFlat(book)) {
           if (!state.flatSince) state.flatSince = now;
           if (now - state.flatSince >= HALT_COOLDOWN) {
-            if ((state.sessionResets || 0) < MAX_RESETS && book.equity > 0) beginSession(state, book.equity, 'flat-cooldown');
+            if (canAutoReset(state, now) && book.equity > 0) beginSession(state, book.equity, 'flat-cooldown');
             else if (!state.resetCapLogged) { console.log('SESSION reset capped'); state.resetCapLogged = true; }
           }
         } else {
           state.flatSince = 0;
-          if (state.haltPhase === 'C' && (state.sessionResets || 0) < MAX_RESETS && book.equity > 0) {
+          if (state.haltPhase === 'C' && canAutoReset(state, now) && book.equity > 0) {
             beginSession(state, book.equity, 'hold-timeout inv=' + holdInvText(state, book));
           } else if (state.haltPhase === 'C' && !state.resetCapLogged) {
             console.log('SESSION reset capped');
             state.resetCapLogged = true;
           }
         }
+      } else if (state.halted === 'lifetime-dd') {
+        state.haltPhase = 'C';
+        if (!state.resetCapLogged) { console.log('SESSION reset capped'); state.resetCapLogged = true; }
       } else state.haltPhase = '';
       if (state.halted && !state.haltSwept) {
         await cancelOurs(book);
@@ -1936,15 +2350,56 @@ async function main() {
       try { await pollTransfers(state, book.positions); } catch (e) { console.warn('ledgers', e.message); }
       const quietBook = (Number(state.fillCount) || 0) === fillsBefore && !(state.transferThisLoop);
       const jump = unexplainedJump({ prev: state.prevEquity, next: book.equity, quiet: quietBook });
-      if (jump) {
-        console.log('EQUITY jump unexplained $' + jump.toFixed(2));
-        state.equityPauseUntil = now + 15 * 60 * 1000;
+      if (jump) console.log('EQUITY jump unexplained $' + jump.toFixed(2));
+      if (!state.bootJumpChecked) {
+        state.bootJumpChecked = true;
+        const boot = unexplainedJump({ prev: state.lastEquity, next: book.equity, quiet: true });
+        if (boot && !state.transferPending) state.transferPending = { usd: boot, since: now };
       }
-      if (state.transferThisLoop) state.equityPauseUntil = 0;
+      if (state.transferPending && !state.inferredOpen && now - Number(state.transferPending.since || now) >= XFER_PENDING_MS) {
+        const usd = Number(state.transferPending.usd);
+        if (usd) bookTransfer(state, { id: 'inferred-' + state.transferPending.since, type: usd < 0 ? 'withdrawal' : 'deposit', ccy: cfg.quote, amount: usd, usd, inferred: true, time: new Date().toISOString() });
+      }
       state.prevEquity = book.equity;
-      const pauseRisk = now < (state.equityPauseUntil || 0);
-      const addOk = !state.halted && !state.onRail && !pauseRisk;
-      const levGuess = VENUE === 'kraken' ? 5 : 1;
+      state.lastEquity = book.equity;
+      const addOk = !state.halted && !state.onRail;
+      if (state.halted) {
+        const eqNow = haltEquityNow(book.equity, state);
+        const notion = positionNotional(book);
+        const action = (state.halted === 'day-loss' || state.halted === 'lifetime-dd')
+          ? 'cap-exit'
+          : haltRiskAction({
+            notional: notion, equity: book.equity, haltEquity: state.haltEquity, equityNow: eqNow,
+            ageH: state.haltAt ? (now - state.haltAt) / 3600000 : 0,
+            maxLev: HALT_MAX_LEV, extraLossPct: HALT_EXTRA_LOSS, maxHoldH: HALT_MAX_HOLD_H,
+          });
+        state.haltAction = action;
+        const loss = (Number(state.haltEquity) || eqNow) - eqNow;
+        const pct = state.haltEquity > 0 ? loss / state.haltEquity * 100 : 0;
+        if (action !== state.haltActionLogged || now - (state.haltRiskLog || 0) > 3600 * 1000) {
+          console.log('HALT risk notional=$' + notion.toFixed(2) + ' lev=' + (eqNow > 0 ? (notion / eqNow).toFixed(2) : '-') + ' haltLoss=$' + loss.toFixed(2) + ' (' + pct.toFixed(1) + '%) action=' + action);
+          state.haltActionLogged = action;
+          state.haltRiskLog = now;
+        }
+      } else {
+        state.haltAction = '';
+        const ramp = state.levRamp || { step: 0, lev: RESET_LEV, since: now };
+        const since = Number(ramp.since) || now;
+        const trips = (state.recentTrips || []).filter((t) => t.t >= since);
+        const lost = trips.some((t) => Number(t.net) < 0);
+        const positive = trips.some((t) => Number(t.net) > 0) && !lost;
+        const next = leverageNotch({ step: ramp.step || 0, elapsedMs: now - since, positive, lost, maxLev: LEV_CAP || 10 });
+        if (lost) state.levRamp = { step: ramp.step || 0, lev: next.lev, since: now };
+        else if (next.advanced) state.levRamp = { step: next.step, lev: next.lev, since: now };
+        else state.levRamp = { step: ramp.step || 0, lev: next.lev, since };
+      }
+      dropStaleOrders(state, book);
+      for (const id of state.orphanCancel || []) {
+        console.log('ORPHAN cancel ' + id);
+        if (LIVE) { try { await ex.cancelOrder(id, VENUE); } catch { /* next loop */ } }
+      }
+      state.orphanCancel = [];
+      const levGuess = VENUE === 'kraken' ? ((state.levRamp && state.levRamp.lev) || RESET_LEV) : 1;
       const clip = clipFor(book.equity, levGuess);
       const chosen = await select(products, book, state);
       let dustAdded = 0;
@@ -1986,7 +2441,11 @@ async function main() {
         }
         const room = tradableBookTarget({ equity: book.equity, dust: dustNow, reserve, frac: BOOK_TARGET, askCover });
         budgetLeft = Math.min(Math.max(0, budgetLeft), room.bidRoom);
-        slotN = bookSlots({ budget: budgetLeft, maxPairs: MAX_PAIRS, venueMin: 1 });
+        slotN = bookSlotsScaled({ budget: budgetLeft, venueMin: 1, maxPairs: CB_MAX_PAIRS });
+        if (Math.abs(budgetLeft - (state.lastBudget ?? budgetLeft)) >= 1) {
+          console.log('BOOK replan budget=$' + budgetLeft.toFixed(2) + ' slots=' + slotN);
+        }
+        state.lastBudget = budgetLeft;
         console.log('BUDGET free=' + Number(book.cash || 0).toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetLeft.toFixed(2));
       }
       const budget = { left: Math.max(0, budgetLeft), slots: Math.max(1, slotN || 1), dustLeft: Math.max(0, budgetLeft) * 0.25 };
@@ -2056,9 +2515,20 @@ async function main() {
         console.log('PNL basis $' + gap.toFixed(2));
       }
       const inv = marked + (Number(state.markBasis) || 0) + (Number(state.ledgerPnl) || 0);
-      const equityAdj = book.equity - (state.startEquity || book.equity) - (state.transfers || 0);
-      const resid = pnlResidual({
+      const explained = (Number(state.fillCount) || 0) !== fillsBefore || !!state.transferThisLoop;
+      const rawResid = pnlResidual({
         equity: book.equity, startEquity: state.startEquity || book.equity, transfers: state.transfers || 0,
+        netMaker, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
+      });
+      const trig = pendingTrigger({ resid: rawResid, equity: book.equity, fillDelta: explained ? 1 : 0 });
+      if (trig && !state.transferPending && !state.inferredOpen) {
+        state.transferPending = { usd: trig, since: now };
+        console.log('TRANSFER pending $' + Number(trig).toFixed(2) + ' (resid, no fills)');
+      }
+      const pend = pendingOf(state);
+      const equityAdj = book.equity - pend - (state.startEquity || book.equity) - (state.transfers || 0);
+      const resid = pnlResidual({
+        equity: book.equity - pend, startEquity: state.startEquity || book.equity, transfers: state.transfers || 0,
         netMaker, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
       });
       if (book.equity > 0 && Math.abs(resid) > 0.02 && now - (state.reconLogAt || 0) > 3600 * 1000) {
@@ -2077,6 +2547,25 @@ async function main() {
       const bookFrac = book.equity > 0 ? openNotional / book.equity : 0;
       const exBase = Math.max(0, book.equity - dustUsd);
       const bookEx = exBase > 0 ? openNotional / exBase : 0;
+      const exDustEq = Math.max(0, book.equity - dustUsd);
+      if (exDustEq > 1 && book.cash > 0.5 * exDustEq) {
+        if (!state.idleSince) state.idleSince = now;
+        const mins = (now - state.idleSince) / 60000;
+        if (mins > 15 && now - (state.idleLogAt || 0) > 10 * 60 * 1000) {
+          state.idleLogAt = now;
+          const why = (state.lastRejects || []).slice(0, 4).join(',') || 'no-candidate';
+          console.log('IDLE free=$' + book.cash.toFixed(2) + ' (' + Math.round(100 * book.cash / exDustEq) + '%) for=' + mins.toFixed(0) + ' min reason=' + why);
+        }
+        if (mins > 60 && !(state.scanRelax && state.scanRelax.relaxed)) {
+          state.scanRelax = idleRelax({ idleMin: mins, minEdgeBps: MIN_EDGE, volFloor: MIN_VOL });
+          state.relaxStep = (Number(state.relaxStep) || 0) + 1;
+          console.log('SCAN relax step=' + state.relaxStep);
+        }
+      } else state.idleSince = 0;
+      if (bookEx >= 0.8) {
+        if (!state.bookOkSince) state.bookOkSince = now;
+        if (state.scanRelax && now - state.bookOkSince > 30 * 60 * 1000) state.scanRelax = null;
+      } else state.bookOkSince = 0;
       const tracked = adoptOrphans(state, book);
       if (VENUE !== 'kraken' && budgetLeft + 1e-9 < 1 && dustUsd >= 0.3 * Number(book.equity || 0) && now - (state.starvedLogAt || 0) > 3600 * 1000) {
         console.log('BUDGET starved dust=$' + dustUsd.toFixed(2));
@@ -2106,17 +2595,29 @@ async function main() {
           fees: state.fees || 0, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
           recon: resid, resid, fills: fillsN, fillsHour: fillsH,
           netMaker, pricePnl: inv, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
+          capitalBaseline: lifeBase(state), lifetimePct: lifetimePct({ equity: haltEquityNow(book.equity, state), baseline: lifeBase(state) }) * 100,
+          ordersSyncedAt: state.ordersSyncedAt || now,
         },
         rails: {
           ml: book.ml, liqDistPct: LIQ_MIN * 100, sessionLossPct: sessionLoss * 100,
           dayLossPct: dayLoss * 100, halted: state.halted || null, haltPhase: state.haltPhase || null,
-          haltAgeH: state.haltSince ? (now - state.haltSince) / 3600000 : 0, levBySymbol, onRail: !!state.onRail,
+          haltAgeH: (state.haltAt || state.haltSince) ? (now - (state.haltAt || state.haltSince)) / 3600000 : 0,
+          haltLoss: state.halted ? (Number(state.haltEquity) || 0) - haltEquityNow(book.equity, state) : 0,
+          levBySymbol, onRail: !!state.onRail, lifetimePct: lifetimePct({ equity: haltEquityNow(book.equity, state), baseline: lifeBase(state) }) * 100,
         },
-        bookFrac, dust, markets, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
+        bookFrac: (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? null : bookFrac,
+        bookStale: !!(state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP),
+        dust, markets, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
       });
       const line = markets.map((m) => m.symbol + ' q=' + m.q.toFixed(2) + ' half=' + m.halfBps + 'bp' + (m.halfSrc ? '/' + m.halfSrc : '') + ' sig=' + (m.sigmaBps == null ? 'warmup' : m.sigmaBps + 'bp') + ' floor=' + (m.floorTxt || '-')).join(' ');
-      const haltTxt = state.halted ? ' halt=' + state.halted + ' phase=' + (state.haltPhase || '-') + ' age=' + ((now - (state.haltSince || now)) / 3600000).toFixed(1) + 'h' : '';
-      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' resid=$' + resid.toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%) tracked=' + tracked + ' lev=' + (Object.values(levBySymbol)[0] || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + haltTxt + ' | ' + (line || 'no names'));
+      const ageH = ((now - (state.haltAt || state.haltSince || now)) / 3600000);
+      const hLoss = state.halted ? ((Number(state.haltEquity) || 0) - haltEquityNow(book.equity, state)) : 0;
+      const haltTxt = state.halted ? ' halt=' + state.halted + ' phase=' + (state.haltPhase || '-') + ' age=' + ageH.toFixed(1) + 'h haltLoss=$' + hLoss.toFixed(2) : '';
+      const xferTxt = state.transferBlind ? ' xfer=blind' : (pend ? ' xfer=pending $' + pend.toFixed(2) : '');
+      const idleTxt = state.idleSince && now - state.idleSince > 15 * 60 * 1000 ? ' idle=' + ((now - state.idleSince) / 60000).toFixed(0) + 'm' : '';
+      const lifeTxt = lifeText({ equity: haltEquityNow(book.equity, state), baseline: lifeBase(state) });
+      const bookLabel = (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? 'book=stale' : ('book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%)');
+      console.log('  AS eq=$' + book.equity.toFixed(2) + ' free=$' + book.cash.toFixed(2) + ' adj=$' + equityAdj.toFixed(2) + ' ' + lifeTxt + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' resid=$' + resid.toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' ' + bookLabel + ' tracked=' + tracked + ' lev=' + (Object.values(levBySymbol)[0] || (state.levRamp && state.levRamp.lev) || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + haltTxt + xferTxt + idleTxt + ' | ' + (line || 'no names'));
     } catch (e) {
       console.warn('as loop', e.message);
     }

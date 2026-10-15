@@ -85,6 +85,14 @@ export function loadCoinbaseSigningKey(cfg) {
   return { privateKey: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }), alg: 'EdDSA' };
 }
 
+// CDP signs the path that is actually requested, query string included.
+export function coinbaseJwtUri(method, reqPath) {
+  let path = String(reqPath || '');
+  path = path.replace(/^https:\/\/api\.coinbase\.com/i, '');
+  if (path && !path.startsWith('/')) path = '/' + path;
+  return String(method || 'GET').toUpperCase() + ' api.coinbase.com' + path;
+}
+
 export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {}) {
   const keyName = cfg.coinbaseApiKey.trim();
   const { privateKey, alg } = loadCoinbaseSigningKey(cfg);
@@ -92,8 +100,7 @@ export function coinbaseJwt(cfg, method, reqPath, { forWebsocket = false } = {})
   const header = { alg, typ: 'JWT', kid: keyName, nonce: crypto.randomBytes(16).toString('hex') };
   const payload = { sub: keyName, iss: 'cdp', aud: ['cdp_service'], nbf: now, exp: now + 120 };
   if (!forWebsocket && method && reqPath) {
-    const pathOnly = reqPath.split('?')[0];
-    const uriClaim = method + ' api.coinbase.com' + pathOnly;
+    const uriClaim = coinbaseJwtUri(method, reqPath);
     payload.uri = uriClaim; payload.uris = [uriClaim];
   }
   const data = base64url(JSON.stringify(header)) + '.' + base64url(JSON.stringify(payload));
