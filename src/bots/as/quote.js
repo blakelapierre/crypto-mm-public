@@ -1043,6 +1043,169 @@ export function lifeTradingText({ trading = 0, baseline = 0, resid = 0, pending 
   return s;
 }
 
+export function cashTransferJump({ prevCash = 0, nextCash = 0, fillDelta = 0, feeDelta = 0, orderHoldDelta = 0 } = {}) {
+  const prev = Number(prevCash) || 0;
+  if (!(prev > 0)) return 0;
+  if (Math.abs(Number(fillDelta) || 0) >= 0.05) return 0;
+  if (Math.abs(Number(feeDelta) || 0) >= 0.05) return 0;
+  const delta = (Number(nextCash) || 0) - prev;
+  const unexplained = delta + (Number(orderHoldDelta) || 0);
+  if (Math.abs(unexplained) + 1e-9 < 1) return 0;
+  return unexplained;
+}
+
+// Trading loss as a fraction of capital. Residual and pending are not inputs.
+export function drawdownPct({ trading = 0, capital = 0 } = {}) {
+  const c = Number(capital) || 0;
+  const t = Number(trading) || 0;
+  if (!(c > 0) || !(t < 0)) return 0;
+  return -t / c;
+}
+
+// Session, day, and lifetime each use trading / capital. resid and pending do not move them.
+export function lossHalts({
+  sessionTrading = 0, dayTrading = 0, lifeTrading = 0,
+  sessionCapital = 0, dayCapital = 0, lifeCapital = 0,
+  sessionLoss = 0.08, dayLoss = 0.12, lifetimeDd = 0.25,
+  resid = 0, pending = 0,
+} = {}) {
+  const ignored = (Number(resid) || 0) * 0 + (Number(pending) || 0) * 0;
+  const session = drawdownPct({ trading: sessionTrading, capital: sessionCapital }) + ignored;
+  const day = drawdownPct({ trading: dayTrading, capital: dayCapital });
+  const lifetime = drawdownPct({ trading: lifeTrading, capital: lifeCapital });
+  return {
+    session, day, lifetime,
+    sessionHalt: session + 1e-12 >= Math.abs(Number(sessionLoss) || 0),
+    dayHalt: day + 1e-12 >= Math.abs(Number(dayLoss) || 0),
+    lifetimeHalt: lifetime + 1e-12 >= Math.abs(Number(lifetimeDd) || 0),
+  };
+}
+
+export function displayCapital(state) {
+  const s = state || {};
+  const lifeT = Number(s.lifetimeTransfers) || 0;
+  const origin = Number(s.originEquity) > 0 ? Number(s.originEquity) : (Number(s.capitalBaseline) > 0 ? Number(s.capitalBaseline) - lifeT : 0);
+  const base = Number(s.capitalBaseline) > 0 ? Number(s.capitalBaseline) : origin + lifeT;
+  return base - (Number(s.pendingShift) || 0);
+}
+
+// One shift for every stored baseline. Caller decides booked vs pending.
+export function applyCapitalShift(state, usd, why) {
+  const n = Number(usd) || 0;
+  const s = { ...(state || {}) };
+  if (!n) return s;
+  if (Number(s.startEquity) > 0) s.startEquity = Number(s.startEquity) + n;
+  const prevLife = Number(s.lifetimeTransfers) || 0;
+  const origin = Number(s.originEquity) > 0
+    ? Number(s.originEquity)
+    : (Number(s.capitalBaseline) > 0 ? Number(s.capitalBaseline) - prevLife : 0);
+  if (origin > 0) s.originEquity = origin;
+  s.lifetimeTransfers = prevLife + n;
+  s.capitalBaseline = origin + s.lifetimeTransfers;
+  s.equityMarks = (s.equityMarks || []).map((m) => ({ t: m.t, eq: (Number(m.eq) || 0) + n }));
+  if (Number(s.haltEquity) > 0) s.haltEquity = Number(s.haltEquity) + n;
+  s.resetBaselines = (s.resetBaselines || []).map((b) => (typeof b === 'number' ? b + n : { ...b, eq: (Number(b.eq) || 0) + n }));
+  if (Number(s.prevEquity) > 0) s.prevEquity = Number(s.prevEquity) + n;
+  if (Number(s.lastEquity) > 0) s.lastEquity = Number(s.lastEquity) + n;
+  s.capitalShiftWhy = why || '';
+  return s;
+}
+
+export function openPending(state, usd, source, now) {
+  const s = { ...(state || {}) };
+  const n = Number(usd) || 0;
+  if (!n || s.transferPending) return { state: s, opened: false, id: '' };
+  const id = String(source || 'jump') + '-' + (Number(now) || Date.now());
+  const next = applyCapitalShift(s, n, 'pending');
+  next.transferPending = { usd: n, at: Number(now) || Date.now(), since: Number(now) || Date.now(), source: source || 'jump', id };
+  next.pendingShift = (Number(s.pendingShift) || 0) + n;
+  next.skipHalt = true;
+  return { state: next, opened: true, id };
+}
+
+export function settleTransfer(state, rec) {
+  const s = {
+    ...(state || {}),
+    seenLedgers: { ...((state && state.seenLedgers) || {}) },
+    equityMarks: ((state && state.equityMarks) || []).map((m) => ({ ...m })),
+    resetBaselines: ((state && state.resetBaselines) || []).slice(),
+  };
+  const id = String((rec && rec.id) || '');
+  const usd = Number(rec && rec.usd) || 0;
+  if (!id || !usd || s.seenLedgers[id]) return { state: s, booked: false };
+  let shift = usd;
+  const pending = s.transferPending;
+  if (pending && !rec.inferred) {
+    const tol = Math.max(0.02, Math.abs(Number(pending.usd) || 0) * 0.02);
+    if (Math.abs(usd - Number(pending.usd)) <= tol) {
+      shift = usd - Number(pending.usd);
+      s.pendingShift = (Number(s.pendingShift) || 0) - Number(pending.usd);
+      s.transferPending = null;
+      s.replacedPending = pending.id || true;
+    }
+  }
+  const inf = s.inferredOpen;
+  if (inf && !rec.inferred) {
+    const tol = Math.max(0.02, Math.abs(Number(inf.usd) || 0) * 0.02);
+    if (Math.abs(usd - Number(inf.usd)) <= tol) {
+      shift -= Number(inf.usd);
+      s.transfers = (Number(s.transfers) || 0) - Number(inf.usd);
+      s.inferredOpen = null;
+    }
+  }
+  let next = shift ? applyCapitalShift(s, shift, (rec && rec.source) || 'book') : s;
+  next.transfers = (Number(next.transfers) || 0) + usd;
+  next.transferThisLoop = (Number(next.transferThisLoop) || 0) + usd;
+  next.seenLedgers = { ...(next.seenLedgers || {}), [id]: true };
+  if (rec && rec.inferred) {
+    next.inferredOpen = { id, usd };
+    next.transferPending = null;
+  }
+  return { state: next, booked: true, shift };
+}
+
+export function clearPendingState(state, id) {
+  const s = { ...(state || {}) };
+  const p = s.transferPending;
+  if (!p) return { state: s, result: 'no-pending' };
+  if (id && p.id && String(p.id) !== String(id)) return { state: s, result: 'id-mismatch' };
+  const usd = Number(p.usd) || 0;
+  const next = usd ? applyCapitalShift(s, -usd, 'pending-reverse') : s;
+  next.pendingShift = (Number(s.pendingShift) || 0) - usd;
+  next.transferPending = null;
+  return { state: next, result: 'cleared', usd };
+}
+
+export function controlResume(state) {
+  const prev = (state && state.halted) || null;
+  return {
+    prev,
+    state: {
+      ...(state || {}),
+      halted: null,
+      haltSwept: false,
+      haltSince: 0,
+      haltAt: 0,
+      haltPhase: '',
+      haltAction: '',
+      haltEquity: 0,
+      haltNotional: 0,
+    },
+  };
+}
+
+export function statusMoney({ equity = 0, capital = 0, trading = 0, resid = 0, pending = 0 } = {}) {
+  const c = Number(capital) || 0;
+  const t = Number(trading) || 0;
+  const p = c > 0 ? (t / c) * 100 : 0;
+  const sign = p >= 0 ? '+' : '';
+  return 'eq=$' + Number(equity || 0).toFixed(2)
+    + ' capital=$' + c.toFixed(2)
+    + ' trading=$' + t.toFixed(2) + ' (' + sign + p.toFixed(1) + '%)'
+    + ' resid=$' + Number(resid || 0).toFixed(2)
+    + ' pending=$' + Number(pending || 0).toFixed(2);
+}
+
 export function dustCanExit({ qty = 0, mid = 0, minSize = 0, minNotional = 1 } = {}) {
   const q = Number(qty) || 0;
   const m = Number(mid) || 0;

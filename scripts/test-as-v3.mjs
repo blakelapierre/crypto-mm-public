@@ -65,8 +65,9 @@ check(Math.abs(unwindAsk({ bid: 10, ask: 10.2, tick: 0.01, ageMs: 2 * 3600 * 100
 check(sentHalfBps(100, 99.7, 100.4) === 40, 'logged half is the distance actually sent');
 
 const bot = fs.readFileSync(new URL('../src/bots/as/index.js', import.meta.url), 'utf8');
+const quote = fs.readFileSync(new URL('../src/bots/as/quote.js', import.meta.url), 'utf8');
 check(bot.includes('MIN_HALF_BPS'), 'min half env is read');
-check(bot.includes('resid=$'), 'status line prints resid');
+check(bot.includes('resid=$') || (bot.includes('statusMoney') && quote.includes('resid=$')), 'status line prints resid');
 check(bot.includes('SKIP ') && bot.includes('budget'), 'a buy that does not fit is skipped');
 check(bot.includes('GATE '), 'suppressed quotes are logged');
 check(bot.includes('AS_MAX_HOLD_MIN'), 'max hold is configurable');

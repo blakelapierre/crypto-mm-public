@@ -547,7 +547,7 @@ export function createExchange(cfg, orderRegistry) {
       try {
         const open = await coinbaseRequest(cfg, 'GET', '/api/v3/brokerage/orders/historical/batch?order_status=OPEN&limit=100');
         return open.orders || [];
-      } catch (e) { console.warn('list open', e.message); return []; }
+      } catch (e) { console.warn('list open', e.message); return null; }
     },
     async cancelAll(venue = name) {
       clearReservations();

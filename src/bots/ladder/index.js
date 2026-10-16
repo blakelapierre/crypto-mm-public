@@ -283,7 +283,7 @@ async function runMm(mmAlloc, orderSizeUsd, productMap) {
               watch.set(a.pair, { ...a, leftAt: now });
               try { await ex.cancelPair(a.pair); } catch { /* ignore */ }
               if (ex.listOpen) {
-                const still = await ex.listOpen();
+                const still = (await ex.listOpen()) || [];
                 for (const o of still) {
                   if (o.product_id !== a.pair || !o.order_id) continue;
                   console.log('  CANCEL LEFTOVER ' + a.symbol + ' ' + o.order_id);
