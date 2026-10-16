@@ -813,7 +813,7 @@ export function resetAllowed({ resets = [], now = 0, max = 1, windowMs = 24 * 36
   return recent.length < Math.max(0, Number(max) || 0);
 }
 
-export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost = false, maxLev = 5, stepMs = 2 * 3600 * 1000, notches = null } = {}) {
+export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost = false, maxLev = 5, stepMs = 2 * 3600 * 1000, notches = null, idleMs = 0, fills = null, idleStepMs = 6 * 3600 * 1000 } = {}) {
   const cap = Math.max(2, Number(maxLev) || 5);
   const ladder = (notches && notches.length ? notches : [2, 3, 5, cap]).map((n) => Math.min(cap, Number(n) || 2));
   if (ladder[ladder.length - 1] < cap) ladder.push(cap);
@@ -822,6 +822,11 @@ export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost 
   if (positive && Number(elapsedMs) + 1e-9 >= Number(stepMs) && i + 1 < ladder.length) {
     i += 1;
     return { step: i, lev: ladder[i], advanced: true };
+  }
+  // One notch after 6h with no fills and no loss. A later idle hour does not climb again.
+  if (fills != null && Number(fills) === 0 && i === 0 && i + 1 < ladder.length && Number(idleMs) + 1e-9 >= Number(idleStepMs)) {
+    i += 1;
+    return { step: i, lev: ladder[i], advanced: true, idle: true };
   }
   return { step: i, lev: ladder[i], advanced: false };
 }
@@ -963,21 +968,30 @@ export function idleRelax({ idleMin = 0, minEdgeBps = 8, volFloor = 0 } = {}) {
   };
 }
 
-// Opening notional at ramp leverage: margin level stays at `resume`, and the book stays inside bookFrac.
-export function krakenNotionalRoom({ equity = 0, lev = 2, resume = 350, usedMargin = 0, bookFrac = 0.9 } = {}) {
+// Opening notional. A stop (margin-level percent) targets stop×1.2 after the fill:
+// that is the largest size that still holds the floor. resume is only for callers
+// that have not moved to the stop. Spot (plain pair, 1x) uses the book fraction.
+export function krakenNotionalRoom({ equity = 0, lev = 2, resume = 350, stop = 0, usedMargin = 0, bookFrac = 0.9, spot = false } = {}) {
   const e = Math.max(0, Number(equity) || 0);
   const L = Math.max(1, Number(lev) || 1);
-  const r = (Number(resume) > 0 ? Number(resume) : 350) / 100;
-  const marginRoom = Math.max(0, e / r - Math.max(0, Number(usedMargin) || 0));
+  const used = Math.max(0, Number(usedMargin) || 0);
+  if (spot) {
+    const notional = Math.max(0, e * Math.max(0, Number(bookFrac) || 0));
+    return { marginRoom: e, notional, targetPct: 0, spot: true };
+  }
+  const stopN = Number(stop);
+  const targetPct = stopN > 0 ? stopN * 1.2 : (Number(resume) > 0 ? Number(resume) : 350);
+  const r = targetPct / 100;
+  const marginRoom = r > 0 ? Math.max(0, e / r - used) : 0;
   const bookCap = e * L * Math.max(0, Number(bookFrac) || 0);
-  return { marginRoom, notional: Math.max(0, Math.min(marginRoom * L, bookCap)) };
+  return { marginRoom, notional: Math.max(0, Math.min(marginRoom * L, bookCap)), targetPct };
 }
 
 // Give room to the sides that clear the venue minimum, best expected edge first.
 // A side that cannot fit releases its share. If none fit, the best side may take exactly the minimum.
 // Reasons are min-size, margin, or loss-cap. Never "budget" (that label is Coinbase cash only).
-export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, usedMargin = 0, bookFrac = 0.9, sides = [] } = {}) {
-  const room = krakenNotionalRoom({ equity, lev, resume, usedMargin, bookFrac });
+export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, stop = 0, usedMargin = 0, bookFrac = 0.9, spot = false, sides = [] } = {}) {
+  const room = krakenNotionalRoom({ equity, lev, resume, stop, usedMargin, bookFrac, spot });
   const list = (sides || []).map((s) => ({
     id: s.id,
     sym: s.sym,
@@ -1025,6 +1039,13 @@ export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, usedMargi
       result[one.i].fit = one.s.min;
       result[one.i].reason = '';
     }
+  }
+  for (let i = 0; i < result.length; i++) {
+    if (result[i].fit > 0 || result[i].reason) continue;
+    const s = list[i];
+    if (s.min > 0 && !(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
+    else if (s.min > 0 && !(room.notional + 1e-9 >= s.min)) result[i].reason = 'margin';
+    else result[i].reason = 'room-used';
   }
   return { room: room.notional, marginRoom: room.marginRoom, sides: result };
 }
@@ -1194,16 +1215,56 @@ export function controlResume(state) {
   };
 }
 
-export function statusMoney({ equity = 0, capital = 0, trading = 0, resid = 0, pending = 0 } = {}) {
+export function accountVsCapital({ equity = 0, capital = 0, pending = 0 } = {}) {
+  return (Number(equity) || 0) - (Number(pending) || 0) - (Number(capital) || 0);
+}
+
+export function statusMoney({ equity = 0, capital = 0, trading = 0, resid = 0, pending = 0, stopPct = 0 } = {}) {
   const c = Number(capital) || 0;
   const t = Number(trading) || 0;
   const p = c > 0 ? (t / c) * 100 : 0;
   const sign = p >= 0 ? '+' : '';
-  return 'eq=$' + Number(equity || 0).toFixed(2)
+  let s = 'eq=$' + Number(equity || 0).toFixed(2)
     + ' capital=$' + c.toFixed(2)
     + ' trading=$' + t.toFixed(2) + ' (' + sign + p.toFixed(1) + '%)'
     + ' resid=$' + Number(resid || 0).toFixed(2)
     + ' pending=$' + Number(pending || 0).toFixed(2);
+  const stop = Number(stopPct) || 0;
+  if (stop > 0 && c > 0) {
+    const dd = Math.max(0, -t / c);
+    const dist = (stop - dd) * 100;
+    s += ' stopDist=' + dist.toFixed(1) + 'pp';
+  }
+  return s;
+}
+
+const PAIR_TTL_MS = 24 * 3600 * 1000;
+
+// marginOk only after a cached probe. Public leverage is a reason to probe, not a reason to send :BTNL.
+export function pairQuotePlan({ altname = '', symbol = '', leverageBuy = null, leverageSell = null, probe = null, denied = null, now = 0 } = {}) {
+  const alt = altname || ((symbol || 'PAIR') + 'USD');
+  const spotPair = alt;
+  const btnl = alt + ':BTNL';
+  const t = Number(now) || 0;
+  if (denied && Number(denied.until) > t) {
+    return { marginOk: false, longOnly: true, orderPair: spotPair, needsProbe: false, deniedMargin: true, reason: denied.reason || 'unknown-pair' };
+  }
+  const both = Array.isArray(leverageBuy) && leverageBuy.length > 0 && Array.isArray(leverageSell) && leverageSell.length > 0;
+  if (probe && Number(probe.at) > 0 && t - Number(probe.at) < PAIR_TTL_MS) {
+    if (probe.marginOk) {
+      return { marginOk: true, longOnly: false, orderPair: probe.orderPair || btnl, needsProbe: false, deniedMargin: false, reason: '' };
+    }
+    return { marginOk: false, longOnly: true, orderPair: spotPair, needsProbe: false, deniedMargin: false, reason: probe.reason || 'unknown-pair' };
+  }
+  if (both) return { marginOk: false, longOnly: false, orderPair: btnl, needsProbe: true, deniedMargin: false, reason: '' };
+  return { marginOk: false, longOnly: true, orderPair: spotPair, needsProbe: false, deniedMargin: false, reason: '' };
+}
+
+export function minAboveRoom({ ordermin = 0, price = 0, quoteMin = 0, room = 0 } = {}) {
+  const px = Number(price) || 0;
+  const min = Math.max(Number(quoteMin) || 0, (Number(ordermin) || 0) * px);
+  const r = Number(room) || 0;
+  return { min, room: r, reject: r > 0 && min > r + 1e-9 };
 }
 
 export function dustCanExit({ qty = 0, mid = 0, minSize = 0, minNotional = 1 } = {}) {

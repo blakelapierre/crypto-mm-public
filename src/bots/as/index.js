@@ -11,7 +11,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier, feeTierSnap } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney, accountVsCapital, pairQuotePlan, minAboveRoom } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -77,6 +77,7 @@ const BOT_NAME = process.env.BOT || 'as';
 let makerFeeBps = FEE_BPS;
 let feeSource = 'default';
 const statePath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.json');
+const pairCachePath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.pairs.json');
 const lockPath = path.join(process.cwd(), 'data', 'as-' + VENUE + '.lock');
 const fillPath = path.join(process.cwd(), 'logs', 'fills-' + BOT_NAME + '.jsonl');
 const ledgerPath = path.join(process.cwd(), 'logs', 'ledger-' + BOT_NAME + '.jsonl');
@@ -138,7 +139,100 @@ function symbolOf(pair) {
 }
 function orderPairOf(rec, symbol) {
   if (VENUE === 'coinbase') return rec.pair;
-  return (rec.altname || symbol + 'USD') + ':BTNL';
+  if (rec && rec.orderPair) return rec.orderPair;
+  const alt = (rec && rec.altname) || ((symbol || '') + 'USD');
+  if (rec && rec.marginOk) return alt + ':BTNL';
+  return alt;
+}
+function heldOrderPair(rec, sym, pos) {
+  const raw = pos && pos.venuePair ? String(pos.venuePair) : '';
+  if (raw) return raw;
+  const alt = (rec && rec.altname) || (sym + 'USD');
+  if (pos && (Number(pos.lev) >= 2 || Number(pos.margin) > 0)) return alt + ':BTNL';
+  return alt;
+}
+function loadPairCache() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(pairCachePath, 'utf8'));
+    raw.probes = raw.probes || {};
+    raw.deny = raw.deny || {};
+    return raw;
+  } catch {
+    return { probes: {}, deny: {} };
+  }
+}
+function savePairCache(cache) {
+  fs.mkdirSync(path.dirname(pairCachePath), { recursive: true });
+  fs.writeFileSync(pairCachePath, JSON.stringify(cache));
+}
+function noteUnknownPair(row) {
+  const cache = loadPairCache();
+  const now = Date.now();
+  const sym = row.symbol;
+  const alt = (row && row.altname) || (sym + 'USD');
+  cache.probes[sym] = { marginOk: false, orderPair: alt, at: now, reason: 'unknown-pair' };
+  cache.deny[sym] = { until: now + 24 * 3600 * 1000, reason: 'unknown-pair', orderPair: (row && row.orderPair) || (alt + ':BTNL') };
+  savePairCache(cache);
+  console.log('PAIR deny ' + sym + ' reason=unknown-pair');
+}
+function logMinRoom(state, sym, min, room) {
+  state.minRoomLog = state.minRoomLog || {};
+  const now = Date.now();
+  if (now - (state.minRoomLog[sym] || 0) < 3600 * 1000) return;
+  state.minRoomLog[sym] = now;
+  console.log('SCAN reject ' + sym + ' reason=min-gt-room min=$' + Number(min).toFixed(2) + ' room=$' + Number(room).toFixed(2));
+  state.lastRejects = state.lastRejects || [];
+  const tag = sym + ':min-gt-room';
+  if (!state.lastRejects.includes(tag)) state.lastRejects.unshift(tag);
+  state.lastRejects = state.lastRejects.slice(0, 12);
+}
+async function probeMarginPair(row) {
+  const alt = row.altname || (row.symbol + 'USD');
+  const orderPair = alt + ':BTNL';
+  const mid = Number(row.mid) || 0;
+  const px = formatPrice(mid > 0 ? mid * 0.5 : 0.01, row.pairDecimals ?? 8);
+  const vol = Math.max(Number(row.ordermin) || 0, mid > 0 ? 1 / mid : 0);
+  try {
+    await krakenOnce('AddOrder', {
+      pair: orderPair, type: 'buy', ordertype: 'limit', leverage: '2', oflags: 'post', validate: true,
+      price: String(px), volume: String(vol || 1),
+    });
+    return { marginOk: true, orderPair, reason: '' };
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (/unknown asset pair/i.test(msg)) return { marginOk: false, orderPair: alt, reason: 'unknown-pair' };
+    if (/nonce|rate|timeout|unavailable|EService|EGeneral/i.test(msg)) return { marginOk: false, retry: true, reason: '' };
+    return { marginOk: true, orderPair, reason: '' };
+  }
+}
+async function confirmMarginPairs(rows) {
+  const cache = loadPairCache();
+  const now = Date.now();
+  const out = [];
+  let dirty = false;
+  for (const row of rows || []) {
+    if (out.length >= MAX_PAIRS) break;
+    if (row.marginOk && !row.needsProbe) { out.push(row); continue; }
+    if (!row.needsProbe) continue;
+    const probe = await probeMarginPair(row);
+    if (probe.retry) continue;
+    dirty = true;
+    if (probe.marginOk) {
+      cache.probes[row.symbol] = { marginOk: true, orderPair: probe.orderPair, at: now };
+      row.marginOk = true;
+      row.longOnly = false;
+      row.needsProbe = false;
+      row.orderPair = probe.orderPair;
+      out.push(row);
+    } else {
+      const alt = row.altname || (row.symbol + 'USD');
+      cache.probes[row.symbol] = { marginOk: false, orderPair: alt, at: now, reason: probe.reason || 'unknown-pair' };
+      cache.deny[row.symbol] = { until: now + 24 * 3600 * 1000, reason: probe.reason || 'unknown-pair', orderPair: alt + ':BTNL' };
+      console.log('PAIR deny ' + row.symbol + ' reason=' + (probe.reason || 'unknown-pair'));
+    }
+  }
+  if (dirty) savePairCache(cache);
+  return out;
 }
 function median(xs) {
   if (!xs || !xs.length) return 0;
@@ -813,6 +907,7 @@ async function krakenBook(state) {
     else { row.long += vol; row.longCost += cost; }
     row.margin += margin;
     row.value += value;
+    row.venuePair = String(p.pair || row.venuePair || '');
     upnl += Number(p.net || 0);
     positions[sym] = row;
   }
@@ -1206,7 +1301,7 @@ async function select(products, book, state) {
   state.dustWatch = [];
   for (const [sym, pos] of Object.entries(book.positions || {})) {
     if (!(Number(pos.long) > 0 || Number(pos.short) > 0)) continue;
-    if (state.skip && state.skip[sym]) continue;
+    if (VENUE !== 'kraken' && state.skip && state.skip[sym]) continue;
     const rec = products[sym];
     if (!rec) continue;
     if (VENUE !== 'kraken') {
@@ -1227,15 +1322,48 @@ async function select(products, book, state) {
       }
       if (state.belowMin) delete state.belowMin[sym];
     }
-    held.push({ ...rec, symbol: sym, orderPair: orderPairOf(rec, sym) });
+    const op = VENUE === 'kraken' ? heldOrderPair(rec, sym, pos) : orderPairOf(rec, sym);
+    const marginHeld = VENUE === 'kraken' && /:BTNL$/i.test(op);
+    held.push({ ...rec, symbol: sym, orderPair: op, marginOk: marginHeld, longOnly: VENUE === 'kraken' && !marginHeld });
   }
   const scan = await pullVenueScan(VENUE);
   const rank = new Map(((scan && scan.ranked) || []).map((r, i) => [String(r.symbol || r.pair || '').toUpperCase(), i]));
+  let spotMode = false;
   const candidates = [];
-  for (const [symbol, rec] of Object.entries(products)) {
-    if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) continue;
-    if (state.minSizeSkip && Number(state.minSizeSkip[symbol]) > Date.now()) continue;
-    candidates.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol), scan: rank.has(symbol) ? rank.get(symbol) : 999 });
+  if (VENUE === 'kraken') {
+    const cache = loadPairCache();
+    const nowPick = Date.now();
+    const margin = [];
+    const spot = [];
+    for (const [symbol, rec] of Object.entries(products)) {
+      if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol)) continue;
+      if (state.minSizeSkip && Number(state.minSizeSkip[symbol]) > nowPick) continue;
+      const plan = pairQuotePlan({
+        altname: rec.altname, symbol,
+        leverageBuy: rec.leverageBuy, leverageSell: rec.leverageSell,
+        probe: cache.probes && cache.probes[symbol],
+        denied: cache.deny && cache.deny[symbol],
+        now: nowPick,
+      });
+      const row = {
+        ...rec, symbol, orderPair: plan.orderPair, marginOk: !!plan.marginOk, longOnly: !!plan.longOnly,
+        needsProbe: !!plan.needsProbe, scan: rank.has(symbol) ? rank.get(symbol) : 999,
+      };
+      if ((plan.marginOk || plan.needsProbe) && !plan.deniedMargin) margin.push(row);
+      else spot.push(row);
+    }
+    spot.sort((a, b) => a.scan - b.scan || String(a.symbol).localeCompare(String(b.symbol)));
+    if (margin.length) candidates.push(...margin);
+    else {
+      spotMode = true;
+      candidates.push(...spot.slice(0, Math.max(SCAN_EVAL_N, 40)));
+    }
+  } else {
+    for (const [symbol, rec] of Object.entries(products)) {
+      if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol) || (state.skip && state.skip[symbol])) continue;
+      if (state.minSizeSkip && Number(state.minSizeSkip[symbol]) > Date.now()) continue;
+      candidates.push({ ...rec, symbol, orderPair: orderPairOf(rec, symbol), scan: rank.has(symbol) ? rank.get(symbol) : 999 });
+    }
   }
   const dustRows = (state.dustWatch || []).filter((d) => !candidates.some((c) => c.symbol === d.symbol) && !held.some((h) => h.symbol === d.symbol));
   const books = await sampleBooks(candidates.concat(dustRows));
@@ -1244,20 +1372,35 @@ async function select(products, book, state) {
     const b = books.get(row.symbol);
     if (b) measured.push(spreadRow(state, row, b));
   }
+  let rankedRows = measured;
+  if (VENUE === 'kraken') {
+    const useLev = spotMode ? 1 : ((state.levRamp && Number(state.levRamp.lev) > 0) ? Number(state.levRamp.lev) : 2);
+    const roomN = krakenNotionalRoom({
+      equity: book.equity, lev: useLev, stop: spotMode ? 0 : ML_STOP, spot: spotMode, bookFrac: BOOK_TARGET,
+    }).notional;
+    const keep = [];
+    for (const row of measured) {
+      const g = minAboveRoom({ ordermin: row.ordermin || row.baseMin, price: row.mid, quoteMin: row.quoteMin, room: roomN });
+      if (g.reject) { logMinRoom(state, row.symbol, g.min, roomN); continue; }
+      keep.push(row);
+    }
+    rankedRows = keep;
+  }
   const scanTs = Number(scan && (scan.ts || scan.at)) || 0;
   const scanFresh = scanTs > 0 && Date.now() - scanTs < 2 * 3600 * 1000 && ((scan && scan.ranked) || []).length > 0;
   const relax = state.scanRelax || {};
   const minEdge = MIN_EDGE;
   const minVol = Number(relax.volFloor) > 0 ? Number(relax.volFloor) : MIN_VOL;
-  if (VENUE !== 'kraken' && measured.length && !measured.some((r) => Number(r.vol24) > 0)) {
-    for (const r of measured) r.vol24 = minVol;
+  if (VENUE !== 'kraken' && rankedRows.length && !rankedRows.some((r) => Number(r.vol24) > 0)) {
+    for (const r of rankedRows) r.vol24 = minVol;
   }
-  const decision = rankByExpectedEdge(measured, {
+  const decision = rankByExpectedEdge(rankedRows, {
     feeBps: makerFeeBps, minEdgeBps: minEdge, minVol, maxSpreadBps: MAX_SPREAD * 10000,
-    maxPairs: VENUE === 'kraken' ? MAX_PAIRS : CB_MAX_PAIRS, k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
+    maxPairs: VENUE === 'kraken' ? (spotMode ? MAX_PAIRS : Math.max(MAX_PAIRS * 6, 8)) : CB_MAX_PAIRS,
+    k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
   });
   if (!decision.reasons) {
-    decision.reasons = measured
+    decision.reasons = rankedRows
       .slice()
       .sort((a, b) => (Number(b.vol24) || 0) - (Number(a.vol24) || 0))
       .map((row) => scanReason(row, makerFeeBps, minEdge, minVol, MAX_SPREAD * 10000))
@@ -1265,9 +1408,55 @@ async function select(products, book, state) {
   }
   decision.raw = Object.keys(products || {}).length;
   decision.afterProducts = candidates.length;
-  decision.afterQuote = measured.length;
+  decision.afterQuote = rankedRows.length;
   decision.source = scanFresh ? 'file' : 'api';
   logScan(state, decision);
+  if (VENUE === 'kraken' && !spotMode) {
+    const confirmed = await confirmMarginPairs(decision.picked);
+    if (confirmed.length) decision.picked = confirmed;
+    else {
+      const cache = loadPairCache();
+      const nowPick = Date.now();
+      const spot = [];
+      for (const [symbol, rec] of Object.entries(products)) {
+        if (held.some((r) => r.symbol === symbol) || book.foreign.has(symbol)) continue;
+        if (state.minSizeSkip && Number(state.minSizeSkip[symbol]) > nowPick) continue;
+        const plan = pairQuotePlan({
+          altname: rec.altname, symbol,
+          leverageBuy: rec.leverageBuy, leverageSell: rec.leverageSell,
+          probe: cache.probes && cache.probes[symbol],
+          denied: cache.deny && cache.deny[symbol],
+          now: nowPick,
+        });
+        if (plan.marginOk || plan.needsProbe) continue;
+        const alt = rec.altname || (symbol + 'USD');
+        spot.push({
+          ...rec, symbol, orderPair: alt, marginOk: false, longOnly: true, needsProbe: false,
+          scan: rank.has(symbol) ? rank.get(symbol) : 999,
+        });
+      }
+      spot.sort((a, b) => a.scan - b.scan || String(a.symbol).localeCompare(String(b.symbol)));
+      const spotPool = spot.slice(0, Math.max(SCAN_EVAL_N, 40));
+      const spotBooks = await sampleBooks(spotPool);
+      const spotMeasured = [];
+      for (const row of spotPool) {
+        const b = spotBooks.get(row.symbol);
+        if (b) spotMeasured.push(spreadRow(state, row, b));
+      }
+      const roomN = krakenNotionalRoom({ equity: book.equity, lev: 1, spot: true, bookFrac: BOOK_TARGET }).notional;
+      const keep = [];
+      for (const row of spotMeasured) {
+        const g = minAboveRoom({ ordermin: row.ordermin || row.baseMin, price: row.mid, quoteMin: row.quoteMin, room: roomN });
+        if (g.reject) { logMinRoom(state, row.symbol, g.min, roomN); continue; }
+        keep.push(row);
+      }
+      const spotDecision = rankByExpectedEdge(keep, {
+        feeBps: makerFeeBps, minEdgeBps: minEdge, minVol, maxSpreadBps: MAX_SPREAD * 10000,
+        maxPairs: MAX_PAIRS, k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
+      });
+      decision.picked = spotDecision.picked || [];
+    }
+  }
   const dustMeasured = [];
   for (const row of dustRows) {
     const b = books.get(row.symbol);
@@ -1386,7 +1575,8 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
       const key = row.symbol + ':' + side;
       state.stepAway[key] = (Number(state.stepAway[key]) || 0) + 1;
     }
-    if (/unknown asset pair/i.test(String(why))) { state.skip = state.skip || {}; state.skip[row.symbol] = true; }
+    const unknownPair = /unknown asset pair/i.test(String(why));
+    if (unknownPair) noteUnknownPair(row);
     if (reason === 'below-min') {
       state.belowMinLog = state.belowMinLog || {};
       if (Date.now() - (state.belowMinLog[row.symbol + ':' + side] || 0) > 3600 * 1000) {
@@ -1394,7 +1584,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
         console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
       }
     } else console.log('  REJECT ' + row.symbol + ' ' + side + ' ' + why);
-    if (reason !== 'below-min' && reason !== 'too-far') armBackoff(state, row.symbol, reason);
+    if (!unknownPair && reason !== 'below-min' && reason !== 'too-far') armBackoff(state, row.symbol, reason);
     if (side === 'buy') slot.bid = null; else slot.ask = null;
   }
   state.orders[row.symbol] = slot;
@@ -1679,8 +1869,9 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   }
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
+  const spotOpen = VENUE === 'kraken' && (!row.marginOk || !!row.longOnly);
   let lev = 0;
-  if (VENUE === 'kraken') {
+  if (VENUE === 'kraken' && row.marginOk && !row.longOnly) {
     const keyB = row.symbol + ':buy';
     const keyS = row.symbol + ':sell';
     state.levOk = state.levOk || {};
@@ -1746,14 +1937,15 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       if (addOk && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
       if (budget && !row.dustBid) budget.slots = Math.max(1, slots - 1);
     } else if (!reduce) {
-      const useLev = (state.levRamp && Number(state.levRamp.lev) > 0) ? Number(state.levRamp.lev) : (lev || 2);
+      const useLev = spotOpen ? 1 : ((state.levRamp && Number(state.levRamp.lev) > 0) ? Number(state.levRamp.lev) : (lev || 2));
       const room = krakenNotionalRoom({
-        equity: book.equity, lev: useLev, resume: ML_RESUME,
+        equity: book.equity, lev: useLev, stop: ML_STOP,
         usedMargin: rail.margin ? rail.margin.used : 0, bookFrac: BOOK_TARGET,
+        spot: spotOpen,
       });
       const sz = room.notional > 0 && mid > 0 ? room.notional / mid : 0;
       if (q < MAX_Q && sz > 0) buySz = formatVolume(sz, lot);
-      if (q > -MAX_Q && row.shortable !== false && sz > 0) sellSz = formatVolume(sz, lot);
+      if (!spotOpen && q > -MAX_Q && row.shortable !== false && sz > 0) sellSz = formatVolume(sz, lot);
     }
   }
   if (blockSell) sellSz = 0;
@@ -1777,6 +1969,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (opensRisk(Number(pos.long || 0) - Number(pos.short || 0), 'buy')) buyLev = Math.min(buyLev || rampLev, rampLev);
     if (opensRisk(Number(pos.long || 0) - Number(pos.short || 0), 'sell')) sellLev = Math.min(sellLev || rampLev, rampLev);
   }
+  if (spotOpen) { buyLev = 0; sellLev = 0; }
   const orderminNow = Number(row.ordermin || row.baseMin || 0);
   const dustShort = VENUE === 'kraken' && Number(pos.short) > 0 && orderminNow > 0 && Number(pos.short) + 1e-12 < orderminNow;
   const dustLong = VENUE === 'kraken' && Number(pos.long) > 0 && orderminNow > 0 && Number(pos.long) + 1e-12 < orderminNow;
@@ -1872,8 +2065,9 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     const sentSellHalf = mid > 0 && askPx > 0 ? Math.abs(askPx - mid) / mid * 10000 : 0;
     const planFit = krakenOpeningPlan({
       equity: book.equity,
-      lev: (state.levRamp && state.levRamp.lev) || buyLev || lev || 2,
-      resume: ML_RESUME,
+      lev: spotOpen ? 1 : ((state.levRamp && state.levRamp.lev) || buyLev || lev || 2),
+      stop: ML_STOP,
+      spot: spotOpen,
       usedMargin: rail.margin ? rail.margin.used : 0,
       bookFrac: BOOK_TARGET,
       sides: [
@@ -2001,7 +2195,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     const underMin = row.dustBid || klassNow === 'dust' || (state.belowMin && state.belowMin[row.symbol]);
     if (Number(pos.long) > 0 && underMin) gate('sell', 'below-min');
     else if (state.halted && Number(pos.long) > 0) gate('sell', 'halt');
-    else if (VENUE === 'kraken' && opensRisk(netQty, 'sell')) gate('sell', 'edge');
+    else if (VENUE === 'kraken' && opensRisk(netQty, 'sell')) gate('sell', spotOpen ? 'margin' : 'unsized');
   }
   const buyWhy = (gates.find((g) => g.startsWith('buy ')) || '').replace(/^buy /, '');
   const sellWhy = (gates.find((g) => g.startsWith('sell ')) || '').replace(/^sell /, '');
@@ -2479,15 +2673,17 @@ async function main() {
       handleControl(state, book.equity);
       const capShown = displayCapital(state);
       const tr = tradingNow(state, book);
+      const vsCap = accountVsCapital({ equity: book.equity, capital: capShown, pending: pendingOf(state) });
+      const lifeTrading = VENUE === 'kraken' ? vsCap : tr;
       const halts = lossHalts({
-        sessionTrading: tr, dayTrading: tr, lifeTrading: tr,
+        sessionTrading: tr, dayTrading: tr, lifeTrading,
         sessionCapital: capShown, dayCapital: capShown, lifeCapital: capShown,
         sessionLoss: SESSION_LOSS, dayLoss: DAY_LOSS, lifetimeDd: LIFETIME_DD,
         resid: 0, pending: pendingOf(state),
       });
       const sessionLoss = halts.session;
       const dayLoss = halts.day;
-      const life = capShown > 0 ? tr / capShown : 0;
+      const life = capShown > 0 ? lifeTrading / capShown : 0;
       const lifeDistPp = (LIFETIME_DD + Math.min(0, life)) * 100;
       state.equityMarks = state.equityMarks || [];
       if (!state.equityMarks.length || now - state.equityMarks[state.equityMarks.length - 1].t > 60000) {
@@ -2616,7 +2812,12 @@ async function main() {
         const trips = (state.recentTrips || []).filter((t) => t.t >= since);
         const lost = trips.some((t) => Number(t.net) < 0);
         const positive = trips.some((t) => Number(t.net) > 0) && !lost;
-        const next = leverageNotch({ step: ramp.step || 0, elapsedMs: now - since, positive, lost, maxLev: LEV_CAP || 10 });
+        const fillsSince = (state.fillTimes || []).filter((t) => t >= since).length;
+        const next = leverageNotch({
+          step: ramp.step || 0, elapsedMs: now - since, positive, lost, maxLev: LEV_CAP || 10,
+          idleMs: now - since, fills: fillsSince,
+        });
+        if (next.idle && next.advanced) console.log('LEV idle notch ' + next.lev + 'x');
         if (lost) state.levRamp = { step: ramp.step || 0, lev: next.lev, since: now };
         else if (next.advanced) state.levRamp = { step: next.step, lev: next.lev, since: now };
         else state.levRamp = { step: ramp.step || 0, lev: next.lev, since };
@@ -2842,6 +3043,7 @@ async function main() {
       }
       pruneState(state, book, now);
       saveState(state);
+      const shownTrading = VENUE === 'kraken' ? vsCap : tradingPnl;
       postStatus({
         bot: process.env.BOT, exchange: VENUE, quote: cfg.quote,
         pnl: {
@@ -2850,8 +3052,8 @@ async function main() {
           fees: state.fees || 0, inventoryPnl: inv, fundingBorrow: state.fundingBorrow || 0,
           recon: resid, resid, fills: fillsN, fillsHour: fillsH,
           netMaker, pricePnl: inv, sessionStart: state.startTime, sessionResets: state.sessionResets || 0,
-          capitalBaseline: capitalShown, lifetimePct: capitalShown > 0 ? tradingPnl / capitalShown * 100 : 0,
-          tradingPnl, pending: pend, resid,
+          capitalBaseline: capitalShown, lifetimePct: capitalShown > 0 ? shownTrading / capitalShown * 100 : 0,
+          tradingPnl: shownTrading, pending: pend, resid,
           ordersSyncedAt: state.ordersSyncedAt || now,
         },
         rails: {
@@ -2859,7 +3061,7 @@ async function main() {
           dayLossPct: dayLoss * 100, halted: state.halted || null, haltPhase: state.haltPhase || null,
           haltAgeH: (state.haltAt || state.haltSince) ? (now - (state.haltAt || state.haltSince)) / 3600000 : 0,
           haltLoss: state.halted ? (Number(state.haltEquity) || 0) - haltEquityNow(book.equity, state) : 0,
-          levBySymbol, onRail: !!state.onRail, lifetimePct: capitalShown > 0 ? tradingPnl / capitalShown * 100 : 0,
+          levBySymbol, onRail: !!state.onRail, lifetimePct: capitalShown > 0 ? shownTrading / capitalShown * 100 : 0,
         },
         bookFrac: (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? null : bookFrac,
         bookStale: !!(state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP),
@@ -2872,7 +3074,10 @@ async function main() {
       const xferTxt = state.transferBlind ? ' xfer=blind' : (pend ? ' xfer=pending $' + pend.toFixed(2) : '');
       const idleTxt = state.idleSince && now - state.idleSince > 15 * 60 * 1000 ? ' idle=' + ((now - state.idleSince) / 60000).toFixed(0) + 'm' : '';
       const cmdTxt = state.lastControl && state.lastControl.cmd ? ' cmd=' + state.lastControl.cmd : '';
-      const money = statusMoney({ equity: book.equity, capital: capitalShown, trading: tradingPnl, resid, pending: pend });
+      const money = statusMoney({
+        equity: book.equity, capital: capitalShown, trading: shownTrading, resid, pending: pend,
+        stopPct: VENUE === 'kraken' ? LIFETIME_DD : 0,
+      });
       const bookLabel = (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? 'book=stale' : ('book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%)');
       console.log('  AS ' + money + ' free=$' + book.cash.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' ' + bookLabel + ' tracked=' + tracked + ' lev=' + (Object.values(levBySymbol)[0] || (state.levRamp && state.levRamp.lev) || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + haltTxt + xferTxt + idleTxt + cmdTxt + ' | ' + (line || 'no names'));
     } catch (e) {
