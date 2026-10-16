@@ -58,6 +58,9 @@ export function postOnlyRetryPx({ side = 'buy', original = 0, freshBid = 0, fres
   return px;
 }
 
+export function formatPrice(p, d) {
+  return Number(Number(p).toFixed(d));
+}
 export function formatVolume(v, d) {
   return Number(Number(v).toFixed(d));
 }
