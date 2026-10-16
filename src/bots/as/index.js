@@ -1944,6 +1944,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     } else if (taken.send) {
       buySz = taken.size;
       buyCharged = taken.cost;
+      budget.freeRoom = Math.max(0, Number(budget.freeRoom) - Number(taken.cost || 0));
       if (row.dustBid && budget) budget.dustLeft = Math.max(0, Number(budget.dustLeft) - taken.cost);
     } else {
       buyHold = true;
