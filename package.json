@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "ladder": "node src/bots/ladder/index.js",
+    "stocks": "node src/bots/stocks/index.js",
     "inventory": "node src/bots/inventory/index.js",
     "xex": "node src/bots/xex/index.js",
     "comp": "node src/bots/comp/index.js",
@@ -16,7 +17,7 @@
     "feed": "node src/feed/runner.js",
     "bank-dump": "node src/bots/bank-dump.js",
     "dump": "node src/bots/bank-dump.js",
-    "test": "node scripts/test-pnl-transfer.mjs && node scripts/test-as-v2.mjs && node scripts/test-as-v3.mjs && node scripts/test-as-v4.mjs && node scripts/test-as-v5.mjs && node scripts/test-as-v6.mjs && node scripts/test-as-v9.mjs && node scripts/test-as-v11.mjs && node scripts/test-as-v12.mjs",
+    "test": "node scripts/test-pnl-transfer.mjs && node scripts/test-as-v2.mjs && node scripts/test-as-v3.mjs && node scripts/test-as-v4.mjs && node scripts/test-as-v5.mjs && node scripts/test-as-v6.mjs && node scripts/test-as-v9.mjs && node scripts/test-as-v11.mjs && node scripts/test-as-v12.mjs && node scripts/test-stocks.mjs",
     "smoke": "node scripts/smoke.mjs",
     "bank-cash": "node src/bots/bank-cash.js",
     "train-nn": "node src/ml/train.js",

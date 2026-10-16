@@ -26,7 +26,13 @@ const imported = spawnSync(process.execPath, ['src/bots/as/index.js'], {
   stdio: 'inherit',
 });
 if (imported.status) process.exit(imported.status || 1);
-const tests = readdirSync(path.join(root, 'scripts')).filter((name) => /^test-as-v.*\.mjs$/.test(name)).sort();
+const stocks = spawnSync(process.execPath, ['src/bots/stocks/index.js'], {
+  cwd: root,
+  env: { ...process.env, SMOKE: '1', BOT_CONFIG: 'configs/stocks.env' },
+  stdio: 'inherit',
+});
+if (stocks.status) process.exit(stocks.status || 1);
+const tests = readdirSync(path.join(root, 'scripts')).filter((name) => /^test-as-v.*\.mjs$/.test(name) || name === 'test-stocks.mjs').sort();
 for (const name of tests) {
   const ran = spawnSync(process.execPath, [path.join('scripts', name)], { cwd: root, stdio: 'inherit' });
   if (ran.status) process.exit(ran.status || 1);

@@ -1,0 +1,19 @@
+[Unit]
+Description=crypto-mm Coinbase equities ladder
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mm
+WorkingDirectory=/opt/crypto-mm
+Environment=BOT_CONFIG=configs/stocks.env
+ExecStart=/usr/bin/node src/bots/stocks/index.js
+Restart=always
+RestartSec=5
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

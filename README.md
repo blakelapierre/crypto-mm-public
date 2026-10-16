@@ -13,6 +13,7 @@ cp .env.example .env   # keys stay local — never commit .env or *.pem
 | Command | Bot |
 |---------|-----|
 | `npm run ladder` | Post-only ladder, slide on fill |
+| `npm run stocks` | Post-only ladder for Coinbase equities |
 | `npm run inventory` | Inventory-skewed quotes |
 | `npm run xex` | Coinbase vs Kraken hedge |
 | `npm run comp` | Kraken GNOT + SN64 competition |
@@ -36,5 +37,18 @@ The Avellaneda-Stoikov bots (`as-cb`, `as-kraken`) read `data/<bot>.control.json
 `systemctl stop` on an AS unit stays stopped until the next reboot or an explicit `systemctl start`. It does not disable the unit. Use `halt` when you want the bot to stay up but stop quoting.
 
 `npm run smoke` checks every file under `src/`, imports the AS bot, and runs the AS tests. Run it before restarting. The AS units allow 5 starts per 60 seconds so a crash loop stops and is visible.
+
+## Stocks ladder
+
+`npm run stocks` quotes Coinbase equities (`product_type=EQUITY`) the same way the ladder quotes coins: one post-only bid and one post-only ask, extra rungs only if `MM_LEVELS` is above 1. Limits only. No market orders.
+
+Put the key in `data/keys.env` (not the crypto key):
+
+```
+STOCKS_COINBASE_API_KEY=...
+STOCKS_COINBASE_API_SECRET=...
+```
+
+`configs/stocks.env` stays `DRY_RUN=true` until that is set and you flip it. `QUOTE` must be the cash the key can spend (`USD` or `USDC`; the venue lists both). Orders use the venue product id, not the ticker. Outside the regular session the size is whole shares, and a share that costs more than `MAX_SHARE_USD` is skipped. The unit is `deploy/crypto-mm-stocks.service`. It idles, and does not use the crypto key, until `STOCKS_COINBASE_API_KEY` is in `data/keys.env`. Restart the unit after adding the key.
 
 Bot knobs: `configs/*.env` override `.env`.
