@@ -1294,16 +1294,22 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   const slot = state.orders[row.symbol] || {};
   const prev = side === 'buy' ? Number(slot.bidPx || 0) : Number(slot.askPx || 0);
   if (!(target > 0) || !(Number(size) > 0)) {
-    if (cur && LIVE) {
-      console.log('CANCEL why=flat ' + row.symbol + ' ' + side + ' ' + cur.id);
-      await ex.cancelOrder(cur.id, VENUE);
+    if (cur && extra && extra.pull) {
+      console.log('CANCEL why=' + (extra.why || 'flat') + ' ' + row.symbol + ' ' + side + ' ' + cur.id);
+      if (LIVE) await ex.cancelOrder(cur.id, VENUE);
+      if (side === 'buy') { slot.bid = null; slot.bidPx = 0; slot.bidSz = 0; } else { slot.ask = null; slot.askPx = 0; slot.askSz = 0; }
+      state.orders[row.symbol] = slot;
     }
-    if (side === 'buy') { slot.bid = null; slot.bidPx = 0; slot.bidSz = 0; } else { slot.ask = null; slot.askPx = 0; slot.askSz = 0; }
-    state.orders[row.symbol] = slot;
     return;
   }
   const notional = Number(size) * target;
   if (extra.hold && cur) {
+    if (side === 'buy' && !slot.bid) {
+      slot.bid = cur.id; slot.bidPx = Number(cur.price) || 0; slot.bidSz = Number(cur.size) || 0;
+    } else if (side === 'sell' && !slot.ask) {
+      slot.ask = cur.id; slot.askPx = Number(cur.price) || 0; slot.askSz = Number(cur.size) || 0;
+    }
+    state.orders[row.symbol] = slot;
     if (state.backoff) delete state.backoff[row.symbol];
     return;
   }
@@ -1319,7 +1325,13 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
       return;
     }
   }
-  if (cur && prev > 0 && Math.abs(prev - target) / target < 0.0015 && Math.abs(Number(side === 'buy' ? slot.bidSz : slot.askSz) - Number(size)) < 1e-8) {
+  const livePx = cur ? Number(cur.price) || 0 : 0;
+  const refPx = prev > 0 ? prev : livePx;
+  const refSz = prev > 0 ? Number(side === 'buy' ? slot.bidSz : slot.askSz) : (cur ? Number(cur.size) || 0 : 0);
+  if (cur && refPx > 0 && Math.abs(refPx - target) / target < 0.0015 && Math.abs(refSz - Number(size)) <= Math.max(1e-8, Number(size) * 0.02)) {
+    if (side === 'buy') { slot.bid = cur.id; slot.bidPx = target; slot.bidSz = Number(size); }
+    else { slot.ask = cur.id; slot.askPx = target; slot.askSz = Number(size); }
+    state.orders[row.symbol] = slot;
     if (state.backoff) delete state.backoff[row.symbol];
     if (state.tooFar && state.tooFar[row.symbol] && state.tooFar[row.symbol].side === side) delete state.tooFar[row.symbol];
     return;
@@ -1907,9 +1919,16 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     const curBuy = mine.find((o) => o.side === 'buy');
     const curN = curBuy ? Number(curBuy.price) * Number(curBuy.size) : 0;
     const slotNow = state.orders[row.symbol] || {};
-    const same = !!(curBuy && Number(slotNow.bidPx) > 0 && Math.abs(Number(slotNow.bidPx) - bidPx) / bidPx < 0.0015 && Math.abs(Number(slotNow.bidSz) - buySz) < 1e-8);
+    const livePx = curBuy ? Number(curBuy.price) || 0 : 0;
+    const refPx = Number(slotNow.bidPx) > 0 ? Number(slotNow.bidPx) : livePx;
+    const refSz = Number(slotNow.bidSz) > 0 ? Number(slotNow.bidSz) : (curBuy ? Number(curBuy.size) || 0 : 0);
+    const priceClose = !!(curBuy && refPx > 0 && bidPx > 0 && Math.abs(refPx - bidPx) / bidPx < 0.0015);
+    // A smaller clip is the cash already reserved by this order, not a requote.
+    // Grow only when the new size is materially larger.
+    const grow = refSz > 0 && Number(buySz) > refSz * 1.25;
+    const same = priceClose && !grow;
     const taken = takeBuyBudget(budget.left, {
-      price: bidPx, wantSize: buySz, curNotional: curN, feeBps: makerFeeBps,
+      price: bidPx, wantSize: buySz, curNotional: 0, feeBps: makerFeeBps,
       minNotional: minUsd, minSize: Number(row.baseMin || row.ordermin || 0), lot, same,
     });
     budget.left = taken.budgetLeft;
@@ -1926,7 +1945,10 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       buySz = taken.size;
       buyCharged = taken.cost;
       if (row.dustBid && budget) budget.dustLeft = Math.max(0, Number(budget.dustLeft) - taken.cost);
-    } else buyHold = true;
+    } else {
+      buyHold = true;
+      if (curN > 0) budget.left = Math.max(0, Number(budget.left) - curN);
+    }
   }
   const bidHalf = buySz > 0 ? sentHalfBps(mid, bidPx, 0) : 0;
   const askHalf = sellSz > 0 ? sentHalfBps(mid, 0, askPx) : 0;
@@ -1987,6 +2009,14 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   quoteExtra.halfBps = halfShown;
   const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: reduce && Number(pos.short) > 0, extra: { ...quoteExtra, risk: buyRisk, positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold } };
   const sellJob = { row, side: 'sell', target: sellSz > 0 ? askPx : 0, size: sellSz, mine, lev: sellLev, reduceOnly: reduce && Number(pos.long) > 0, extra: { ...quoteExtra, risk: sellRisk, positionQty: pos.long, lossBps: sellLoss, touch: s.ask, distBps: mid > 0 && s.ask > 0 ? Math.round(Math.abs(askPx - s.ask) / mid * 10000) : 0 } };
+  const buyGate = buyWhy.split(' ')[0];
+  buyJob.extra.pull = !(buySz > 0) && buyGate !== 'budget' && buyGate !== 'dust-budget';
+  sellJob.extra.pull = !(sellSz > 0) && sellWhy.split(' ')[0] !== 'below-min';
+  if (!(buyJob.target > 0) && !buyJob.extra.pull && budget) {
+    const kept = (mine || []).find((o) => o.side === 'buy');
+    const keptN = kept ? Number(kept.price) * Number(kept.size) : 0;
+    if (keptN > 0) budget.left = Math.max(0, Number(budget.left) - keptN);
+  }
   if (!quiet && !(focusedOut && reduce)) {
     if (rail.defer) {
       rail.defer.sells.push(sellJob);
@@ -2330,20 +2360,28 @@ function trackedCount(state) {
   }
   return n;
 }
+function mineFromSlots(state) {
+  const mine = {};
+  for (const [sym, slot] of Object.entries(state.orders || {})) {
+    if (!slot) continue;
+    const rows = [];
+    if (slot.bid) rows.push({ id: slot.bid, sym, side: 'buy', price: Number(slot.bidPx) || 0, size: Number(slot.bidSz) || 0, ours: true });
+    if (slot.ask) rows.push({ id: slot.ask, sym, side: 'sell', price: Number(slot.askPx) || 0, size: Number(slot.askSz) || 0, ours: true });
+    if (rows.length) mine[sym] = rows;
+  }
+  return mine;
+}
 function holdBook(state, book) {
   const got = Object.values(book.mine || {}).reduce((n, xs) => n + ((xs && xs.length) || 0), 0);
   const tracked = trackedCount(state);
   if (book.fetchMiss || (got === 0 && tracked > 0)) {
     state.bookMiss = (Number(state.bookMiss) || 0) + 1;
     console.log('BOOK fetch ' + (book.fetchMiss ? 'miss' : 'empty') + ' tracked=' + tracked + ' miss=' + state.bookMiss);
-    if (state.bookMiss < 2 && state.lastMine) {
-      book.mine = state.lastMine;
+    if (state.bookMiss < 3) {
+      book.mine = mineFromSlots(state);
       return book;
     }
-  } else {
-    state.bookMiss = 0;
-    try { state.lastMine = JSON.parse(JSON.stringify(book.mine || {})); } catch { state.lastMine = book.mine; }
-  }
+  } else state.bookMiss = 0;
   return book;
 }
 function tradingNow(state, book) {
@@ -2620,8 +2658,10 @@ async function main() {
       let slotN = MAX_PAIRS;
       if (VENUE === 'coinbase') {
         const heldBuys = restingBuyNotional(book.mine);
+        const mul = feeMul(makerFeeBps) || 1;
+        const grossCash = Number(book.cash || 0) + heldBuys / mul;
         const reserve = Math.max(Number(book.equity || 0) * 0.01, 0.1);
-        budgetLeft = cashBudget({ free: book.cash, restingCost: heldBuys, equity: book.equity, halve, netOfHolds: true });
+        budgetLeft = cashBudget({ free: grossCash, restingCost: heldBuys, equity: book.equity, halve, netOfHolds: true });
         let askCover = 0;
         let dustNow = 0;
         for (const p of Object.values(book.positions || {})) {
