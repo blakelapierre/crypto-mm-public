@@ -1923,9 +1923,11 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     const refPx = Number(slotNow.bidPx) > 0 ? Number(slotNow.bidPx) : livePx;
     const refSz = Number(slotNow.bidSz) > 0 ? Number(slotNow.bidSz) : (curBuy ? Number(curBuy.size) || 0 : 0);
     const priceClose = !!(curBuy && refPx > 0 && bidPx > 0 && Math.abs(refPx - bidPx) / bidPx < 0.0015);
-    // A smaller clip is the cash already reserved by this order, not a requote.
-    // Grow only when the new size is materially larger.
-    const grow = refSz > 0 && Number(buySz) > refSz * 1.25;
+    // A smaller clip is cash this order already holds. Grow only when free cash
+    // can fund the replacement before the cancel settles, and only one wave at a time.
+    if (budget.freeRoom == null) budget.freeRoom = Math.max(0, Number(book.cash) || 0);
+    const newCost = Number(buySz) * bidPx * (feeMul(makerFeeBps) || 1);
+    const grow = refSz > 0 && Number(buySz) > refSz * 1.25 && newCost <= Number(budget.freeRoom) + 1e-9;
     const same = priceClose && !grow;
     const taken = takeBuyBudget(budget.left, {
       price: bidPx, wantSize: buySz, curNotional: 0, feeBps: makerFeeBps,
