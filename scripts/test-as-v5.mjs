@@ -49,7 +49,7 @@ check(bot.includes('SESSION reset'), 'a flat halt can start a new session');
 check(bot.includes('CONTROL '), 'a control file can reset the session');
 check(bot.includes('tb.e'), 'kraken equity is the marked balance');
 check(bot.includes('ex-dust'), 'book percent is also reported without dust');
-check(bot.includes('dust-stuck'), 'unstuckable dust is listed');
+check(bot.includes('DUST stuck'), 'unstuckable dust is listed');
 check(bot.includes('risk='), 'an exit through the cost floor names its risk');
 check(bot.includes("type === 'rollover'"), 'rollover is still the only funding');
 check(!/type === 'margin'[\s\S]{0,80}fundingBorrow/.test(bot), 'margin ledger amount is not funding');

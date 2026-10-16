@@ -21,9 +21,43 @@ export function formatOnIncrement(price, increment) {
   return n.toFixed(d);
 }
 
-export function formatPrice(p, d) {
-  return Number(Number(p).toFixed(d));
+// A rejected post-only price is retried further from the market, never closer.
+// Buy: min(original, fresh bid), snapped down. Sell: max(original, fresh ask), snapped up.
+export function postOnlyRetryPx({ side = 'buy', original = 0, freshBid = 0, freshAsk = 0, inc = 0 } = {}) {
+  const buy = String(side).toLowerCase() !== 'sell';
+  const orig = Number(original) || 0;
+  const tick = Number(inc) > 0 ? Number(inc) : 0;
+  const down = (px) => {
+    if (!(px > 0)) return 0;
+    if (!(tick > 0)) return px;
+    return Number((Math.floor(px / tick + 1e-8) * tick).toFixed(12));
+  };
+  const up = (px) => {
+    if (!(px > 0)) return 0;
+    if (!(tick > 0)) return px;
+    return Number((Math.ceil(px / tick - 1e-8) * tick).toFixed(12));
+  };
+  if (!(orig > 0)) return 0;
+  if (buy) {
+    const bid = Number(freshBid) || 0;
+    const ask = Number(freshAsk) || 0;
+    let px = orig;
+    if (bid > 0) px = Math.min(px, bid);
+    if (ask > 0 && px >= ask) px = ask - (tick || px * 1e-8);
+    px = down(px);
+    if (!(px > 0) || px > orig + 1e-12) px = down(orig);
+    if (px > orig + 1e-12) px = orig;
+    return px;
+  }
+  const ask = Number(freshAsk) || 0;
+  let px = orig;
+  if (ask > 0) px = Math.max(px, ask);
+  px = up(px);
+  if (!(px > 0) || px + 1e-12 < orig) px = up(orig);
+  if (px + 1e-12 < orig) px = orig;
+  return px;
 }
+
 export function formatVolume(v, d) {
   return Number(Number(v).toFixed(d));
 }

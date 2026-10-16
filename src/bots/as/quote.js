@@ -348,12 +348,6 @@ export function holdExitPx({ entry = 0, side = 'long', feeBps = 0, profitBps = 0
   return touchPx > 0 ? touchPx : bePx;
 }
 
-export function pnlResidual({ equity = 0, startEquity = 0, transfers = 0, netMaker = 0, inventoryPnl = 0, fundingBorrow = 0 } = {}) {
-  const left = Number(equity) - Number(startEquity) - Number(transfers || 0);
-  const right = Number(netMaker || 0) + Number(inventoryPnl || 0) - Number(fundingBorrow || 0);
-  return left - right;
-}
-
 // Mark change versus the mid at fill (longMark), plus drift already realized on closes.
 export function inventoryMarkPnl(entry, pos) {
   if (!entry) return 0;
@@ -967,6 +961,100 @@ export function idleRelax({ idleMin = 0, minEdgeBps = 8, volFloor = 0 } = {}) {
     volFloor: Math.max(0, Number(volFloor) || 0) / 2,
     relaxed: true,
   };
+}
+
+// Opening notional at ramp leverage: margin level stays at `resume`, and the book stays inside bookFrac.
+export function krakenNotionalRoom({ equity = 0, lev = 2, resume = 350, usedMargin = 0, bookFrac = 0.9 } = {}) {
+  const e = Math.max(0, Number(equity) || 0);
+  const L = Math.max(1, Number(lev) || 1);
+  const r = (Number(resume) > 0 ? Number(resume) : 350) / 100;
+  const marginRoom = Math.max(0, e / r - Math.max(0, Number(usedMargin) || 0));
+  const bookCap = e * L * Math.max(0, Number(bookFrac) || 0);
+  return { marginRoom, notional: Math.max(0, Math.min(marginRoom * L, bookCap)) };
+}
+
+// Give room to the sides that clear the venue minimum, best expected edge first.
+// A side that cannot fit releases its share. If none fit, the best side may take exactly the minimum.
+// Reasons are min-size, margin, or loss-cap. Never "budget" (that label is Coinbase cash only).
+export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, usedMargin = 0, bookFrac = 0.9, sides = [] } = {}) {
+  const room = krakenNotionalRoom({ equity, lev, resume, usedMargin, bookFrac });
+  const list = (sides || []).map((s) => ({
+    id: s.id,
+    sym: s.sym,
+    side: s.side,
+    want: Math.max(0, Number(s.want) || 0),
+    min: Math.max(0, Number(s.min) || 0),
+    lossCap: Number(s.lossCap) > 0 ? Number(s.lossCap) : Infinity,
+    fillp: Number(s.fillp) > 0 && Number(s.fillp) <= 1 ? Number(s.fillp) : 1,
+    wider: !!s.wider,
+    expEdge: Number(s.expEdge) || 0,
+  }));
+  const result = list.map((s) => ({
+    id: s.id, sym: s.sym, side: s.side, fit: 0, reason: '',
+    min: s.min, lossCap: Number.isFinite(s.lossCap) ? s.lossCap : 0,
+  }));
+  for (let i = 0; i < list.length; i++) {
+    if (!(list[i].want > 0)) continue;
+    if (list[i].min > 0 && list[i].lossCap + 1e-9 < list[i].min) {
+      result[i].reason = 'min-size';
+      list[i].dead = true;
+    }
+  }
+  const alive = list.map((s, i) => ({ s, i })).filter((x) => !x.s.dead && x.s.want > 0);
+  alive.sort((a, b) => b.s.expEdge - a.s.expEdge || String(a.s.id || '').localeCompare(String(b.s.id || '')));
+  let left = room.notional;
+  const placed = [];
+  for (const { s, i } of alive) {
+    let n = Math.min(s.want, s.lossCap, left);
+    if (s.wider && s.fillp < 1) n *= s.fillp;
+    if (s.min > 0 && n + 1e-9 < s.min) {
+      if (!(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
+      else if (!(left + 1e-9 >= s.min)) result[i].reason = 'margin';
+      else result[i].reason = 'min-size';
+      continue;
+    }
+    if (!(n > 0)) { result[i].reason = 'margin'; continue; }
+    result[i].fit = n;
+    result[i].reason = '';
+    left -= n;
+    placed.push(i);
+  }
+  if (!placed.length) {
+    const one = alive.find(({ s }) => s.lossCap + 1e-9 >= s.min && room.notional + 1e-9 >= s.min && s.min > 0);
+    if (one) {
+      result[one.i].fit = one.s.min;
+      result[one.i].reason = '';
+    }
+  }
+  return { room: room.notional, marginRoom: room.marginRoom, sides: result };
+}
+
+// Trading P&L only. Residual and pending are printed beside it and do not move the percent.
+export function lifeTradingText({ trading = 0, baseline = 0, resid = 0, pending = 0 } = {}) {
+  const b = Number(baseline) || 0;
+  const t = Number(trading) || 0;
+  const left = b + t;
+  const p = b > 0 ? (t / b) * 100 : 0;
+  let s = 'life=$' + left.toFixed(2) + ' vs $' + b.toFixed(2) + ' (' + (p >= 0 ? '+' : '') + p.toFixed(1) + '% trading)';
+  const r = Number(resid) || 0;
+  const q = Number(pending) || 0;
+  if (Math.abs(r) >= 0.005) s += ' resid=$' + r.toFixed(2);
+  if (Math.abs(q) >= 0.005) s += ' pending=$' + q.toFixed(2);
+  return s;
+}
+
+export function dustCanExit({ qty = 0, mid = 0, minSize = 0, minNotional = 1 } = {}) {
+  const q = Number(qty) || 0;
+  const m = Number(mid) || 0;
+  if (!(q > 0) || !(m > 0)) return false;
+  if (q + 1e-12 < (Number(minSize) || 0)) return false;
+  return q * m + 1e-12 >= Math.max(0, Number(minNotional) || 0);
+}
+
+export function pnlResidual({ equity = 0, startEquity = 0, transfers = 0, netMaker = 0, inventoryPnl = 0, fundingBorrow = 0, dustPnl = 0 } = {}) {
+  const left = Number(equity) - Number(startEquity) - Number(transfers || 0);
+  const right = Number(netMaker || 0) + Number(inventoryPnl || 0) + Number(dustPnl || 0) - Number(fundingBorrow || 0);
+  return left - right;
 }
 
 

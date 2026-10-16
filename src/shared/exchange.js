@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';
 import { STABLECOINS, KEEP_ASSETS } from './env.js';
-import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement, formatVolume } from './sizing.js';
+import { safeQuoteSize, normalizeAsset, incrementDecimals, snapToIncrement, formatVolume, postOnlyRetryPx } from './sizing.js';
 import { coinbaseRequest, coinbasePublic, loadCoinbaseSigningKey, coinbaseWsBook, rememberCoinbaseBook } from './coinbase.js';
 import { reserveSell, coolSide, sellable, dropReservation, dropSymbolReservations, clearReservations, reserved, reservationSnap, snapshotAgeMs } from './free-qty.js';
 import { noteLimitFail } from './exit-book.js';
@@ -39,6 +39,36 @@ export function createExchange(cfg, orderRegistry) {
     const book = await loader();
     if (book) bookCache.set(key, { at: Date.now(), book });
     return book;
+  }
+  const poRejects = new Map();
+  function poKey(pair, side) { return String(pair) + '|' + String(side || '').toLowerCase(); }
+  function notePostOnlyReject(pair, side) {
+    const k = poKey(pair, side);
+    const now = Date.now();
+    const xs = (poRejects.get(k) || []).filter((t) => now - t < 5 * 60 * 1000);
+    xs.push(now);
+    poRejects.set(k, xs);
+  }
+  function takePostOnlyBackoff(pair, side) {
+    const k = poKey(pair, side);
+    const now = Date.now();
+    const xs = (poRejects.get(k) || []).filter((t) => now - t < 5 * 60 * 1000);
+    if (xs.length < 2) { poRejects.set(k, xs); return false; }
+    poRejects.set(k, []);
+    const sym = String(pair || '').split(/[-/]/)[0];
+    console.log('POSTONLY backoff ' + sym + ' ' + String(side || '').toLowerCase());
+    return true;
+  }
+  async function retryPostOnly(self, pair, side, price, volume, meta, venue, inc) {
+    notePostOnlyReject(pair, side);
+    let fresh = null;
+    try { fresh = await self.getBook(pair, venue); } catch { /* keep the rejected price */ }
+    const retryPx = postOnlyRetryPx({
+      side, original: price, freshBid: fresh && fresh.bid, freshAsk: fresh && fresh.ask, inc,
+    });
+    if (!(retryPx > 0) || Math.abs(retryPx - Number(price)) <= Math.max(Number(inc) || 0, 1e-12) / 2) return null;
+    console.log('  post-only retry ' + side + ' ' + pair + ' ' + price + ' -> ' + retryPx);
+    return self.limitOrder(pair, side, retryPx, volume, Object.assign({}, meta, { _retried: true }), venue);
   }
   return {
     name,
@@ -358,6 +388,10 @@ export function createExchange(cfg, orderRegistry) {
           invalidateLiveCache();
         }
       };
+      if (cfg.postOnly && !meta._retried && takePostOnlyBackoff(pair, side)) {
+        releaseReserve(null);
+        return { skipped: 'backoff', error: 'postonly-backoff' };
+      }
       if (cfg.dryRun) {
         const id = 'dry-' + randomUUID().slice(0, 8);
         if (isSell) releaseReserve(id);
@@ -389,10 +423,9 @@ export function createExchange(cfg, orderRegistry) {
               return { skipped: 'belowMin', sellable: fresh, reserved: reserved(base), error: msg };
             }
             failCtx(res.error_response || res);
-            if (cfg.postOnly && !meta._retried && /POST_ONLY|INVALID_LIMIT_PRICE/i.test(msg) && bookSnap) {
-              const retryPx = side.toLowerCase() === 'buy' ? snapToIncrement(bookSnap.bid - inc, inc) : snapToIncrement(bookSnap.ask + inc, inc);
-              console.log('  post-only retry ' + side + ' ' + pair + ' ' + price + ' -> ' + retryPx);
-              return this.limitOrder(pair, side, retryPx, volume, Object.assign({}, meta, { _retried: true }), venue);
+            if (cfg.postOnly && !meta._retried && /POST_ONLY|INVALID_LIMIT_PRICE/i.test(msg)) {
+              const again = await retryPostOnly(this, pair, side, price, volume, meta, venue, inc);
+              if (again) return again;
             }
             return { error: msg };
           }
@@ -458,6 +491,10 @@ export function createExchange(cfg, orderRegistry) {
           return { error: msg, skipped: 'belowMin', sellable: fresh };
         }
         failCtx(msg);
+        if (cfg.postOnly && !meta._retried && /post.?only|invalid.*price/i.test(msg)) {
+          const again = await retryPostOnly(this, pair, side, price, volume, meta, venue, inc);
+          if (again) return again;
+        }
         return { error: msg };
       }
     },

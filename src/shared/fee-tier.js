@@ -28,7 +28,13 @@ export async function refreshFeeTier(cfg) {
     };
     lastAt = Date.now();
   } catch (e) {
-    console.warn('fee tier', e.message);
+    if (last && last.makerBps > 0) {
+      const since = last.refreshedAt ? new Date(last.refreshedAt).toISOString() : 'unknown';
+      console.warn('FEE tier stale since=' + since);
+      last = Object.assign({}, last, { stale: true });
+    } else {
+      console.warn('fee tier', e.message);
+    }
   }
   return last;
 }
