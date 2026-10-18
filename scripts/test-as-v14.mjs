@@ -37,6 +37,9 @@ check(!releaseAllowed({ stopDistPp: 20, sessionCapPct: 8, sessionLossPct: 0, rai
 check(fundedSlots({ budget: 1.85, venueMin: 1, names: 11 }) === 1, '1.85 dollars funds one slot, not eleven');
 const clip = slotClipUsd({ budget: 1.85, slots: 1, venueMin: 1 });
 check(clip + 1e-9 >= 1, 'that slot is at least the venue minimum');
+check(fundedSlots({ budget: 3.17, venueMin: 1, names: 11 }) === 2, 'a 3.17 budget funds two clips, not three under the haircut');
+const clip317 = slotClipUsd({ budget: 3.17, slots: 2, venueMin: 1 });
+check(clip317 + 1e-9 >= 1, 'those clips stay at least the venue minimum');
 
 const inflated = 0.0489 / 1.87 * 10000 / 130;
 const timed = accountCarryBps({ usd: 0.0489, notionalHours: 20 * 130 });

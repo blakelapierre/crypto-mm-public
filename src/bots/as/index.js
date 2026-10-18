@@ -7,6 +7,7 @@ import { loadProjectEnv, baseConfig, envNum, envBool, envStr } from '../../share
 import { createExchange } from '../../shared/exchange.js';
 import { krakenPrivate, krakenPublic } from '../../shared/kraken.js';
 import { coinbaseRequest } from '../../shared/coinbase.js';
+import { creditBalance } from '../../shared/free-qty.js';
 import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.js';
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
@@ -397,11 +398,28 @@ function realizedFeeBps(state) {
   if (!(notion > 0) || rows.length < 5) return { bps: 0, n: rows.length };
   return { bps: fee / notion * 10000, n: rows.length };
 }
-async function loadMakerFee(state) {
+function seedFeeSamples(state) {
+  if (((state && state.feeSamples) || []).length >= 5) return;
+  let text = '';
+  try { text = fs.readFileSync(fillPath, 'utf8'); } catch { return; }
+  const rows = [];
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!row || String(row.liquidity || 'maker') === 'taker') continue;
+    const n = Number(row.price) * Number(row.size);
+    if (!(Number(row.fee) > 0) || !(n > 0)) continue;
+    rows.push({ fee: Number(row.fee), n });
+  }
+  if (rows.length) state.feeSamples = rows.slice(-20);
+}
+async function loadMakerFee(state, book) {
   let venueBps = 0;
   let takerBps = 0;
   let vol30 = 0;
   let nextTxt = '-';
+  seedFeeSamples(state);
   try {
     if (VENUE === 'coinbase') {
       const tier = await refreshFeeTier(cfg);
@@ -417,12 +435,18 @@ async function loadMakerFee(state) {
         console.warn('FEE tier stale since=' + since);
       }
     } else {
-      const pairs = (state && state.feePairs) || [];
-      const tv = await krakenOnce('TradeVolume', pairs.length ? { pair: pairs.join(',') } : {});
-      const book = (tv && tv.fees_maker) || {};
-      for (const row of Object.values(book)) {
+      const pairs = [];
+      const addPair = (p) => { if (p && !pairs.includes(p)) pairs.push(p); };
+      for (const p of (state && state.feePairs) || []) addPair(p);
+      for (const row of Object.values((book && book.positions) || {})) addPair(row.venuePair);
+      const tv = await krakenOnce('TradeVolume', pairs.length ? { pair: pairs.slice(0, 12).join(',') } : {});
+      const bookFee = (tv && tv.fees_maker) || {};
+      for (const row of Object.values(bookFee)) {
         const bps = feeToBps(row && row.fee);
         if (bps > venueBps) venueBps = bps;
+        if (row && row.nextfee && row.nextvolume && nextTxt === '-') {
+          nextTxt = '$' + Number(row.nextvolume).toFixed(0) + '@' + feeToBps(row.nextfee).toFixed(0) + 'bp';
+        }
       }
       const takerBook = (tv && tv.fees) || {};
       for (const row of Object.values(takerBook)) {
@@ -963,14 +987,19 @@ async function krakenBook(state) {
   let upnl = 0;
   for (const p of Object.values(pos || {})) {
     const sym = symbolOf(p.pair);
-    const vol = Number(p.vol || 0) - Number(p.vol_closed || 0);
+    const opened = Number(p.vol || 0);
+    const closed = Number(p.vol_closed || 0);
+    const vol = opened - closed;
     if (!(vol > 0)) continue;
     const row = positions[sym] || { long: 0, short: 0, longCost: 0, shortCost: 0, margin: 0, value: 0 };
     const cost = Number(p.cost || 0);
+    // `cost` is the opening cost of the original volume, not of the remainder.
+    const basisVol = opened > vol ? opened : vol;
+    const remainCost = basisVol > 0 ? cost * (vol / basisVol) : cost;
     const margin = Number(p.margin || 0);
-    const value = Number(p.value || 0) || cost;
-    if (String(p.type).toLowerCase() === 'sell') { row.short += vol; row.shortCost += cost; }
-    else { row.long += vol; row.longCost += cost; }
+    const value = Number(p.value || 0) || remainCost;
+    if (String(p.type).toLowerCase() === 'sell') { row.short += vol; row.shortCost += remainCost; }
+    else { row.long += vol; row.longCost += remainCost; }
     row.margin += margin;
     row.value += value;
     row.venuePair = String(p.pair || row.venuePair || '');
@@ -1619,6 +1648,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   if (cur && LIVE) {
     console.log('CANCEL why=requote ' + row.symbol + ' ' + side + ' ' + cur.id);
     await ex.cancelOrder(cur.id, VENUE);
+    if (VENUE !== 'kraken' && side === 'sell' && Number(cur.size) > 0) creditBalance(row.symbol, cur.size);
   }
   const clientOrderId = 'as-cb-' + randomUUID();
   const sigTxt = extra.sigmaBps != null ? ' sig=' + extra.sigmaBps + 'bp' : '';
@@ -1724,7 +1754,6 @@ async function cancelOurs(book) {
 function resyncEntry(state, book) {
   if (VENUE === 'coinbase') return;
   const now = Date.now();
-  if (state.entrySyncAt && now - state.entrySyncAt < 3600 * 1000) return;
   state.entry = state.entry || {};
   for (const [sym, pos] of Object.entries(book.positions || {})) {
     const cur = state.entry[sym];
@@ -2097,8 +2126,12 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       const left = Math.max(0, Number(budget && budget.left) || 0);
       const rank = (budget && budget.bidRank) || [];
       const rankAt = rank.indexOf(row.symbol);
-      let wantUsd = slotClipUsd({ budget: left, slots, venueMin: minUsd });
-      if (rank.length && (rankAt < 0 || rankAt >= slots)) wantUsd = 0;
+      const inSlot = !rank.length || (rankAt >= 0 && rankAt < slots);
+      let wantUsd = 0;
+      if (inSlot) {
+        wantUsd = slotClipUsd({ budget: left, slots, venueMin: minUsd });
+        if (!(wantUsd + 1e-9 >= minUsd) && left + 1e-9 >= minUsd) wantUsd = Math.min(left, Math.max(minUsd, left * 0.9));
+      }
       const nameCap = Number(budget && budget.nameCap) || 0;
       if (nameCap > 0 && wantUsd > nameCap + 1e-6) {
         wantUsd = nameCap;
@@ -2109,7 +2142,6 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
         }
       }
       if (addOk && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
-      if (budget && !row.dustBid) budget.slots = Math.max(1, slots - 1);
     } else if (!reduce) {
       const useLev = spotOpen ? 1 : ((state.levRamp && Number(state.levRamp.lev) > 0) ? Number(state.levRamp.lev) : (lev || 2));
       const room = krakenNotionalRoom({
@@ -2264,10 +2296,11 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (sellSz > 0 && opensRisk(netQty, 'sell')) { sellSz = 0; gate('sell', 'vol-warmup'); }
   }
   if (VENUE !== 'kraken' && tight && buySz > 0) {
+    const curBuy = (book.mine[row.symbol] || []).find((o) => o.side === 'buy');
     const cost = buySz * bidPx * (feeMul(makerFeeBps) || 1);
-    if (!(cost <= Number(book.cash) + 1e-9)) {
+    if (!curBuy && !(cost <= Number(book.cash) + 1e-9)) {
       buySz = 0;
-      gate('buy', 'budget-tight cash=$' + Number(book.cash || 0).toFixed(2) + ' need=$' + tightNeed.toFixed(2));
+      gate('buy', 'budget-tight cash=$' + Number(book.cash || 0).toFixed(2) + ' need=$' + cost.toFixed(2));
     }
   }
   if (VENUE === 'kraken' && !reduce) {
@@ -2425,10 +2458,17 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (row.dustBid) gate('buy', 'dust-budget');
     else if (state.halted) gate('buy', 'halt');
     else if (VENUE === 'kraken') gate('buy', buyMiss || 'unsized');
-    else if (Number(budget && budget.start) + 1e-9 >= minUsd) {
-      console.log('BUDGET bug ' + row.symbol + ' b=$' + Number(budget.start).toFixed(2));
-      gate('buy', 'budget');
-    } else gate('buy', 'budget');
+    else {
+      const rank = (budget && budget.bidRank) || [];
+      const slotsNow = Math.max(1, Number(budget && budget.slots) || 1);
+      const rankAt = rank.indexOf(row.symbol);
+      const inSlot = !rank.length || (rankAt >= 0 && rankAt < slotsNow);
+      if (!inSlot) gate('buy', 'slots');
+      else if (Number(budget && budget.start) + 1e-9 >= minUsd) {
+        console.log('BUDGET bug ' + row.symbol + ' b=$' + Number(budget.start).toFixed(2));
+        gate('buy', 'budget');
+      } else gate('buy', 'budget');
+    }
   }
   if (!(sellSz > 0) && !gates.some((g) => g.startsWith('sell '))) {
     const underMin = row.dustBid || klassNow === 'dust' || (state.belowMin && state.belowMin[row.symbol]);
@@ -2446,7 +2486,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: (reduce && Number(pos.short) > 0) || closeExact, extra: { ...quoteExtra, risk: buyRisk, positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold, why: closeExact ? 'close' : '' } };
   const sellJob = { row, side: 'sell', target: sellSz > 0 ? askPx : 0, size: sellSz, mine, lev: sellLev, reduceOnly: reduce && Number(pos.long) > 0, extra: { ...quoteExtra, risk: sellRisk, positionQty: pos.long, lossBps: sellLoss, touch: s.ask, distBps: mid > 0 && s.ask > 0 ? Math.round(Math.abs(askPx - s.ask) / mid * 10000) : 0, why: releasePlan ? 'release' : '', releaseStep: releasePlan ? releasePlan.k : 0 } };
   const buyGate = buyWhy.split(' ')[0];
-  buyJob.extra.pull = !(buySz > 0) && buyGate !== 'budget' && buyGate !== 'dust-budget';
+  buyJob.extra.pull = !(buySz > 0) && buyGate !== 'budget' && buyGate !== 'dust-budget' && buyGate !== 'budget-tight' && buyGate !== 'slots';
   sellJob.extra.pull = !(sellSz > 0) && sellWhy.split(' ')[0] !== 'below-min';
   if (!(buyJob.target > 0) && !buyJob.extra.pull && budget) {
     const kept = (mine || []).find((o) => o.side === 'buy');
@@ -2873,13 +2913,15 @@ async function main() {
     console.log('PNL equity model 5, marked equity');
   }
   migrateV9(state);
-  await loadMakerFee(state);
-  let feeAt = Date.now();
+  let feeAt = 0;
   for (;;) {
     try {
       if (Date.now() - productsAt > 3600 * 1000) { products = await ex.getProducts(VENUE); productsAt = Date.now(); }
-      if (Date.now() - feeAt > 3600 * 1000) { await loadMakerFee(state); feeAt = Date.now(); }
       let book = VENUE === 'kraken' ? await krakenBook(state) : await coinbaseBook(state, products);
+      if (!feeAt || feeSource === 'default' || Date.now() - feeAt > 3600 * 1000) {
+        await loadMakerFee(state, book);
+        feeAt = Date.now();
+      }
       book = holdBook(state, book);
       state.ordersSyncedAt = Date.now();
       if (!(state.startEquity > 0) && book.equity > 0) state.startEquity = book.equity;
@@ -3343,7 +3385,7 @@ async function main() {
       }
       pruneState(state, book, now);
       saveState(state);
-      const shownTrading = vsCap;
+      const shownTrading = (Number(book.equity) || 0) - capShown;
       postStatus({
         bot: process.env.BOT, exchange: VENUE, quote: cfg.quote,
         pnl: {

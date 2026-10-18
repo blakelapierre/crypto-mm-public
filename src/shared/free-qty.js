@@ -85,6 +85,13 @@ export function dropSymbolReservations(symbol) {
   return n;
 }
 
+export function creditBalance(symbol, size) {
+  const sym = String(symbol || '').toUpperCase();
+  const n = Number(size);
+  if (!sym || !(n > 0) || !haveBalances) return;
+  balances.set(sym, (balances.get(sym) || 0) + n);
+}
+
 export function clearReservations() {
   reservations.length = 0;
 }

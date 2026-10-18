@@ -1364,12 +1364,17 @@ export function releaseAllowed({ sessionLossPct = 0, sessionCapPct = 0, stopDist
   return true;
 }
 
-// How many min-size clips the bid budget can fund. Never more names than we quote.
+// How many min-size clips the bid budget can fund. slotClipUsd only spends 90%
+// of the budget, so the count has to fit inside that haircut or the clip drops
+// under the venue minimum and every bid gates.
 export function fundedSlots({ budget = 0, venueMin = 1, names = 1 } = {}) {
   const min = Math.max(0.01, Number(venueMin) || 1);
-  const n = Math.floor(Math.max(0, Number(budget) || 0) / min);
+  const b = Math.max(0, Number(budget) || 0);
   const cap = Math.max(1, Number(names) || 1);
-  return Math.max(1, Math.min(cap, Math.max(1, n)));
+  let n = Math.floor((b * 0.9) / min);
+  if (b + 1e-9 >= min && n < 1) n = 1;
+  if (!(n > 0)) n = 1;
+  return Math.max(1, Math.min(cap, n));
 }
 
 // Parked asks (floor more than 5% above mid) count at half toward ask cover.
