@@ -858,29 +858,45 @@ export function rankByExpectedEdge(rows, opts = {}) {
   const scored = [];
   const reasons = [];
   const considered = [];
+  const sanityVol = Number(opts.sanityVol) > 0 ? Number(opts.sanityVol) : 25000;
   for (const row of rows || []) {
     const tickBps = Number(row.tickBps) || 0;
     const vol = Number(row.vol24) || 0;
     const spread = Number(row.spreadBps) || 0;
     let reason = '';
-    if (tickBps > 10) { rejected.tick += 1; reason = 'tick'; }
+    let edgeRow = null;
+    if (opts.net) {
+      if (vol + 1e-9 < sanityVol) { rejected.vol += 1; reason = 'vol'; }
+      else {
+        edgeRow = netEdgeRow(row, opts);
+        considered.push({ symbol: row.symbol, ...edgeRow, edge: edgeRow.expEdge, vol24: vol });
+        if (!edgeRow.tradeable) { rejected.edge += 1; reason = 'edge'; }
+        else scored.push({ ...row, ...edgeRow, edge: edgeRow.expEdge, score: edgeRow.expEdge });
+      }
+    } else if (tickBps > 10) { rejected.tick += 1; reason = 'tick'; }
     else if (vol + 1e-9 < minVol) { rejected.vol += 1; reason = 'vol'; }
     else if (spread > maxSpread) { rejected.wide += 1; reason = 'wide'; }
     else {
-      const e = expectedEdgeRow(row, opts);
-      considered.push({ symbol: row.symbol, ...e, edge: e.expEdge, vol24: vol });
-      if (!e.tradeable) { rejected.edge += 1; rejected.feeSpread += 1; reason = 'fee-spread'; }
-      else scored.push({ ...row, ...e, edge: e.expEdge, score: e.expEdge });
+      edgeRow = expectedEdgeRow(row, opts);
+      considered.push({ symbol: row.symbol, ...edgeRow, edge: edgeRow.expEdge, vol24: vol });
+      if (!edgeRow.tradeable) { rejected.edge += 1; rejected.feeSpread += 1; reason = 'fee-spread'; }
+      else scored.push({ ...row, ...edgeRow, edge: edgeRow.expEdge, score: edgeRow.expEdge });
     }
-    if (reason) reasons.push({ symbol: row.symbol, reason, val: reason === 'vol' ? vol : reason === 'tick' ? tickBps : spread, need: roundTripPadBps({ feeBps: opts.feeBps, minEdgeBps: opts.minEdgeBps }) });
+    if (reason) reasons.push({
+      symbol: row.symbol, reason,
+      val: edgeRow ? edgeRow.expEdge : (reason === 'vol' ? vol : reason === 'tick' ? tickBps : spread),
+      need: edgeRow ? edgeRow.expHalf : roundTripPadBps({ feeBps: opts.feeBps, minEdgeBps: opts.minEdgeBps }),
+      net: edgeRow ? edgeRow.expEdge : null,
+    });
   }
   scored.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
   considered.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
   return {
     picked: maxPairs > 0 ? scored.slice(0, maxPairs) : scored,
     rejected,
+    net: !!opts.net,
     feeSpread: reasons.filter((r) => r.reason === 'fee-spread').map((r) => r.symbol),
-    best: considered[0] ? { symbol: considered[0].symbol, edge: considered[0].expEdge } : null,
+    best: considered[0] ? { symbol: considered[0].symbol, edge: considered[0].expEdge, h: considered[0].expHalf, fillp: considered[0].fillp } : null,
     best5: considered.slice(0, 5),
     evaluated: (rows || []).length,
     reasons,
@@ -1219,7 +1235,13 @@ export function accountVsCapital({ equity = 0, capital = 0, pending = 0 } = {}) 
   return (Number(equity) || 0) - (Number(pending) || 0) - (Number(capital) || 0);
 }
 
-export function statusMoney({ equity = 0, capital = 0, trading = 0, resid = 0, pending = 0, stopPct = 0 } = {}) {
+export function statusMoney(opts = {}) {
+  const equity = opts.equity;
+  const capital = opts.capital;
+  const trading = opts.trading;
+  const resid = opts.resid;
+  const pending = opts.pending;
+  const stopPct = opts.stopPct;
   const c = Number(capital) || 0;
   const t = Number(trading) || 0;
   const p = c > 0 ? (t / c) * 100 : 0;
@@ -1228,13 +1250,22 @@ export function statusMoney({ equity = 0, capital = 0, trading = 0, resid = 0, p
     + ' capital=$' + c.toFixed(2)
     + ' trading=$' + t.toFixed(2) + ' (' + sign + p.toFixed(1) + '%)'
     + ' resid=$' + Number(resid || 0).toFixed(2)
-    + ' pending=$' + Number(pending || 0).toFixed(2);
+    + ' pending=$' + Number(pending || 0).toFixed(2)
+    + (Math.abs(Number(pending) || 0) >= 0.005 ? ' (excluded)' : '');
   const stop = Number(stopPct) || 0;
   if (stop > 0 && c > 0) {
     const dd = Math.max(0, -t / c);
     const dist = (stop - dd) * 100;
     s += ' stopDist=' + dist.toFixed(1) + 'pp';
   }
+  if (opts.feeBps != null) s += ' fee=' + Number(opts.feeBps).toFixed(0) + 'bp src=' + (opts.feeSrc || 'default');
+  if (opts.lastFill != null) s += ' lastFill=' + opts.lastFill;
+  if (opts.parkedN != null) s += ' parked=' + opts.parkedN + ' $' + Number(opts.parkedUsd || 0).toFixed(2) + (opts.parkedH != null ? ' oldest=' + Number(opts.parkedH).toFixed(0) + 'h' : '');
+  if (opts.releaseLoss != null) s += ' rel=$' + Number(opts.releaseLoss).toFixed(2) + ' (' + (Number(opts.releaseN) || 0) + ')';
+  if (opts.bidShare != null) s += ' bidShare=' + opts.bidShare;
+  if (opts.best) s += ' best=' + opts.best;
+  if (opts.probation != null) s += ' probation=' + (opts.probation ? 1 : 0);
+  if (opts.carryBps != null) s += ' carry=' + Number(opts.carryBps).toFixed(2) + 'bp/h src=' + (opts.carrySrc || 'venue');
   return s;
 }
 
@@ -1279,6 +1310,163 @@ export function pnlResidual({ equity = 0, startEquity = 0, transfers = 0, netMak
   const left = Number(equity) - Number(startEquity) - Number(transfers || 0);
   const right = Number(netMaker || 0) + Number(inventoryPnl || 0) + Number(dustPnl || 0) - Number(fundingBorrow || 0);
   return left - right;
+}
+
+// Steps since the name went idle. 0 until AS_RELEASE_IDLE_H, then 1, plus one per step window.
+export function releaseK({ idleH = 0, idleNeed = 12, stepH = 2 } = {}) {
+  const idle = Number(idleH) || 0;
+  const need = Math.max(0, Number(idleNeed) || 0);
+  const step = Math.max(0.01, Number(stepH) || 2);
+  if (idle + 1e-9 < need) return 0;
+  return 1 + Math.floor((idle - need) / step + 1e-9);
+}
+
+// Decayed ask. Never through the touch, and never past the per-name loss floor versus entry.
+export function releaseStep({ entry = 0, costFloor = 0, touch = 0, k = 0, stepBps = 150, maxLossBps = 800 } = {}) {
+  const cost = Number(costFloor) > 0 ? Number(costFloor) : Number(entry);
+  if (!(cost > 0)) return 0;
+  if (!(Number(k) >= 1)) return Math.max(cost, Number(touch) || 0);
+  const stepped = cost * (1 - Number(k) * Math.max(0, Number(stepBps) || 0) / 10000);
+  const lossFloor = Number(entry) > 0 ? Number(entry) * (1 - Math.max(0, Number(maxLossBps) || 0) / 10000) : 0;
+  const t = Number(touch) > 0 ? Number(touch) : 0;
+  return Math.max(stepped, lossFloor, t);
+}
+
+export function releaseWorstLoss({ entry = 0, floor = 0, qty = 0, feeBps = 0 } = {}) {
+  const e = Number(entry);
+  const f = Number(floor);
+  const q = Math.abs(Number(qty) || 0);
+  if (!(e > 0) || !(f > 0) || !(q > 0)) return 0;
+  return Math.max(0, (e * (1 + Math.max(0, Number(feeBps) || 0) / 10000) - f) * q);
+}
+
+// Shrink the release so today's realized-release loss stays inside the day cap.
+export function releaseQtyForBudget({ entry = 0, floor = 0, qty = 0, feeBps = 0, dayUsed = 0, dayCap = 0, minQty = 0 } = {}) {
+  const q = Math.abs(Number(qty) || 0);
+  const room = Math.max(0, (Number(dayCap) || 0) - Math.max(0, Number(dayUsed) || 0));
+  const loss = releaseWorstLoss({ entry, floor, qty: q, feeBps });
+  if (!(q > 0)) return { qty: 0, loss: 0, hold: 'empty' };
+  if (loss <= room + 1e-9) return { qty: q, loss, hold: '' };
+  const per = loss / q;
+  if (!(per > 0)) return { qty: q, loss: 0, hold: '' };
+  const minQ = Math.max(0, Number(minQty) || 0);
+  const fit = room / per;
+  if (fit + 1e-12 < minQ) return { qty: 0, loss: 0, hold: 'day-cap' };
+  const qtyFit = Math.min(q, fit);
+  return { qty: qtyFit, loss: releaseWorstLoss({ entry, floor, qty: qtyFit, feeBps }), hold: '' };
+}
+
+export function releaseAllowed({ sessionLossPct = 0, sessionCapPct = 0, stopDistPp = 100, rail = false } = {}) {
+  if (rail) return false;
+  if (Number(stopDistPp) < 10) return false;
+  const half = 0.5 * Math.max(0, Number(sessionCapPct) || 0);
+  if (half > 0 && Number(sessionLossPct) + 1e-12 >= half) return false;
+  return true;
+}
+
+// How many min-size clips the bid budget can fund. Never more names than we quote.
+export function fundedSlots({ budget = 0, venueMin = 1, names = 1 } = {}) {
+  const min = Math.max(0.01, Number(venueMin) || 1);
+  const n = Math.floor(Math.max(0, Number(budget) || 0) / min);
+  const cap = Math.max(1, Number(names) || 1);
+  return Math.max(1, Math.min(cap, Math.max(1, n)));
+}
+
+// Parked asks (floor more than 5% above mid) count at half toward ask cover.
+export function countAskCover({ usd = 0, mid = 0, floor = 0 } = {}) {
+  const u = Math.max(0, Number(usd) || 0);
+  const parked = Number(mid) > 0 && Number(floor) > Number(mid) * 1.05 + 1e-12;
+  return { usd: parked ? u * 0.5 : u, parked, full: u };
+}
+
+export function bidRoomShare({ bidRoom = 0, free = 0, tradable = 0, share = 0.15, target = 0 } = {}) {
+  const floor = Math.min(Math.max(0, Number(free) || 0), Math.max(0, Number(share) || 0) * Math.max(0, Number(tradable) || 0));
+  let raw = Math.max(Math.max(0, Number(bidRoom) || 0), floor);
+  const cap = Number(target) || 0;
+  if (cap > 0) raw = Math.min(raw, cap);
+  return raw;
+}
+
+// Time-weighted. A small position today cannot inflate carry paid on a large one.
+export function accountCarryBps({ usd = 0, notionalHours = 0 } = {}) {
+  const nh = Number(notionalHours) || 0;
+  const u = Number(usd) || 0;
+  if (!(nh > 0) || !(u > 0)) return 0;
+  return (u / nh) * 10000;
+}
+
+// No per-pair history uses the venue rollover, never the account average.
+export function carryRateBps({ usd = 0, notionalHours = 0, perPair = false, rollover4h = 2 } = {}) {
+  if (perPair) {
+    const bps = accountCarryBps({ usd, notionalHours });
+    if (bps > 0) return { bps, src: 'pair' };
+  }
+  return { bps: Math.max(0, Number(rollover4h) || 0) / 4, src: 'venue' };
+}
+
+export function sessionCapPct({ maxPct = 8, stopDistPp = 100 } = {}) {
+  const cap = Math.max(0, Number(maxPct) || 0);
+  const dist = Number(stopDistPp);
+  if (!(dist > 0)) return cap;
+  return Math.min(cap, 0.5 * dist);
+}
+
+export function orderWorstUsd({ equity = 0, stopDistPp = 0 } = {}) {
+  return 0.25 * (Math.max(0, Number(stopDistPp) || 0) / 100) * Math.max(0, Number(equity) || 0);
+}
+
+// Maker fee is the worst of the venue tier, realized fills, and the config default.
+export function feeTier({ venue = 0, realized = 0, config = 0, fills = 0 } = {}) {
+  const v = Math.max(0, Number(venue) || 0);
+  const c = Math.max(0, Number(config) || 0);
+  const r = (Number(fills) || 0) >= 5 ? Math.max(0, Number(realized) || 0) : 0;
+  const maker = Math.max(v, r, c);
+  let src = 'default';
+  if (r > 0 && r + 1e-9 >= maker) src = 'fills';
+  else if (v > 0 && v + 1e-9 >= maker) src = 'venue';
+  return { maker, src, warn: src === 'default' };
+}
+
+// Best half-spread by expected net, with no floor that makes every name look the same.
+export function netEdgeRow(row, opts = {}) {
+  const fee = Math.max(0, Number(opts.feeBps) || 0);
+  const minEdge = Math.max(0, Number(opts.minEdgeBps) || 0);
+  const need = roundTripPadBps({ feeBps: fee, minEdgeBps: minEdge });
+  const spread = Math.max(0, Number(row && row.spreadBps) || 0);
+  const touchHalf = spread / 2;
+  const tick = Math.max(0, Number(row && row.tickBps) || 0);
+  const k = Number(opts.k) > 0 ? Number(opts.k) : 1.5;
+  const tau = Number(opts.tauMin) > 0 ? Number(opts.tauMin) : 15;
+  const kappa = Number(opts.kappa) > 0 ? Number(opts.kappa) : 1.5;
+  const sig = Math.max(0, Number(row && row.sigma) || 0);
+  const sigBps = sig * Math.sqrt(tau) * 10000;
+  const steps = [touchHalf, need];
+  for (let i = 1; i <= 3; i++) steps.push(need + i * Math.max(5, sigBps));
+  const wideCap = Math.max(150, 2 * tick, spread);
+  const cap = tick > 10 ? Math.min(250, Math.max(wideCap, Number(opts.maxHalfBps) || 0)) : Math.max(need, Number(opts.maxHalfBps) || 200);
+  const trades = Number(row && row.trades24);
+  const vol = Number(row && row.vol24) || 0;
+  const adverse = Math.max(0, Number(opts.adverseBps) || Number(row && row.adverseBps) || 0);
+  const carry = Math.max(0, Number(opts.carryBpsPerHour) || 0) * (Math.max(0, Number(opts.holdMin) || 240) / 60);
+  const scale = Math.max(k * sigBps, 100 / kappa, 1);
+  let best = { h: touchHalf, fillp: 0, net: -1e9 };
+  for (let h of steps) {
+    if (tick > 0) h = Math.max(h, tick);
+    if (h > cap) h = cap;
+    if (!(h > 0)) continue;
+    const extra = Math.max(0, h - touchHalf);
+    let p0 = Math.exp(-extra / scale);
+    if (Number.isFinite(trades) && trades >= 0 && row && row.trades24 != null) p0 *= Math.min(1, trades / 1440 * tau);
+    if (vol > 0) p0 *= Math.min(1, vol / 250000);
+    p0 = Math.max(0, Math.min(1, p0));
+    const net = p0 * (2 * h - 2 * fee - adverse) - carry;
+    if (net > best.net) best = { h, fillp: p0, net };
+  }
+  const minNet = opts.minNetBps != null ? Number(opts.minNetBps) : 1;
+  return {
+    expHalf: best.h, h: best.h, need, fillp: best.fillp, expEdge: best.net, net: best.net,
+    tradeable: best.net + 1e-12 >= minNet, quotedHalf: touchHalf,
+  };
 }
 
 
