@@ -1650,7 +1650,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
       const clipCap = Number(budget.clip) || 0;
       const roomFree = Math.max(0, Number(budget.free) || 0) + allowed;
       const room = clipCap > 0 ? Math.min(clipCap, roomFree) : roomFree;
-      if (notional > room + 1e-6) {
+      if (notional > room * 1.02 + 1e-6) {
         if (allowed > 0) {
           const own = Number(extra.own) || 0;
           budget.left = Math.max(0, Number(budget.left) || 0) + allowed - own;
@@ -2480,7 +2480,10 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     const same = priceClose && !grow;
     if (VENUE === 'coinbase' && Number(budget.clip) > 0 && bidPx > 0 && !same) {
       const capSz = Number(budget.clip) / bidPx;
-      if (Number(buySz) > capSz + 1e-8) buySz = formatVolume(capSz, lot);
+      if (Number(buySz) > capSz + 1e-12) {
+        const pow = 10 ** Math.max(0, Number(lot) || 0);
+        buySz = Math.floor(capSz * pow + 1e-9) / pow;
+      }
     }
     const taken = takeBuyBudget(Math.max(0, Number(budget.left) || 0), {
       price: bidPx, wantSize: buySz, curNotional: own / mul, feeBps: makerFeeBps, free: freeNow,
