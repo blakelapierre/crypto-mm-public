@@ -17,7 +17,7 @@
     "feed": "node src/feed/runner.js",
     "bank-dump": "node src/bots/bank-dump.js",
     "dump": "node src/bots/bank-dump.js",
-    "test": "node scripts/test-pnl-transfer.mjs && node scripts/test-as-v2.mjs && node scripts/test-as-v3.mjs && node scripts/test-as-v4.mjs && node scripts/test-as-v5.mjs && node scripts/test-as-v6.mjs && node scripts/test-as-v9.mjs && node scripts/test-as-v11.mjs && node scripts/test-as-v12.mjs && node scripts/test-as-v13.mjs && node scripts/test-as-v14.mjs && node scripts/test-stocks.mjs",
+    "test": "node scripts/test-pnl-transfer.mjs && node scripts/test-as-v2.mjs && node scripts/test-as-v3.mjs && node scripts/test-as-v4.mjs && node scripts/test-as-v5.mjs && node scripts/test-as-v6.mjs && node scripts/test-as-v9.mjs && node scripts/test-as-v11.mjs && node scripts/test-as-v12.mjs && node scripts/test-as-v13.mjs && node scripts/test-as-v14.mjs && node scripts/test-as-v14-1.mjs && node scripts/test-stocks.mjs",
     "smoke": "node scripts/smoke.mjs",
     "bank-cash": "node src/bots/bank-cash.js",
     "train-nn": "node src/ml/train.js",

@@ -12,7 +12,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier, feeTierSnap } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney, accountVsCapital, pairQuotePlan, minAboveRoom, releaseK, releaseStep, releaseQtyForBudget, releaseAllowed, releaseWorstLoss, fundedSlots, countAskCover, bidRoomShare, carryRateBps, accountCarryBps, sessionCapPct, orderWorstUsd, feeTier, mlAfter } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, loopClipUsd, applyBudgetHalve, coinbaseWantUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney, accountVsCapital, pairQuotePlan, minAboveRoom, releaseK, releaseStep, releaseQtyForBudget, releaseAllowed, releaseWorstLoss, fundedSlots, countAskCover, bidRoomShare, carryRateBps, accountCarryBps, sessionCapPct, orderWorstUsd, feeTier, mlAfter } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -419,6 +419,7 @@ async function loadMakerFee(state, book) {
   let takerBps = 0;
   let vol30 = 0;
   let nextTxt = '-';
+  let venueStale = false;
   seedFeeSamples(state);
   try {
     if (VENUE === 'coinbase') {
@@ -426,13 +427,16 @@ async function loadMakerFee(state, book) {
       if (tier && tier.makerBps > 0) {
         venueBps = tier.makerBps;
         takerBps = Number(tier.takerBps) || 0;
-        feeSource = tier.stale ? 'stale' : 'venue';
-        if (state) state.feeCache = { makerBps: tier.makerBps, at: tier.refreshedAt || Date.now() };
+        venueStale = !!tier.stale;
+        if (state) state.feeCache = { makerBps: tier.makerBps, at: tier.refreshedAt || Date.now(), stale: venueStale };
       } else if (state && state.feeCache && state.feeCache.makerBps > 0) {
-        venueBps = state.feeCache.makerBps;
-        feeSource = 'stale';
-        const since = state.feeCache.at ? new Date(state.feeCache.at).toISOString() : 'unknown';
-        console.warn('FEE tier stale since=' + since);
+        const age = Date.now() - (Number(state.feeCache.at) || 0);
+        if (age <= 24 * 3600 * 1000) {
+          venueBps = state.feeCache.makerBps;
+          venueStale = true;
+          const since = state.feeCache.at ? new Date(state.feeCache.at).toISOString() : 'unknown';
+          console.warn('FEE tier stale since=' + since);
+        }
       }
     } else {
       const pairs = [];
@@ -462,15 +466,19 @@ async function loadMakerFee(state, book) {
     if (snap && snap.makerBps > 0) venueBps = snap.makerBps;
   }
   const realized = realizedFeeBps(state);
-  const tier = feeTier({ venue: venueBps, realized: realized.bps, config: FEE_BPS, fills: realized.n });
-  makerFeeBps = tier.maker > 0 ? tier.maker : FEE_BPS;
-  feeSource = tier.src;
-  if (realized.n >= 10 && realized.bps > makerFeeBps + 3) {
+  const prevFee = Number(state && state.feeBps) || 0;
+  const tierPick = feeTier({ venue: venueBps, realized: realized.bps, config: FEE_BPS, fills: realized.n, stale: venueStale });
+  makerFeeBps = tierPick.maker > 0 ? tierPick.maker : FEE_BPS;
+  feeSource = tierPick.src;
+  if (realized.n >= 10 && venueBps > 0 && realized.bps > venueBps + 3 && realized.bps > makerFeeBps + 1e-9) {
     makerFeeBps = realized.bps;
     feeSource = 'fills';
     console.log('FEE drift realized=' + realized.bps.toFixed(1) + 'bp');
   }
-  if (feeSource === 'default') console.warn('FEE tier source=default venue and fills unavailable');
+  if (prevFee > 0 && makerFeeBps + 15 < prevFee - 1e-9) {
+    console.log('FEE drop old=' + prevFee.toFixed(2) + ' new=' + makerFeeBps.toFixed(2) + ' src=' + feeSource);
+  }
+  if (feeSource === 'default' && !(venueBps > 0) && realized.n < 5) console.warn('FEE tier source=default venue and fills unavailable');
   if (state) {
     state.feeBps = makerFeeBps;
     state.feeSrc = feeSource;
@@ -556,6 +564,10 @@ function noteFill(state, row) {
   state.lastFill[row.symbol] = { side: row.side, price: row.price, time: row.time, size: row.size };
   state.lastFillAt = state.lastFillAt || {};
   state.lastFillAt[row.symbol] = Date.parse(row.time) || Date.now();
+  if (String(row.side || '').toLowerCase() === 'buy') {
+    if (state.fundsTwice) delete state.fundsTwice[row.symbol];
+    if (state.fundsHits) delete state.fundsHits[row.symbol];
+  }
   if (String(row.liquidity || 'maker') !== 'taker' && Number(row.fee) > 0 && Number(row.price) > 0 && Number(row.size) > 0) {
     state.feeSamples = state.feeSamples || [];
     state.feeSamples.push({ fee: Number(row.fee), n: Number(row.price) * Number(row.size) });
@@ -1164,6 +1176,15 @@ function markDust(state, sym, mid) {
   state.belowMin = state.belowMin || {};
   state.belowMin[sym] = mid || state.belowMin[sym] || true;
 }
+function restingBidUsd(mine) {
+  let n = 0;
+  for (const orders of Object.values(mine || {})) {
+    for (const o of orders || []) {
+      if (o.side === 'buy') n += Number(o.price || 0) * Number(o.size || 0);
+    }
+  }
+  return n;
+}
 function restingBuyNotional(mine) {
   const mul = feeMul(makerFeeBps);
   let n = 0;
@@ -1625,6 +1646,21 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   if (side === 'buy' && !reduceOnly && budget && VENUE !== 'kraken') {
     const cost = notional * feeMul(makerFeeBps);
     const allowed = Number(extra.charged) || 0;
+    if (VENUE === 'coinbase') {
+      const clipCap = Number(budget.clip) || 0;
+      const roomFree = Math.max(0, Number(budget.free) || 0) + allowed;
+      const room = clipCap > 0 ? Math.min(clipCap, roomFree) : roomFree;
+      if (notional > room + 1e-6) {
+        if (allowed > 0) {
+          const own = Number(extra.own) || 0;
+          budget.left = Math.max(0, Number(budget.left) || 0) + allowed - own;
+          budget.free = Math.max(0, roomFree - own);
+          budget.freeRoom = budget.free;
+        }
+        console.log('SKIP ' + row.symbol + ' clip need=$' + notional.toFixed(2) + ' clip=$' + clipCap.toFixed(2) + ' free=$' + Math.max(0, Number(budget.free) || 0).toFixed(2));
+        return;
+      }
+    }
     if (!(allowed > 0) || cost > allowed + 1e-6) {
       budget.skipped = budget.skipped || {};
       if (!budget.skipped[row.symbol]) {
@@ -1677,13 +1713,49 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
     const why = (r && (r.error || r.skipped)) || 'no id';
     const reason = rejectReason(why);
     if (side === 'buy' && !reduceOnly && budget && extra.charged) {
-      budget.left += Number(extra.charged) || 0;
+      const charged = Number(extra.charged) || 0;
+      budget.left += charged;
+      if (VENUE === 'coinbase') {
+        budget.free = Math.max(0, (Number(budget.free) || 0) + charged);
+        budget.freeRoom = budget.free;
+      }
       if (reason === 'funds') {
         invalidateLiveCache();
-        state.budgetHalveUntil = Date.now() + 10 * 60 * 1000;
-        budget.left *= 0.5;
+        const open = Date.now() < (Number(state.budgetHalveUntil) || 0);
+        const raw = Number(budget.start) > 0 ? Number(budget.start) : Math.max(0, Number(budget.left) || 0);
+        const before = open && Number(state.budgetPreHalve) > 0 ? Number(state.budgetPreHalve) : raw;
+        const after = applyBudgetHalve(before, true);
+        if (!open) {
+          state.budgetPreHalve = before;
+          state.budgetHalveUntil = Date.now() + 10 * 60 * 1000;
+          budget.start = after;
+          budget.left = Math.min(Math.max(0, Number(budget.left) || 0), after);
+          budget.clip = loopClipUsd({ budget: after, slots: Math.max(1, Number(budget.slots) || 1), venueMin: 1 });
+          state.fundsHits = state.fundsHits || {};
+          state.fundsHits[row.symbol] = 1;
+        } else {
+          state.fundsHits = state.fundsHits || {};
+          state.fundsHits[row.symbol] = (Number(state.fundsHits[row.symbol]) || 1) + 1;
+          if (state.fundsHits[row.symbol] >= 2) {
+            state.fundsTwice = state.fundsTwice || {};
+            state.fundsTwice[row.symbol] = state.budgetHalveUntil;
+          }
+        }
         budget.shocked = true;
-        console.log('BUDGET halve ' + row.symbol);
+        let freeNow = Number(budget.free) || 0;
+        if (VENUE === 'coinbase') {
+          try {
+            const live = await fetchLivePortfolio(cfg, ex, new Map(), 'coinbase');
+            const reserve = Number(budget.reserve) || 0;
+            freeNow = Math.max(0, Number(live.freeQuote || 0) - reserve);
+            budget.free = freeNow;
+            budget.freeRoom = freeNow;
+            budget.left = Math.min(Math.max(0, Number(budget.left) || 0), freeNow);
+          } catch (e) {
+            console.warn('budget refetch', e.message || e);
+          }
+        }
+        console.log('BUDGET halve ' + row.symbol + ' b=$' + before.toFixed(2) + '→$' + after.toFixed(2) + ' free=$' + freeNow.toFixed(2));
       }
     }
     if (reason === 'too-far') {
@@ -2082,6 +2154,8 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const reduce = !!rail.onRail || !!state.halted;
   const cut = rail.mode === 'cut';
   let buySz = 0; let sellSz = 0;
+  let cbMiss = '';
+  let keepBid = false;
   const minUsd = Number(row.quoteMin || pos.quoteMin || 1);
   const lot = row.lotDecimals ?? 8;
   const frac = rail.halfSize || cut ? 0.5 : 1;
@@ -2123,14 +2197,27 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
         markDust(state, row.symbol, mid);
       }
       const slots = Math.max(1, Number(budget && budget.slots) || 1);
-      const left = Math.max(0, Number(budget && budget.left) || 0);
       const rank = (budget && budget.bidRank) || [];
       const rankAt = rank.indexOf(row.symbol);
       const inSlot = !rank.length || (rankAt >= 0 && rankAt < slots);
+      const curEarly = (book.mine[row.symbol] || []).find((o) => o.side === 'buy');
+      const ownN = curEarly ? Number(curEarly.price) * Number(curEarly.size) : 0;
+      keepBid = !!(curEarly && ownN > 0 && bidPx > 0 && Math.abs(Number(curEarly.price) - bidPx) / bidPx < 0.0015);
+      if (keepBid && Number(budget && budget.clip) > 0 && ownN > Number(budget.clip) * 1.02 + 1e-6) keepBid = false;
       let wantUsd = 0;
-      if (inSlot) {
-        wantUsd = slotClipUsd({ budget: left, slots, venueMin: minUsd });
-        if (!(wantUsd + 1e-9 >= minUsd) && left + 1e-9 >= minUsd) wantUsd = Math.min(left, Math.max(minUsd, left * 0.9));
+      if (!inSlot) cbMiss = 'slots';
+      else if (!(q < MAX_Q)) cbMiss = 'max-q';
+      else if (!(bidPx > 0)) cbMiss = 'no-bid';
+      else if (!keepBid) {
+        const twiceUntil = state.fundsTwice && state.fundsTwice[row.symbol];
+        const twice = twiceUntil && Date.now() < Number(twiceUntil);
+        const clipNow = twice ? Math.min(Number(budget.clip) || minUsd, minUsd) : (Number(budget.clip) || 0);
+        const leftFor = Math.max(0, Number(budget.left) || 0) + ownN;
+        const freeFor = Math.max(0, Number(budget.free) || 0) + ownN;
+        const plan = coinbaseWantUsd({ clip: clipNow, left: leftFor, free: freeFor, venueMin: minUsd });
+        if (plan.gate === 'budget-spent') cbMiss = 'budget-spent left=$' + Number(budget.left || 0).toFixed(2) + ' clip=$' + Number(clipNow || 0).toFixed(2);
+        else if (plan.gate) cbMiss = 'free-cash free=$' + Number(budget.free || 0).toFixed(2) + ' need=$' + Number(clipNow || minUsd).toFixed(2);
+        else wantUsd = plan.usd;
       }
       const nameCap = Number(budget && budget.nameCap) || 0;
       if (nameCap > 0 && wantUsd > nameCap + 1e-6) {
@@ -2141,7 +2228,7 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
           console.log('BOOK concentrate ' + row.symbol + ' cap=$' + nameCap.toFixed(2));
         }
       }
-      if (addOk && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
+      if (addOk && !cbMiss && q < MAX_Q && bidPx > 0 && wantUsd > 0) buySz = formatVolume(wantUsd / bidPx, lot);
     } else if (!reduce) {
       const useLev = spotOpen ? 1 : ((state.levRamp && Number(state.levRamp.lev) > 0) ? Number(state.levRamp.lev) : (lev || 2));
       const room = krakenNotionalRoom({
@@ -2380,40 +2467,47 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   let skipBuySend = false;
   if (VENUE !== 'kraken' && !reduce && buySz > 0 && bidPx > 0) {
     const curBuy = mine.find((o) => o.side === 'buy');
-    const curN = curBuy ? Number(curBuy.price) * Number(curBuy.size) : 0;
+    const own = curBuy ? Number(curBuy.price) * Number(curBuy.size) : 0;
     const slotNow = state.orders[row.symbol] || {};
     const livePx = curBuy ? Number(curBuy.price) || 0 : 0;
     const refPx = Number(slotNow.bidPx) > 0 ? Number(slotNow.bidPx) : livePx;
     const refSz = Number(slotNow.bidSz) > 0 ? Number(slotNow.bidSz) : (curBuy ? Number(curBuy.size) || 0 : 0);
     const priceClose = !!(curBuy && refPx > 0 && bidPx > 0 && Math.abs(refPx - bidPx) / bidPx < 0.0015);
-    // A smaller clip is cash this order already holds. Grow only when free cash
-    // can fund the replacement before the cancel settles, and only one wave at a time.
-    if (budget.freeRoom == null) budget.freeRoom = Math.max(0, Number(book.cash) || 0);
-    const newCost = Number(buySz) * bidPx * (feeMul(makerFeeBps) || 1);
-    const grow = refSz > 0 && Number(buySz) > refSz * 1.25 && newCost <= Number(budget.freeRoom) + 1e-9;
+    const mul = feeMul(makerFeeBps) || 1;
+    const newCost = Number(buySz) * bidPx * mul;
+    const freeNow = Math.max(0, Number(budget.free) || 0);
+    const grow = refSz > 0 && Number(buySz) > refSz * 1.25 && newCost <= freeNow + own + 1e-9;
     const same = priceClose && !grow;
-    const taken = takeBuyBudget(budget.left, {
-      price: bidPx, wantSize: buySz, curNotional: 0, feeBps: makerFeeBps,
+    if (VENUE === 'coinbase' && Number(budget.clip) > 0 && bidPx > 0 && !same) {
+      const capSz = Number(budget.clip) / bidPx;
+      if (Number(buySz) > capSz + 1e-8) buySz = formatVolume(capSz, lot);
+    }
+    const taken = takeBuyBudget(Math.max(0, Number(budget.left) || 0), {
+      price: bidPx, wantSize: buySz, curNotional: own / mul, feeBps: makerFeeBps, free: freeNow,
       minNotional: minUsd, minSize: Number(row.baseMin || row.ordermin || 0), lot, same,
     });
-    budget.left = taken.budgetLeft;
     if (taken.skip) {
       buySz = 0;
       skipBuySend = true;
-      gate('buy', row.dustBid ? 'dust-budget' : 'budget');
+      const why = freeNow + own + 1e-9 < minUsd
+        ? 'free-cash free=$' + freeNow.toFixed(2) + ' need=$' + minUsd.toFixed(2)
+        : 'budget-spent left=$' + Number(budget.left || 0).toFixed(2) + ' clip=$' + Number(budget.clip || 0).toFixed(2);
+      gate('buy', row.dustBid ? 'dust-budget' : why);
       if (!budget.skipped || !budget.skipped[row.symbol]) {
         budget.skipped = budget.skipped || {};
         budget.skipped[row.symbol] = true;
-        console.log('SKIP ' + row.symbol + ' ' + (row.dustBid ? 'dust-budget' : 'budget'));
+        console.log('SKIP ' + row.symbol + ' ' + (row.dustBid ? 'dust-budget' : why.split(' ')[0]));
       }
     } else if (taken.send) {
       buySz = taken.size;
       buyCharged = taken.cost;
-      budget.freeRoom = Math.max(0, Number(budget.freeRoom) - Number(taken.cost || 0));
+      budget.left = Math.max(0, Number(budget.left) + own - taken.cost);
+      budget.free = Math.max(0, freeNow + own - taken.cost);
+      budget.freeRoom = budget.free;
       if (row.dustBid && budget) budget.dustLeft = Math.max(0, Number(budget.dustLeft) - taken.cost);
     } else {
       buyHold = true;
-      if (curN > 0) budget.left = Math.max(0, Number(budget.left) - curN);
+      keepBid = true;
     }
   }
   const bidHalf = buySz > 0 ? sentHalfBps(mid, bidPx, 0) : 0;
@@ -2458,16 +2552,26 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     if (row.dustBid) gate('buy', 'dust-budget');
     else if (state.halted) gate('buy', 'halt');
     else if (VENUE === 'kraken') gate('buy', buyMiss || 'unsized');
+    else if (keepBid) { /* resting bid stays; its cash is already reserved */ }
+    else if (cbMiss) gate('buy', cbMiss);
     else {
+      const leftNow = Math.max(0, Number(budget && budget.left) || 0);
+      const freeNow = Math.max(0, Number(budget && budget.free) || 0);
+      const clipNow = Number(budget && budget.clip) || 0;
       const rank = (budget && budget.bidRank) || [];
       const slotsNow = Math.max(1, Number(budget && budget.slots) || 1);
       const rankAt = rank.indexOf(row.symbol);
       const inSlot = !rank.length || (rankAt >= 0 && rankAt < slotsNow);
       if (!inSlot) gate('buy', 'slots');
-      else if (Number(budget && budget.start) + 1e-9 >= minUsd) {
-        console.log('BUDGET bug ' + row.symbol + ' b=$' + Number(budget.start).toFixed(2));
+      else if (leftNow + 1e-9 >= clipNow && clipNow > 0 && freeNow + 1e-9 >= clipNow) {
+        state.budgetBugAt = state.budgetBugAt || {};
+        if (Date.now() - (state.budgetBugAt[row.symbol] || 0) > 3600 * 1000) {
+          state.budgetBugAt[row.symbol] = Date.now();
+          console.log('BUDGET bug ' + row.symbol + ' left=$' + leftNow.toFixed(2) + ' free=$' + freeNow.toFixed(2) + ' clip=$' + clipNow.toFixed(2) + ' q=' + Number(q).toFixed(2) + ' bid=' + bidPx);
+        }
         gate('buy', 'budget');
-      } else gate('buy', 'budget');
+      } else if (freeNow + 1e-9 < minUsd) gate('buy', 'free-cash free=$' + freeNow.toFixed(2) + ' need=$' + minUsd.toFixed(2));
+      else gate('buy', 'budget-spent left=$' + leftNow.toFixed(2) + ' clip=$' + clipNow.toFixed(2));
     }
   }
   if (!(sellSz > 0) && !gates.some((g) => g.startsWith('sell '))) {
@@ -2483,16 +2587,11 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const sellTok = sellSz > 0 ? String(askHalf || 0) : (sellDust ? '-' : (sellWhy ? 'gate=' + sellWhy.split(' ')[0] : '-'));
   halfShown = 'b' + buyTok + '/a' + sellTok;
   quoteExtra.halfBps = halfShown;
-  const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: (reduce && Number(pos.short) > 0) || closeExact, extra: { ...quoteExtra, risk: buyRisk, positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold, why: closeExact ? 'close' : '' } };
+  const buyJob = { row, side: 'buy', target: buySz > 0 ? bidPx : 0, size: buySz, mine, lev: buyLev, reduceOnly: (reduce && Number(pos.short) > 0) || closeExact, extra: { ...quoteExtra, risk: buyRisk, positionQty: pos.short, lossBps: buyLoss, touch: s.bid, distBps: mid > 0 && s.bid > 0 ? Math.round(Math.abs(bidPx - s.bid) / mid * 10000) : 0, charged: buyCharged, hold: buyHold, own: (mine.find((o) => o.side === 'buy') ? Number(mine.find((o) => o.side === 'buy').price) * Number(mine.find((o) => o.side === 'buy').size) : 0), why: closeExact ? 'close' : '' } };
   const sellJob = { row, side: 'sell', target: sellSz > 0 ? askPx : 0, size: sellSz, mine, lev: sellLev, reduceOnly: reduce && Number(pos.long) > 0, extra: { ...quoteExtra, risk: sellRisk, positionQty: pos.long, lossBps: sellLoss, touch: s.ask, distBps: mid > 0 && s.ask > 0 ? Math.round(Math.abs(askPx - s.ask) / mid * 10000) : 0, why: releasePlan ? 'release' : '', releaseStep: releasePlan ? releasePlan.k : 0 } };
   const buyGate = buyWhy.split(' ')[0];
-  buyJob.extra.pull = !(buySz > 0) && buyGate !== 'budget' && buyGate !== 'dust-budget' && buyGate !== 'budget-tight' && buyGate !== 'slots';
+  buyJob.extra.pull = !(buySz > 0) && !keepBid && buyGate !== 'budget' && buyGate !== 'dust-budget' && buyGate !== 'budget-tight' && buyGate !== 'budget-spent' && buyGate !== 'free-cash' && buyGate !== 'slots';
   sellJob.extra.pull = !(sellSz > 0) && sellWhy.split(' ')[0] !== 'below-min';
-  if (!(buyJob.target > 0) && !buyJob.extra.pull && budget) {
-    const kept = (mine || []).find((o) => o.side === 'buy');
-    const keptN = kept ? Number(kept.price) * Number(kept.size) : 0;
-    if (keptN > 0) budget.left = Math.max(0, Number(budget.left) - keptN);
-  }
   if (!quiet && !(focusedOut && reduce)) {
     if (rail.defer) {
       rail.defer.sells.push(sellJob);
@@ -3165,12 +3264,16 @@ async function main() {
       const halve = now < (state.budgetHalveUntil || 0);
       let budgetLeft = Number(book.cash || 0);
       let slotN = MAX_PAIRS;
+      let budgetStart = budgetLeft;
+      let loopClip = 0;
+      let freeCash = Math.max(0, Number(book.cash || 0));
+      let cbReserve = 0;
       if (VENUE === 'coinbase') {
         const heldBuys = restingBuyNotional(book.mine);
         const mul = feeMul(makerFeeBps) || 1;
         const grossCash = Number(book.cash || 0) + heldBuys / mul;
         const reserve = Math.max(Number(book.equity || 0) * 0.01, 0.1);
-        budgetLeft = cashBudget({ free: grossCash, restingCost: heldBuys, equity: book.equity, halve, netOfHolds: true });
+        budgetLeft = cashBudget({ free: grossCash, restingCost: heldBuys, equity: book.equity, halve: false, netOfHolds: true });
         let askCover = 0;
         let dustNow = 0;
         let parkedN = 0;
@@ -3200,16 +3303,24 @@ async function main() {
           bidRoom: room.bidRoom, free: Number(book.cash || 0), tradable, share: MIN_BID_SHARE, target: room.target,
         });
         budgetLeft = Math.min(Math.max(0, budgetLeft), Math.max(0, Number(book.cash || 0) + heldBuys));
+        if (halve) {
+          const cap = Number(state.budgetPreHalve) > 0 ? Number(state.budgetPreHalve) * 0.5 : budgetLeft * 0.5;
+          budgetLeft = Math.min(applyBudgetHalve(budgetLeft, true), cap);
+        }
         const venueMin = 1;
         slotN = fundedSlots({ budget: budgetLeft, venueMin, names: Math.max(1, quoteNames || 1) });
         state.parkedSnap = { n: parkedN, usd: parkedUsd, h: parkedH };
-        const clip = slotClipUsd({ budget: budgetLeft, slots: slotN, venueMin });
-        if (Math.abs(budgetLeft - (state.lastBudget ?? budgetLeft)) >= 1 || slotN !== state.lastSlots) {
-          console.log('BOOK replan budget=$' + budgetLeft.toFixed(2) + ' slots=' + slotN);
+        budgetStart = budgetLeft;
+        loopClip = loopClipUsd({ budget: budgetStart, slots: slotN, venueMin });
+        freeCash = Math.max(0, Number(book.cash || 0) - reserve);
+        cbReserve = reserve;
+        budgetLeft = Math.max(0, budgetStart - restingBidUsd(book.mine));
+        if (Math.abs(budgetStart - (state.lastBudget ?? budgetStart)) >= 1 || slotN !== state.lastSlots) {
+          console.log('BOOK replan budget=$' + budgetStart.toFixed(2) + ' slots=' + slotN);
         }
-        state.lastBudget = budgetLeft;
+        state.lastBudget = budgetStart;
         state.lastSlots = slotN;
-        console.log('BUDGET free=' + Number(book.cash || 0).toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetLeft.toFixed(2) + ' slots=' + slotN + ' clip=$' + clip.toFixed(2));
+        console.log('BUDGET free=' + freeCash.toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetStart.toFixed(2) + ' slots=' + slotN + ' clip=$' + loopClip.toFixed(2));
       }
       state.releasePick = pickRelease(state, book, now);
       const heldForBid = new Set(Object.keys(book.positions || {}).filter((s) => {
@@ -3223,7 +3334,9 @@ async function main() {
         return (heldForBid.has(a.symbol) ? 1 : 0) - (heldForBid.has(b.symbol) ? 1 : 0);
       });
       const budget = {
-        left: Math.max(0, budgetLeft), start: Math.max(0, budgetLeft), slots: Math.max(1, slotN || 1), dustLeft: Math.max(0, budgetLeft) * 0.25,
+        left: Math.max(0, budgetLeft), start: Math.max(0, VENUE === 'coinbase' ? budgetStart : budgetLeft), slots: Math.max(1, slotN || 1),
+        clip: loopClip, free: VENUE === 'coinbase' ? freeCash : Math.max(0, Number(book.cash || 0)), reserve: cbReserve,
+        dustLeft: Math.max(0, budgetLeft) * 0.25,
         dustTopupOk, nameCap: VENUE === 'coinbase' ? Math.max(0, (Number(book.equity || 0) - dustSum) * CB_NAME_CAP) : 0,
         bidRank: bidRank.map((r) => r.symbol),
       };
@@ -3242,7 +3355,14 @@ async function main() {
         if (budget.shocked && VENUE === 'coinbase') {
           invalidateLiveCache();
           try { book = await coinbaseBook(state, products); } catch { /* keep */ }
-          budget.left = cashBudget({ free: book.cash, restingCost: restingBuyNotional(book.mine), equity: book.equity, halve: true, netOfHolds: true });
+          const reserve = Number(budget.reserve) > 0 ? Number(budget.reserve) : Math.max(Number(book.equity || 0) * 0.01, 0.1);
+          const start = Math.max(0, Number(budget.start) || 0);
+          const free = Math.max(0, Number(book.cash || 0) - reserve);
+          budget.reserve = reserve;
+          budget.free = free;
+          budget.freeRoom = free;
+          budget.clip = loopClipUsd({ budget: start, slots: Math.max(1, Number(budget.slots) || 1), venueMin: 1 });
+          budget.left = Math.min(Math.max(0, start - restingBidUsd(book.mine)), free);
           budget.shocked = false;
         }
       }

@@ -236,13 +236,15 @@ function floorToLot(size, lot) {
 
 // Shrink a buy to the cash left. `curNotional` is the resting order we would cancel first.
 // `same` means that order already matches: it stays, and the budget is unchanged.
-export function takeBuyBudget(budgetLeft, { price = 0, wantSize = 0, curNotional = 0, feeBps = 0, minNotional = 0, minSize = 0, lot = 8, same = false } = {}) {
+export function takeBuyBudget(budgetLeft, { price = 0, wantSize = 0, curNotional = 0, feeBps = 0, minNotional = 0, minSize = 0, lot = 8, same = false, free = null } = {}) {
   const left = Math.max(0, Number(budgetLeft) || 0);
   const want = Number(wantSize) || 0;
   if (same) return { budgetLeft: left, size: want, send: false, skip: false, cost: 0 };
   const px = Number(price);
   const mul = feeMul(feeBps);
-  const room = left + Math.max(0, Number(curNotional) || 0) * mul;
+  const own = Math.max(0, Number(curNotional) || 0) * mul;
+  let room = left + own;
+  if (free != null) room = Math.min(room, Math.max(0, Number(free) || 0) + own);
   if (!(px > 0) || !(room > 0)) return { budgetLeft: left, size: 0, send: false, skip: true, cost: 0 };
   let sz = floorToLot(Math.min(want, room / (px * mul)), lot);
   const cost = sz * px * mul;
@@ -1420,16 +1422,77 @@ export function orderWorstUsd({ equity = 0, stopDistPp = 0 } = {}) {
   return 0.25 * (Math.max(0, Number(stopDistPp) || 0) / 100) * Math.max(0, Number(equity) || 0);
 }
 
-// Maker fee is the worst of the venue tier, realized fills, and the config default.
-export function feeTier({ venue = 0, realized = 0, config = 0, fills = 0 } = {}) {
+// Maker fee. The config default is only the cold start. A known venue tier
+// (or realized fills) wins even when it is below that default. Realized wins
+// over the venue when it is higher, which is what keeps a 31bp book on 16bp config.
+export function feeTier({ venue = 0, realized = 0, config = 0, fills = 0, stale = false } = {}) {
   const v = Math.max(0, Number(venue) || 0);
   const c = Math.max(0, Number(config) || 0);
   const r = (Number(fills) || 0) >= 5 ? Math.max(0, Number(realized) || 0) : 0;
-  const maker = Math.max(v, r, c);
-  let src = 'default';
-  if (r > 0 && r + 1e-9 >= maker) src = 'fills';
-  else if (v > 0 && v + 1e-9 >= maker) src = 'venue';
-  return { maker, src, warn: src === 'default' };
+  if (v > 0) {
+    if (r > v + 1e-9) return { maker: r, src: 'fills', warn: false };
+    return { maker: v, src: stale ? 'stale' : 'venue', warn: false };
+  }
+  if (r > 0) return { maker: r, src: 'fills', warn: false };
+  return { maker: c, src: 'default', warn: true };
+}
+
+// One clip for the whole loop, from the starting budget. Never re-divide the
+// remainder. If the haircut drops under the venue minimum but the budget can
+// still pay one order, the clip is exactly that minimum.
+export function loopClipUsd({ budget = 0, slots = 1, venueMin = 1 } = {}) {
+  const min = Math.max(0, Number(venueMin) || 0);
+  const b = Math.max(0, Number(budget) || 0);
+  const n = Math.max(1, Number(slots) || 1);
+  const clip = slotClipUsd({ budget: b, slots: n, venueMin: min });
+  if (!(clip + 1e-9 >= min) && b + 1e-9 >= min) return min;
+  return clip;
+}
+
+export function applyBudgetHalve(budget, halve) {
+  const b = Math.max(0, Number(budget) || 0);
+  return halve ? b * 0.5 : b;
+}
+
+// How much of this loop's clip a row may still buy. `left` and `free` already
+// include this row's own resting bid when a replace is allowed.
+export function coinbaseWantUsd({ clip = 0, left = 0, free = 0, venueMin = 1 } = {}) {
+  const min = Math.max(0, Number(venueMin) || 0);
+  const c = Math.max(0, Number(clip) || 0);
+  const L = Math.max(0, Number(left) || 0);
+  const F = Math.max(0, Number(free) || 0);
+  if (!(c > 0) || L + 1e-9 < min) return { usd: 0, gate: 'budget-spent' };
+  const cap = Math.min(c, L, F);
+  if (cap + 1e-9 < min) return { usd: 0, gate: 'free-cash' };
+  return { usd: cap, gate: '' };
+}
+
+// Walk in-slot rows. A kept resting bid is reserved up front and is not a new order.
+export function planCoinbaseBids({ start = 0, slots = 1, venueMin = 1, free = 0, rows = [] } = {}) {
+  const clip = loopClipUsd({ budget: start, slots, venueMin });
+  let left = Math.max(0, Number(start) || 0);
+  let freeLeft = Math.max(0, Number(free) || 0);
+  for (const row of rows) {
+    if (row && row.keep) left = Math.max(0, left - Math.max(0, Number(row.own) || 0));
+  }
+  const planned = [];
+  for (const row of rows || []) {
+    if (row && row.keep) {
+      planned.push({ symbol: row.symbol, usd: 0, gate: '', keep: true });
+      continue;
+    }
+    if (row && row.inSlot === false) {
+      planned.push({ symbol: row.symbol, usd: 0, gate: 'slots' });
+      continue;
+    }
+    const plan = coinbaseWantUsd({ clip, left, free: freeLeft, venueMin });
+    planned.push({ symbol: row.symbol, usd: plan.usd, gate: plan.gate });
+    if (plan.usd > 0) {
+      left = Math.max(0, left - plan.usd);
+      freeLeft = Math.max(0, freeLeft - plan.usd);
+    }
+  }
+  return { clip, left, free: freeLeft, rows: planned };
 }
 
 // Best half-spread by expected net, with no floor that makes every name look the same.
