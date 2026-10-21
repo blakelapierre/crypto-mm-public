@@ -701,10 +701,14 @@ export function openClipUsd({ budget = 0, slots = 1, clipMax = 0, venueMin = 1 }
   return share;
 }
 
-export function tradableBookTarget({ equity = 0, dust = 0, reserve = 0, frac = 0.9, askCover = 0 } = {}) {
+export function tradableBookTarget({ equity = 0, dust = 0, reserve = 0, frac = 0.9, askCover = 0, restingAsks = null, restingBids = null } = {}) {
   const base = Math.max(0, (Number(equity) || 0) - (Number(dust) || 0) - (Number(reserve) || 0));
   const target = Math.max(0, Number(frac) || 0) * base;
-  return { target, bidRoom: Math.max(0, target - Math.max(0, Number(askCover) || 0)) };
+  const useResting = restingAsks != null || restingBids != null;
+  const asks = useResting ? Math.max(0, Number(restingAsks) || 0) : Math.max(0, Number(askCover) || 0);
+  const bids = useResting ? Math.max(0, Number(restingBids) || 0) : 0;
+  const cover = asks + bids;
+  return { target, bidRoom: Math.max(0, target - cover), base, cover };
 }
 
 // Missing price does not count as flat. A known price under the venue minimum does.
@@ -815,7 +819,7 @@ export function resetAllowed({ resets = [], now = 0, max = 1, windowMs = 24 * 36
   return recent.length < Math.max(0, Number(max) || 0);
 }
 
-export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost = false, maxLev = 5, stepMs = 2 * 3600 * 1000, notches = null, idleMs = 0, fills = null, idleStepMs = 6 * 3600 * 1000 } = {}) {
+export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost = false, maxLev = 5, stepMs = 2 * 3600 * 1000, notches = null, idleMs = 0, fills = null, idleStepMs = 6 * 3600 * 1000, repeatIdle = false } = {}) {
   const cap = Math.max(2, Number(maxLev) || 5);
   const ladder = (notches && notches.length ? notches : [2, 3, 5, cap]).map((n) => Math.min(cap, Number(n) || 2));
   if (ladder[ladder.length - 1] < cap) ladder.push(cap);
@@ -824,6 +828,11 @@ export function leverageNotch({ step = 0, elapsedMs = 0, positive = false, lost 
   if (positive && Number(elapsedMs) + 1e-9 >= Number(stepMs) && i + 1 < ladder.length) {
     i += 1;
     return { step: i, lev: ladder[i], advanced: true };
+  }
+  // v15: one notch per idle window, up to the venue cap, as long as no new loss reset the clock.
+  if (repeatIdle && Number(idleMs) + 1e-9 >= Number(idleStepMs) && i + 1 < ladder.length) {
+    i += 1;
+    return { step: i, lev: ladder[i], advanced: true, idle: true };
   }
   // One notch after 6h with no fills and no loss. A later idle hour does not climb again.
   if (fills != null && Number(fills) === 0 && i === 0 && i + 1 < ladder.length && Number(idleMs) + 1e-9 >= Number(idleStepMs)) {
@@ -1020,6 +1029,7 @@ export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, stop = 0,
     fillp: Number(s.fillp) > 0 && Number(s.fillp) <= 1 ? Number(s.fillp) : 1,
     wider: !!s.wider,
     expEdge: Number(s.expEdge) || 0,
+    stopRoom: !!s.stopRoom,
   }));
   const result = list.map((s) => ({
     id: s.id, sym: s.sym, side: s.side, fit: 0, reason: '',
@@ -1028,7 +1038,7 @@ export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, stop = 0,
   for (let i = 0; i < list.length; i++) {
     if (!(list[i].want > 0)) continue;
     if (list[i].min > 0 && list[i].lossCap + 1e-9 < list[i].min) {
-      result[i].reason = 'min-size';
+      result[i].reason = list[i].stopRoom ? 'stop-room' : 'min-size';
       list[i].dead = true;
     }
   }
@@ -1040,7 +1050,8 @@ export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, stop = 0,
     let n = Math.min(s.want, s.lossCap, left);
     if (s.wider && s.fillp < 1) n *= s.fillp;
     if (s.min > 0 && n + 1e-9 < s.min) {
-      if (!(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
+      if (s.stopRoom && !(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'stop-room';
+      else if (!(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
       else if (!(left + 1e-9 >= s.min)) result[i].reason = 'margin';
       else result[i].reason = 'min-size';
       continue;
@@ -1061,7 +1072,8 @@ export function krakenOpeningPlan({ equity = 0, lev = 2, resume = 350, stop = 0,
   for (let i = 0; i < result.length; i++) {
     if (result[i].fit > 0 || result[i].reason) continue;
     const s = list[i];
-    if (s.min > 0 && !(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
+    if (s.min > 0 && s.stopRoom && !(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'stop-room';
+    else if (s.min > 0 && !(s.lossCap + 1e-9 >= s.min)) result[i].reason = 'loss-cap';
     else if (s.min > 0 && !(room.notional + 1e-9 >= s.min)) result[i].reason = 'margin';
     else result[i].reason = 'room-used';
   }
@@ -1142,7 +1154,7 @@ export function applyCapitalShift(state, usd, why) {
   s.lifetimeTransfers = prevLife + n;
   s.capitalBaseline = origin + s.lifetimeTransfers;
   s.equityMarks = (s.equityMarks || []).map((m) => ({ t: m.t, eq: (Number(m.eq) || 0) + n }));
-  if (Number(s.haltEquity) > 0) s.haltEquity = Number(s.haltEquity) + n;
+  if (s.halted && Number(s.haltEquity) > 0) s.haltEquity = Number(s.haltEquity) + n;
   s.resetBaselines = (s.resetBaselines || []).map((b) => (typeof b === 'number' ? b + n : { ...b, eq: (Number(b.eq) || 0) + n }));
   if (Number(s.prevEquity) > 0) s.prevEquity = Number(s.prevEquity) + n;
   if (Number(s.lastEquity) > 0) s.lastEquity = Number(s.lastEquity) + n;
@@ -1229,6 +1241,7 @@ export function controlResume(state) {
       haltAction: '',
       haltEquity: 0,
       haltNotional: 0,
+      haltLossPlan: {},
     },
   };
 }
@@ -1254,6 +1267,7 @@ export function statusMoney(opts = {}) {
     + ' resid=$' + Number(resid || 0).toFixed(2)
     + ' pending=$' + Number(pending || 0).toFixed(2)
     + (Math.abs(Number(pending) || 0) >= 0.005 ? ' (excluded)' : '');
+  if (opts.unexplained != null) s += ' unexplained=$' + Number(opts.unexplained).toFixed(2);
   const stop = Number(stopPct) || 0;
   if (stop > 0 && c > 0) {
     const dd = Math.max(0, -t / c);
@@ -1420,6 +1434,91 @@ export function sessionCapPct({ maxPct = 8, stopDistPp = 100 } = {}) {
 
 export function orderWorstUsd({ equity = 0, stopDistPp = 0 } = {}) {
   return 0.25 * (Math.max(0, Number(stopDistPp) || 0) / 100) * Math.max(0, Number(equity) || 0);
+}
+
+// Book mid wins when the feed and the touch disagree by more than the quote needs.
+export function freshBookMid({ bookBid = 0, bookAsk = 0, feedMid = 0, needBps = 0, spreadMedBps = 0 } = {}) {
+  const bid = Number(bookBid) || 0;
+  const ask = Number(bookAsk) || 0;
+  const book = bid > 0 && ask > bid ? (bid + ask) / 2 : 0;
+  const feed = Number(feedMid) || 0;
+  if (!(book > 0)) return { mid: feed, stale: false, diffBps: 0, src: 'feed' };
+  const diff = feed > 0 ? Math.abs(feed - book) / book * 10000 : 0;
+  const tol = Math.max(Number(needBps) || 0, Number(spreadMedBps) || 0);
+  if (feed > 0 && diff > tol + 1e-6) return { mid: book, stale: true, diffBps: diff, src: 'book' };
+  return { mid: book, stale: false, diffBps: diff, src: 'book' };
+}
+
+// One step down from the cost floor every park window. Loss stays inside the stop room.
+export function parkStepPlan({ entry = 0, costFloor = 0, touch = 0, idleH = 0, stepH = 6, stepBps = 150, maxLossBps = 800, qty = 0, feeBps = 0, stopDistPp = 100, capital = 0 } = {}) {
+  const idle = Number(idleH) || 0;
+  const step = Math.max(0.01, Number(stepH) || 6);
+  if (idle + 1e-9 < step) return { k: 0, px: 0, worst: 0, ok: false };
+  const k = 1 + Math.floor((idle - step) / step + 1e-9);
+  const px = releaseStep({ entry, costFloor, touch, k, stepBps, maxLossBps });
+  const worst = releaseWorstLoss({ entry, floor: px, qty, feeBps });
+  const room = Math.max(0, (Number(stopDistPp) - 2) / 100) * Math.max(0, Number(capital) || 0);
+  return { k, px, worst, ok: px > 0 && worst <= room + 1e-9 };
+}
+
+// A top-up that costs more than the holding, or a market we no longer list, stays dust.
+export function dustTopupDecision({ dustUsd = 0, venueMin = 1, listed = true } = {}) {
+  if (!listed) return { usd: 0, reason: 'unlisted' };
+  const usd = dustTopupUsd({ dustUsd, venueMin });
+  if (!(usd > 0)) return { usd: 0, reason: 'above-min' };
+  if (usd > Math.max(0, Number(dustUsd) || 0) + 1e-9) return { usd: 0, reason: 'cost' };
+  return { usd, reason: '' };
+}
+
+// A pending with no id is legacy. After 72h with no ledger match it becomes unexplained.
+export function migrateLegacyPending(state, now = 0) {
+  const s = { ...(state || {}) };
+  if (!s.halted && (Number(s.haltEquity) > 0 || Number(s.haltNotional) > 0)) {
+    s.haltEquity = 0;
+    s.haltNotional = 0;
+    s.haltLossPlan = {};
+  }
+  const p = s.transferPending;
+  if (!p) return { state: s, migrated: false, expired: false, usd: 0 };
+  let migrated = false;
+  if (!p.id) {
+    const since = Number(p.since || p.at) || 0;
+    s.transferPending = { ...p, id: 'legacy-' + since, source: p.source || 'legacy', since };
+    if (s.pendingShift == null) s.pendingShift = 0;
+    migrated = true;
+  }
+  const cur = s.transferPending;
+  const since = Number(cur.since || cur.at) || 0;
+  const t = Number(now) || Date.now();
+  if (since > 0 && t - since >= 72 * 3600 * 1000) {
+    const usd = Number(cur.usd) || 0;
+    s.unexplained = (Number(s.unexplained) || 0) + usd;
+    s.transferPending = null;
+    return { state: s, migrated, expired: true, usd };
+  }
+  return { state: s, migrated, expired: false, usd: 0 };
+}
+
+export function neutralEquity({ equity = 0, pending = 0, unexplained = 0 } = {}) {
+  return (Number(equity) || 0) - (Number(pending) || 0) - (Number(unexplained) || 0);
+}
+
+// Drawdown from transfer-neutral equity on both the mark and the current side.
+export function windowDrawdowns({ equity = 0, capital = 0, dayMark = 0, sessionMark = 0, lifeMark = 0, pending = 0, unexplained = 0 } = {}) {
+  const e = neutralEquity({ equity, pending, unexplained });
+  const c = Number(capital) || 0;
+  const one = (mark) => {
+    const m = neutralEquity({ equity: mark, pending, unexplained });
+    return drawdownPct({ trading: e - m, capital: c }) * 100;
+  };
+  return { day: one(dayMark), session: one(sessionMark), lifetime: one(lifeMark) };
+}
+
+// Under 5pp to the lifetime stop, one order's worst loss has to fit in the remaining room.
+export function stopRoomBudget({ stopDistPp = 100, capital = 0 } = {}) {
+  const dist = Number(stopDistPp);
+  if (!(dist < 5)) return { bind: false, usd: Infinity };
+  return { bind: true, usd: Math.max(0, (dist - 1) / 100) * Math.max(0, Number(capital) || 0) };
 }
 
 // Maker fee. The config default is only the cold start. A known venue tier
