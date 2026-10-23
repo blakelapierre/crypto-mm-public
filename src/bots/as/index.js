@@ -12,7 +12,7 @@ import { fetchLivePortfolio, invalidateLiveCache } from '../../shared/portfolio.
 import { formatPrice, formatVolume } from '../../shared/sizing.js';
 import { postStatus, postFill, pullVenueScan } from '../../shared/status-client.js';
 import { refreshFeeTier, feeTierSnap } from '../../shared/fee-tier.js';
-import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, loopClipUsd, applyBudgetHalve, coinbaseWantUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney, accountVsCapital, pairQuotePlan, minAboveRoom, releaseK, releaseStep, releaseQtyForBudget, releaseAllowed, releaseWorstLoss, fundedSlots, countAskCover, bidRoomShare, carryRateBps, accountCarryBps, sessionCapPct, orderWorstUsd, feeTier, mlAfter, freshBookMid, parkStepPlan, dustTopupDecision, migrateLegacyPending, neutralEquity, stopRoomBudget } from './quote.js';
+import { asQuote, realizedSigma, liqNotionalCap, halfSpread, exitBound, clampToBand, halveToward, backoffSec, feeToBps, applyEntry, entryAvg, opensRisk, touchExit, bookNotional, cashBudget, feeMul, takeBuyBudget, fitOpeningPair, notionalForCarry, holdExitPx, pnlResidual, inventoryMarkPnl, fillScore, unwindAsk, sentHalfBps, adaptiveHalf, exitLossNotional, gradualHoldExit, holdingClass, openingMinHalfBps, costFloorPx, posEffectOf, riskAllowsLoss, stepToward, roundUpReduce, rankByNetEdge, haltPhase, haltTimeoutPx, haltExitBound, widenOpenDecision, openGateWhy, unexplainedJump, dustTopupUsd, bookSlots, openClipUsd, tradableBookTarget, positionAboveMin, roundTripPadBps, roundTripFloorPx, oppositeFloorPx, edgeGate, riskExempt, roundTripNet, pairCooldownMs, churnSignal, lifetimePct, lifetimeHalt, lifeText, resetAllowed, leverageNotch, rankByExpectedEdge, cbTransferAllowed, transferUsd, pendingTrigger, haltRiskAction, bookSlotsScaled, slotClipUsd, loopClipUsd, applyBudgetHalve, coinbaseWantUsd, idleRelax, marksForPending, krakenOpeningPlan, krakenNotionalRoom, lifeTradingText, dustCanExit, cashTransferJump, drawdownPct, lossHalts, displayCapital, applyCapitalShift, openPending, settleTransfer, clearPendingState, controlResume, statusMoney, accountVsCapital, pairQuotePlan, minAboveRoom, releaseK, releaseStep, releaseQtyForBudget, releaseAllowed, releaseWorstLoss, fundedSlots, countAskCover, bidRoomShare, carryRateBps, accountCarryBps, sessionCapPct, orderWorstUsd, feeTier, mlAfter, freshBookMid, parkStepPlan, dustTopupDecision, migrateLegacyPending, neutralEquity, stopRoomBudget, anchorActive, followMidQuote, capHysteresis, exitAskPx, migrateDustArmed } from './quote.js';
 
 loadProjectEnv(process.env.BOT_CONFIG || 'configs/as-kraken.env');
 process.env.BOT = process.env.BOT || 'as';
@@ -81,6 +81,13 @@ const RELEASE_MAX_LOSS_BPS = envNum('AS_RELEASE_MAX_LOSS_BPS', 800);
 const RELEASE_MAX_DAY = envNum('AS_RELEASE_MAX_DAY_PCT', 1.5) / 100;
 const MIN_BID_SHARE = envNum('AS_MIN_BID_SHARE', 0.15);
 const PARK_STEP_H = envNum('AS_PARK_STEP_H', 6);
+const ANCHOR_TTL_H = envNum('AS_ANCHOR_TTL_H', 4);
+const ANCHOR_SIGMA_K = envNum('AS_ANCHOR_SIGMA_K', 3);
+const ANCHOR_FLAT = envBool('AS_ANCHOR_FLAT_EXPIRE', true);
+const PARK_DEEP_MODE = envStr('AS_PARK_DEEP_MODE', 'hold');
+const PARK_DEEP_H = envNum('AS_PARK_DEEP_H', 72);
+const PARK_DEEP_MAX = envNum('AS_PARK_DEEP_MAX_LOSS_BPS', 0);
+const SCAN_MIN_NET = envNum('AS_SCAN_MIN_NET_BPS', MIN_EDGE);
 const ROLLOVER_4H = envNum('AS_ROLLOVER_BPS_4H', 2);
 const MIN_NET_EDGE = envNum('AS_MIN_NET_EDGE_BPS', 1);
 const SANITY_VOL = 25000;
@@ -296,6 +303,39 @@ function logGate(state, sym, side, why) {
   if (now - (state.gateLog[key] || 0) < 10 * 60 * 1000) return;
   state.gateLog[key] = now;
   console.log('GATE ' + sym + ' ' + side + ' ' + why);
+}
+function logClamp(state, sym, side, fromBps, toBps, cap) {
+  const key = sym + '|' + side + '|CLAMP';
+  state.gateLog = state.gateLog || {};
+  const now = Date.now();
+  if (now - (state.gateLog[key] || 0) < 10 * 60 * 1000) return;
+  state.gateLog[key] = now;
+  console.log('CLAMP ' + sym + ' ' + side + ' from=' + Math.round(Number(fromBps) || 0) + 'bp to=' + Math.round(Number(toBps) || 0) + 'bp cap=' + Math.round(Number(cap) || 0));
+}
+function logAnchorExpire(state, sym, side, px, info) {
+  const key = sym + '|' + side + '|' + (info && info.reason) + '|' + px;
+  state.anchorLog = state.anchorLog || {};
+  if (state.anchorLog[key]) return;
+  state.anchorLog[key] = Date.now();
+  const ageH = Number(info && info.ageH) || 0;
+  const move = Math.round(Number(info && info.moveBps) || 0);
+  console.log('ANCHOR expire ' + sym + ' side=' + side + ' px=' + px + ' reason=' + (info && info.reason) + ' age=' + ageH.toFixed(2) + 'h move=' + move + 'bp');
+}
+function noteSyncSkip(state, sym, side, why, k, target, resting) {
+  const key = sym + '|' + (k || 0) + '|' + why;
+  state.syncSkipOnce = state.syncSkipOnce || {};
+  if (state.syncSkipOnce[key]) return;
+  state.syncSkipOnce[key] = 1;
+  console.log('SYNC skip ' + sym + ' ' + side + ' why=' + why + ' target=' + target + ' resting=' + resting);
+}
+function noteStepSent(state, sym, why, k, px, kept) {
+  if (why !== 'park' && why !== 'release') return;
+  const key = sym + '|' + why + '|' + (k || 0) + '|' + (kept ? 'kept' : 'sent') + '|' + px;
+  state.stepOnce = state.stepOnce || {};
+  if (state.stepOnce[key]) return;
+  state.stepOnce[key] = 1;
+  const tag = why === 'park' ? 'PARK step ' : 'RELEASE step ';
+  console.log(tag + sym + ' k=' + (k || 0) + (kept ? ' kept=' : ' sent=') + px);
 }
 function noteSpread(state, sym, bps) {
   if (!(Number(bps) > 0) || !sym) return;
@@ -569,6 +609,10 @@ function noteFill(state, row) {
   if (String(row.side || '').toLowerCase() === 'buy') {
     if (state.fundsTwice) delete state.fundsTwice[row.symbol];
     if (state.fundsHits) delete state.fundsHits[row.symbol];
+  }
+  if (String(row.side || '').toLowerCase() === 'sell') {
+    if (state.dustArmed) delete state.dustArmed[row.symbol];
+    if (state.dustArmedAt) delete state.dustArmedAt[row.symbol];
   }
   if (String(row.liquidity || 'maker') !== 'taker' && Number(row.fee) > 0 && Number(row.price) > 0 && Number(row.size) > 0) {
     state.feeSamples = state.feeSamples || [];
@@ -1387,11 +1431,18 @@ function logScan(state, decision) {
     console.log('SCAN reject ' + r.symbol + ' reason=' + r.reason + ' val=' + Number(r.val || 0).toFixed(1) + ' need=' + Number(r.need || 0).toFixed(1) + ' fee=' + makerFeeBps.toFixed(1) + ' src=' + feeSource);
   }
   state.lastRejects = top.map((r) => r.symbol + ':' + r.reason);
+  state.scanSkipLog = state.scanSkipLog || {};
+  for (const r of decision.reasons || []) {
+    if (r.reason !== 'min-net') continue;
+    if (now - (state.scanSkipLog[r.symbol] || 0) < 3600 * 1000) continue;
+    state.scanSkipLog[r.symbol] = now;
+    console.log('SCAN skip ' + r.symbol + ' exp_edge=' + Number(r.val || 0).toFixed(1) + ' min_net=' + Number(r.minNet != null ? r.minNet : SCAN_MIN_NET).toFixed(1));
+  }
   if (now - (state.scanLogAt || 0) < 3600 * 1000) return;
   state.scanLogAt = now;
   console.log(diag);
   for (const b of decision.best5 || []) {
-    console.log('SCAN best ' + b.symbol + ' exp_edge=' + Number(b.expEdge).toFixed(1) + ' need=' + Number(b.need).toFixed(1) + ' fillp=' + Number(b.fillp).toFixed(2));
+    console.log('SCAN best ' + b.symbol + ' exp_edge=' + Number(b.expEdge).toFixed(1) + ' min_net=' + Number(b.minNet != null ? b.minNet : SCAN_MIN_NET).toFixed(1) + ' pad=' + Number(b.need).toFixed(0) + ' fillp=' + Number(b.fillp).toFixed(2));
   }
   const rej = decision.rejected || { feeSpread: 0, vol: 0, tick: 0 };
   const n = (rej.feeSpread || 0) + (rej.vol || 0) + (rej.tick || 0) + (rej.wide || 0);
@@ -1556,7 +1607,7 @@ async function select(products, book, state) {
     maxSpreadBps: MAX_SPREAD * 10000,
     maxPairs: krakenNet ? (state.probation ? 1 : (spotMode ? MAX_PAIRS : Math.max(MAX_PAIRS * 6, 8))) : CB_MAX_PAIRS + 8,
     k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
-    net: krakenNet, sanityVol: SANITY_VOL, minNetBps: MIN_NET_EDGE,
+    net: krakenNet, sanityVol: SANITY_VOL, minNetBps: MIN_NET_EDGE, scanMinNetBps: SCAN_MIN_NET,
     adverseBps: m5 != null && m5 < 0 ? -m5 : 0,
     carryBpsPerHour: ROLLOVER_4H / 4, holdMin: MAX_HOLD_MIN, maxHalfBps: Math.max(MAX_HALF * 10000, 250),
   });
@@ -1616,7 +1667,7 @@ async function select(products, book, state) {
       const spotDecision = rankByExpectedEdge(keep, {
         feeBps: makerFeeBps, minEdgeBps: minEdge, minVol: SANITY_VOL, maxSpreadBps: MAX_SPREAD * 10000,
         maxPairs: state.probation ? 1 : MAX_PAIRS, k: SIGMA_K, tauMin: TAU, kappa: KAPPA,
-        net: true, sanityVol: SANITY_VOL, minNetBps: MIN_NET_EDGE,
+        net: true, sanityVol: SANITY_VOL, minNetBps: MIN_NET_EDGE, scanMinNetBps: SCAN_MIN_NET,
         adverseBps: m5 != null && m5 < 0 ? -m5 : 0,
         carryBpsPerHour: ROLLOVER_4H / 4, holdMin: MAX_HOLD_MIN, maxHalfBps: Math.max(MAX_HALF * 10000, 250),
       });
@@ -1681,6 +1732,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
     }
     state.orders[row.symbol] = slot;
     if (state.backoff) delete state.backoff[row.symbol];
+    if (extra.why === 'park' || extra.why === 'release') noteSyncSkip(state, row.symbol, side, 'hold', extra.releaseStep, target, Number(cur.price) || 0);
     return;
   }
   if (side === 'buy' && !reduceOnly && budget && VENUE !== 'kraken') {
@@ -1713,12 +1765,20 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   const livePx = cur ? Number(cur.price) || 0 : 0;
   const refPx = prev > 0 ? prev : livePx;
   const refSz = prev > 0 ? Number(side === 'buy' ? slot.bidSz : slot.askSz) : (cur ? Number(cur.size) || 0 : 0);
-  if (cur && refPx > 0 && Math.abs(refPx - target) / target < 0.0015 && Math.abs(refSz - Number(size)) <= Math.max(1e-8, Number(size) * 0.02)) {
+  const hyst = cur && capHysteresis({
+    restingPx: livePx || refPx, targetPx: target, capBps: MAX_QUOTE_DIST,
+    mid: Number(extra.mid) || 0, touch: Number(extra.touch) || 0,
+  });
+  if (cur && (hyst || (refPx > 0 && Math.abs(refPx - target) / target < 0.0015 && Math.abs(refSz - Number(size)) <= Math.max(1e-8, Number(size) * 0.02)))) {
     if (side === 'buy') { slot.bid = cur.id; slot.bidPx = target; slot.bidSz = Number(size); }
     else { slot.ask = cur.id; slot.askPx = target; slot.askSz = Number(size); }
     state.orders[row.symbol] = slot;
     if (state.backoff) delete state.backoff[row.symbol];
     if (state.tooFar && state.tooFar[row.symbol] && state.tooFar[row.symbol].side === side) delete state.tooFar[row.symbol];
+    if (extra.why === 'park' || extra.why === 'release') {
+      noteStepSent(state, row.symbol, extra.why, extra.releaseStep, target, true);
+      noteSyncSkip(state, row.symbol, side, 'keep', extra.releaseStep, target, livePx || refPx);
+    }
     return;
   }
   if (cur && LIVE) {
@@ -1731,7 +1791,10 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   const distTxt = extra.distBps != null ? ' dist=' + extra.distBps + 'bp' : '';
   console.log('  ' + side.toUpperCase() + ' ' + row.symbol + ' ' + size + ' @ ' + target + (lev ? ' ' + lev + 'x' : '') + (reduceOnly ? ' reduce' : '') + (extra.halfBps != null ? ' half=' + extra.halfBps + 'bp' : '') + (extra.halfSrc ? ' half_src=' + extra.halfSrc : '') + (extra.risk ? ' risk=' + extra.risk : '') + sigTxt + distTxt + (extra.floorTxt ? ' floor=' + extra.floorTxt : ''));
   if (extra.lossBps != null) console.log('EXIT LOSS ' + row.symbol + ' ' + extra.lossBps);
-  if (!LIVE) return;
+  if (!LIVE) {
+    noteStepSent(state, row.symbol, extra.why, extra.releaseStep, target, false);
+    return;
+  }
   const meta = { level: 1, userref: Number(USERREF), leverage: lev || 0, clientOrderId };
   if (reduceOnly) {
     meta.reduceOnly = true;
@@ -1740,6 +1803,7 @@ async function syncSide(row, side, target, size, mine, state, lev, reduceOnly, b
   const paramsNote = VENUE === 'kraken' ? row.orderPair : row.pair;
   const r = await ex.limitOrder(paramsNote, side, target, size, meta, VENUE);
   if (r && r.order_id) {
+    noteStepSent(state, row.symbol, extra.why, extra.releaseStep, target, false);
     state.knownIds = state.knownIds || {};
     state.knownIds[r.order_id] = { sym: row.symbol, side, at: Date.now(), why: extra.why || '', releaseStep: extra.releaseStep || 0 };
     state.orderMid = state.orderMid || {};
@@ -1892,14 +1956,19 @@ function resyncEntry(state, book) {
   state.entrySyncAt = now;
 }
 function pickRelease(state, book, now) {
-  if (VENUE === 'kraken') return null;
+  const rows = releaseCandidates(state, book, now);
+  if (!rows.length) return null;
+  return rows[0];
+}
+function releaseCandidates(state, book, now) {
+  if (VENUE === 'kraken') return [];
   if (!releaseAllowed({
     sessionLossPct: Number(state.sessionLossPct) || 0,
     sessionCapPct: SESSION_LOSS * 100,
     stopDistPp: Number(state.stopDistPp),
     rail: !!state.halted || !!state.onRail,
-  })) return null;
-  let best = null;
+  })) return [];
+  const rows = [];
   for (const [sym, pos] of Object.entries(book.positions || {})) {
     const qty = Number(pos.long) || 0;
     const mid = Number(pos.mid) || 0;
@@ -1915,10 +1984,26 @@ function pickRelease(state, book, now) {
     const cost = costFloorPx({ entry, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS });
     const floor = releaseStep({ entry, costFloor: cost, touch: mid, k, stepBps: RELEASE_STEP_BPS, maxLossBps: RELEASE_MAX_LOSS_BPS });
     const lossToTouch = Math.max(0, (floor - mid) * qty);
-    const row = { sym, k, floor, qty, entry, lossToTouch, idleH };
-    if (!best || row.lossToTouch < best.lossToTouch) best = row;
+    rows.push({ sym, k, floor, qty, entry, lossToTouch, idleH, quoteMin: Number(pos.quoteMin || 1), mid });
   }
-  return best;
+  rows.sort((a, b) => a.lossToTouch - b.lossToTouch || String(a.sym).localeCompare(String(b.sym)));
+  return rows;
+}
+function fitReleaseBook(state, book, now) {
+  const rows = releaseCandidates(state, book, now);
+  const day = new Date().toISOString().slice(0, 10);
+  let used = state.releaseDay && state.releaseDay.day === day ? Number(state.releaseDay.usd) || 0 : 0;
+  const dayCap = RELEASE_MAX_DAY * Number(book.equity || 0);
+  const fit = {};
+  for (const row of rows) {
+    const minQty = Math.max(0, row.quoteMin / Math.max(row.floor || row.mid || 1, 1e-12));
+    const f = releaseQtyForBudget({
+      entry: row.entry, floor: row.floor, qty: row.qty, feeBps: makerFeeBps, dayUsed: used, dayCap, minQty,
+    });
+    fit[row.sym] = { ...row, qty: f.qty, maxLoss: f.loss, hold: f.hold || '' };
+    if (f.qty > 0) used += Number(f.loss) || 0;
+  }
+  return { best: rows[0] || null, fit };
 }
 function carryBpsPerHour(state, sym) {
   const c = state.carry && state.carry[sym];
@@ -1939,6 +2024,8 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const s = await stats(row);
   if (!s) return null;
   const mid = s.mid;
+  state.touches = state.touches || {};
+  state.touches[row.symbol] = { bid: s.bid, ask: s.ask, mid, at: Date.now() };
   const pos = book.positions[row.symbol] || { long: 0, short: 0 };
   const net = (Number(pos.long || 0) - Number(pos.short || 0)) * mid;
   const q = clip > 0 ? net / clip : 0;
@@ -2069,11 +2156,14 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   });
   const costLong = roundTripFloorPx({ entry: longAvg, side: 'long', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
   const costShort = roundTripFloorPx({ entry: shortAvg, side: 'short', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
+  const spreadMed = median(((state.spreads && state.spreads[row.symbol]) || []).slice(-30));
+  const needBps = Math.max(openingNeedBps(), roundTripPadBps({ feeBps: makerFeeBps, minEdgeBps: MIN_EDGE }));
+  const distCap = Math.max(MAX_QUOTE_DIST, (Number(spreadMed) || 0) / 2 + needBps);
   const lastFill = state.lastFill && state.lastFill[row.symbol];
-  const oppAsk = lastFill && String(lastFill.side) === 'buy'
-    ? oppositeFloorPx({ fillPx: lastFill.price, side: 'buy', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc }) : 0;
-  const oppBid = lastFill && String(lastFill.side) === 'sell'
-    ? oppositeFloorPx({ fillPx: lastFill.price, side: 'sell', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc }) : 0;
+  const fillAt = Number((state.lastFillAt && state.lastFillAt[row.symbol]) || 0) || (lastFill && lastFill.time ? Date.parse(lastFill.time) || 0 : 0);
+  const fillAgeMin = fillAt > 0 ? Math.max(0, (Date.now() - fillAt) / 60000) : 0;
+  let effOppBid = 0;
+  let effOppAsk = 0;
   let riskTag = '';
   if (state.halted === 'day-loss') riskTag = 'day-kill';
   else if (state.halted === 'lifetime-dd') riskTag = 'lifetime-rail';
@@ -2081,12 +2171,36 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   else if (state.halted && state.haltAction === 'cap-exit') riskTag = 'halt-cap';
   else if (rail.mode === 'cut' && book.ml != null && book.ml < ML_HALT) riskTag = 'liq';
   const exempt = riskExempt(riskTag);
+  if (lastFill && Number(lastFill.price) > 0 && !exempt) {
+    const sellFill = String(lastFill.side) === 'sell';
+    const buyFill = String(lastFill.side) === 'buy';
+    const protectQty = sellFill ? Number(pos.short) || 0 : Number(pos.long) || 0;
+    const info = anchorActive({
+      fill: lastFill.price, mid, sigma: s.sigmaWarmup ? 0 : (Number(s.sigma) || 0), ageMin: fillAgeMin,
+      posQty: protectQty, minQty: Number(row.baseMin || row.ordermin || 0),
+      minNotional: Number(row.quoteMin || pos.quoteMin || 1),
+      ttlH: ANCHOR_TTL_H, sigmaK: ANCHOR_SIGMA_K, needBps, flatExpire: ANCHOR_FLAT,
+      warming: !!s.sigmaWarmup || !(Number(s.sigma) > 0),
+    });
+    if (!info.active && info.reason && info.reason !== 'none') {
+      logAnchorExpire(state, row.symbol, sellFill ? 'sell' : 'buy', lastFill.price, info);
+    }
+    if (info.active && sellFill && !(Number(pos.short) > 0)) {
+      const raw = oppositeFloorPx({ fillPx: lastFill.price, side: 'sell', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
+      const followed = followMidQuote({ px: bidPx, side: 'buy', mid, touch: s.bid || mid, anchorPx: raw, anchorOn: true, capBps: distCap });
+      bidPx = followed.px;
+      effOppBid = followed.effAnchor;
+    }
+    if (info.active && buyFill && !(Number(pos.long) > 0)) {
+      const raw = oppositeFloorPx({ fillPx: lastFill.price, side: 'buy', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
+      const followed = followMidQuote({ px: askPx, side: 'sell', mid, touch: s.ask || mid, anchorPx: raw, anchorOn: true, capBps: distCap });
+      askPx = followed.px;
+      effOppAsk = followed.effAnchor;
+    }
+  }
   if (!exempt) {
-    if (Number(pos.long) > 0 && costLong > 0) askPx = Math.max(askPx, costLong, oppAsk || 0);
+    if (Number(pos.long) > 0 && costLong > 0) askPx = Math.max(askPx, costLong);
     if (Number(pos.short) > 0 && costShort > 0) bidPx = Math.min(bidPx, costShort);
-    if (Number(pos.short) > 0 && oppBid > 0) bidPx = Math.min(bidPx, oppBid);
-    if (!(Number(pos.long) > 0) && oppAsk > 0) askPx = Math.max(askPx, oppAsk);
-    if (!(Number(pos.short) > 0) && oppBid > 0) bidPx = Math.min(bidPx, oppBid);
   } else if (riskTag === 'halt-delever') {
     if (Number(pos.long) > 0 && s.ask > 0) askPx = s.ask;
     if (Number(pos.short) > 0 && s.bid > 0) bidPx = s.bid;
@@ -2125,8 +2239,6 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       state.haltLossPlan[row.symbol + ':short'] = Math.max(0, (bidPx - cost) * Number(pos.short));
     }
   }
-  const spreadMed = median(((state.spreads && state.spreads[row.symbol]) || []).slice(-30));
-  const needBps = Math.max(openingNeedBps(), roundTripPadBps({ feeBps: makerFeeBps, minEdgeBps: MIN_EDGE }));
   let buyOpenPx = bidPx;
   let buyOpenMid = mid;
   let sellOpenPx = askPx;
@@ -2149,13 +2261,17 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   let openSellWhy = '';
   if (!(Number(pos.short) > 0) && !exempt && !row.dustBid) {
     const w = widenOpen(buyOpenPx, 'buy', buyOpenMid, inc, needBps, s.bid, s.ask, spreadMed);
-    if (w.why !== 'ok') { blockOpenBuy = true; openBuyWhy = gateText(w); }
-    else bidPx = w.px;
+    if (w.why === 'ok' || w.why === 'clamped') {
+      bidPx = w.px;
+      if (w.why === 'clamped') logClamp(state, row.symbol, 'buy', w.fromBps, w.distTouch, w.cap);
+    } else { blockOpenBuy = true; openBuyWhy = gateText(w); }
   }
   if (!(Number(pos.long) > 0) && !exempt && !row.dustBid) {
     const w = widenOpen(sellOpenPx, 'sell', sellOpenMid, inc, needBps, s.ask, s.bid, spreadMed);
-    if (w.why !== 'ok') { blockOpenSell = true; openSellWhy = gateText(w); }
-    else askPx = w.px;
+    if (w.why === 'ok' || w.why === 'clamped') {
+      askPx = w.px;
+      if (w.why === 'clamped') logClamp(state, row.symbol, 'sell', w.fromBps, w.distTouch, w.cap);
+    } else { blockOpenSell = true; openSellWhy = gateText(w); }
   }
   if (s.bid > 0 && askPx > 0 && askPx <= s.bid) askPx = s.bid + inc;
   if (s.ask > 0 && bidPx > 0 && bidPx >= s.ask) bidPx = s.ask - inc;
@@ -2170,59 +2286,64 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   bidPx = formatPrice(bidPx, row.pairDecimals ?? 8);
   askPx = formatPrice(askPx, row.pairDecimals ?? 8);
   let releasePlan = null;
-  if (VENUE !== 'kraken' && state.releasePick && state.releasePick.sym === row.symbol && Number(pos.long) > 0 && !rail.lossOk && !state.halted) {
+  let releasePx = 0;
+  const releaseFit = state.releaseFit && state.releaseFit[row.symbol];
+  if (VENUE !== 'kraken' && releaseFit && Number(pos.long) > 0 && !rail.lossOk && !state.halted) {
     const day = new Date().toISOString().slice(0, 10);
-    const dayUsed = state.releaseDay && state.releaseDay.day === day ? Number(state.releaseDay.usd) || 0 : 0;
-    const dayCap = RELEASE_MAX_DAY * Number(book.equity || 0);
-    const minQty = Math.max(Number(row.baseMin || row.ordermin || 0), (Number(row.quoteMin || pos.quoteMin || 1)) / Math.max(Number(state.releasePick.floor) || mid, 1e-12));
-    const fit = releaseQtyForBudget({
-      entry: state.releasePick.entry, floor: state.releasePick.floor, qty: Number(pos.long),
-      feeBps: makerFeeBps, dayUsed, dayCap, minQty,
-    });
-    if (fit.hold === 'day-cap') {
-      if (state.releaseHoldLog !== row.symbol + ':' + day) {
+    if (releaseFit.hold === 'day-cap' || !(releaseFit.qty > 0)) {
+      if (releaseFit.hold === 'day-cap' && state.releaseHoldLog !== row.symbol + ':' + day) {
         state.releaseHoldLog = row.symbol + ':' + day;
         console.log('RELEASE hold ' + row.symbol + ' reason=day-cap');
       }
-    } else if (fit.qty > 0) {
+    } else {
       const touch = s.ask > 0 ? s.ask : mid;
-      let px = Math.max(Number(state.releasePick.floor) || 0, touch || 0);
-      if (s.bid > 0 && px <= s.bid) px = s.bid + inc;
-      askPx = formatPrice(px, row.pairDecimals ?? 8);
-      releasePlan = { qty: fit.qty, k: state.releasePick.k, maxLoss: fit.loss };
-      state.releaseLogged = state.releaseLogged || {};
-      if (state.releaseLogged[row.symbol] !== releasePlan.k) {
-        state.releaseLogged[row.symbol] = releasePlan.k;
-        console.log('RELEASE step ' + row.symbol + ' k=' + releasePlan.k + ' floor=' + pxText(askPx) + ' touch=' + pxText(touch) + ' qty=' + Number(fit.qty).toFixed(6) + ' maxLoss=$' + fit.loss.toFixed(2) + ' dayUsed=$' + dayUsed.toFixed(2) + '/' + dayCap.toFixed(2));
-      }
+      releasePx = Math.max(Number(releaseFit.floor) || 0, touch || 0);
+      if (s.bid > 0 && releasePx <= s.bid) releasePx = s.bid + inc;
+      releasePlan = { qty: releaseFit.qty, k: releaseFit.k, maxLoss: releaseFit.maxLoss };
     }
   }
   let parkPlan = null;
+  let parkPx = 0;
   if (VENUE === 'coinbase' && Number(pos.long) > 0 && mid > 0 && !exempt && !rail.lossOk) {
     const entryPx = longAvg || 0;
     const parkCost = entryPx > 0 ? costFloorPx({ entry: entryPx, side: 'long', feeBps: makerFeeBps, profitBps: PROFIT_BPS }) : 0;
     const parkedNow = parkCost > mid * 1.05 + 1e-12;
     const lastPark = (state.lastFillAt && state.lastFillAt[row.symbol]) || (entry && entry.at) || 0;
     const idleH = lastPark > 0 ? (Date.now() - Number(lastPark)) / 3600000 : 0;
+    const touchAsk = s.ask > 0 ? s.ask : mid;
+    const lossBound = entryPx > 0 ? entryPx * (1 - RELEASE_MAX_LOSS_BPS / 10000) : 0;
+    if (parkedNow && touchAsk > 0 && lossBound > touchAsk + 1e-12) {
+      state.parkStuckLog = state.parkStuckLog || {};
+      if (Date.now() - (state.parkStuckLog[row.symbol] || 0) > 6 * 3600 * 1000) {
+        state.parkStuckLog[row.symbol] = Date.now();
+        const lossBp = entryPx > 0 ? Math.round((entryPx - touchAsk) / entryPx * 10000) : 0;
+        console.log('PARK stuck ' + row.symbol + ' loss=' + lossBp + 'bp bound=' + pxText(lossBound) + ' touch=' + pxText(touchAsk));
+      }
+    }
     if (parkedNow && idleH + 1e-9 >= PARK_STEP_H) {
       const plan = parkStepPlan({
-        entry: entryPx, costFloor: parkCost, touch: s.ask > 0 ? s.ask : mid, idleH,
+        entry: entryPx, costFloor: parkCost, touch: touchAsk, idleH,
         stepH: PARK_STEP_H, stepBps: RELEASE_STEP_BPS, maxLossBps: RELEASE_MAX_LOSS_BPS,
         qty: Number(pos.long), feeBps: makerFeeBps,
         stopDistPp: Number(state.stopDistPp), capital: Number(state.capitalShown) || 0,
+        deepMode: PARK_DEEP_MODE, deepH: PARK_DEEP_H, deepMaxLossBps: PARK_DEEP_MAX,
       });
       if (plan.ok && plan.px > 0) {
-        let px = Math.max(s.ask > 0 ? s.ask : 0, plan.px);
-        if (s.bid > 0 && px <= s.bid) px = s.bid + inc;
-        askPx = formatPrice(px, row.pairDecimals ?? 8);
+        parkPx = plan.px;
+        if (s.bid > 0 && parkPx <= s.bid) parkPx = s.bid + inc;
         parkPlan = plan;
-        state.parkLogged = state.parkLogged || {};
-        if (state.parkLogged[row.symbol] !== plan.k) {
-          state.parkLogged[row.symbol] = plan.k;
-          console.log('PARK step ' + row.symbol + ' k=' + plan.k + ' px=' + pxText(askPx) + ' floor=' + pxText(parkCost) + ' worst=$' + plan.worst.toFixed(2));
-        }
       }
     }
+  }
+  if (releasePlan || parkPlan) {
+    const lossBound = longAvg > 0 ? longAvg * (1 - RELEASE_MAX_LOSS_BPS / 10000) : 0;
+    const resolved = exitAskPx({
+      releasePx: releasePlan ? releasePx : 0,
+      parkPx: parkPlan ? parkPx : 0,
+      touch: s.ask > 0 ? s.ask : 0,
+      lossBound,
+    });
+    if (resolved > 0) askPx = formatPrice(resolved, row.pairDecimals ?? 8);
   }
   const spotOpen = VENUE === 'kraken' && (!row.marginOk || !!row.longOnly);
   let lev = 0;
@@ -2626,8 +2747,8 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
     }
   }
   const bidHalf = buySz > 0 ? sentHalfBps(mid, bidPx, 0) : 0;
-  const askHalf = sellSz > 0 ? sentHalfBps(mid, 0, askPx) : 0;
-  let halfShown = 'b' + (bidHalf || '-') + '/a' + (askHalf || '-');
+  let askHalf = 0;
+  let halfShown = 'b' + (bidHalf || '-') + '/a-';
   const floorPx = Number(pos.long) > 0 ? (costLong || longFloor) : Number(pos.short) > 0 ? (costShort || shortCeil) : 0;
   const floorTxt = pxText(floorPx);
   const sellThrough = !!(risk && Number(pos.long) > 0 && costLong > 0 && askPx + 1e-12 < costLong);
@@ -2639,12 +2760,25 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
   const sigmaBps = s.sigmaWarmup ? null : Math.round((s.sigma || 0) * 10000);
   const quoteExtra = { halfBps: halfShown, halfSrc: plan.src, floorTxt, sigmaBps, mid };
   const quiet = backoffActive(state, row.symbol) && !rail.ignoreBackoff;
+  const aboveMin = positionAboveMin({
+    qty: Number(pos.long) || 0, mid, minNotional: minUsd,
+    minSize: Number(row.baseMin || row.ordermin || 0),
+  });
+  state.dustArmedAt = state.dustArmedAt || {};
+  if (state.dustArmed && state.dustArmed[row.symbol]) {
+    const armedAt = Number(state.dustArmedAt[row.symbol]) || 0;
+    if (aboveMin || (armedAt > 0 && Date.now() - armedAt > 24 * 3600 * 1000)) {
+      delete state.dustArmed[row.symbol];
+      delete state.dustArmedAt[row.symbol];
+    }
+  }
   if (row.dustBid && buySz > 0) {
     state.dustArmed = state.dustArmed || {};
     state.dustArmed[row.symbol] = true;
+    if (!state.dustArmedAt[row.symbol]) state.dustArmedAt[row.symbol] = Date.now();
     console.log('DUST topup ' + row.symbol + ' bid=$' + (buySz * bidPx).toFixed(2));
   }
-  if (state.dustArmed && state.dustArmed[row.symbol] && sellSz > 0 && Number(pos.long) > 0) {
+  if (!(parkPlan || releasePlan) && state.dustArmed && state.dustArmed[row.symbol] && sellSz > 0 && Number(pos.long) > 0) {
     const floor = roundTripFloorPx({ entry: longAvg || mid, side: 'long', feeBps: makerFeeBps, minEdgeBps: MIN_EDGE, tick: inc });
     if (floor > 0 && askPx + 1e-12 < floor) askPx = formatPrice(floor, row.pairDecimals ?? 8);
     state.dustExitLogged = state.dustExitLogged || {};
@@ -2653,14 +2787,19 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       console.log('DUST exit ' + row.symbol);
     }
   }
+  askHalf = sellSz > 0 ? sentHalfBps(mid, 0, askPx) : 0;
+  halfShown = 'b' + (bidHalf || '-') + '/a' + (askHalf || '-');
+  quoteExtra.halfBps = halfShown;
   if (quiet) { gate('buy', 'backoff'); gate('sell', 'backoff'); }
   if (cooling) {
     const netNow = Number(pos.long || 0) - Number(pos.short || 0);
     if (opensRisk(netNow, 'buy')) gate('buy', 'cooldown');
     if (opensRisk(netNow, 'sell')) gate('sell', 'cooldown');
   }
-  const sellEdge = edgeGate({ px: askPx, floor: (parkPlan || releasePlan) ? Number(askPx) : Math.max(costLong || 0, oppAsk || 0), side: 'sell', risk: sellRisk });
-  const buyEdge = edgeGate({ px: bidPx, floor: Math.max(costShort || 0, oppBid || 0) ? Math.min(...[costShort, oppBid].filter((n) => n > 0)) : 0, side: 'buy', risk: buyRisk });
+  const sellFloor = (parkPlan || releasePlan) ? Number(askPx) : Math.max(costLong || 0, effOppAsk || 0);
+  const buyFloors = [costShort, effOppBid].filter((n) => Number(n) > 0);
+  const buyEdge = edgeGate({ px: bidPx, floor: buyFloors.length ? Math.min(...buyFloors) : 0, side: 'buy', risk: buyRisk });
+  const sellEdge = edgeGate({ px: askPx, floor: sellFloor, side: 'sell', risk: sellRisk });
   if (sellSz > 0 && !sellEdge.ok) { sellSz = 0; gate('sell', sellEdge.why); }
   if (buySz > 0 && !buyEdge.ok) { buySz = 0; gate('buy', buyEdge.why); }
   if (!(buySz > 0) && !gates.some((g) => g.startsWith('buy '))) {
@@ -2715,6 +2854,9 @@ async function quoteSymbol(row, book, state, clip, addOk, budget, rail) {
       await syncSide(row, 'sell', sellJob.target, sellJob.size, mine, state, sellLev, sellJob.reduceOnly, budget, sellJob.extra);
       if (!skipBuySend) await syncSide(row, 'buy', buyJob.target, buyJob.size, mine, state, buyLev, buyJob.reduceOnly, budget, buyJob.extra);
     }
+  } else if (sellJob.extra.why === 'park' || sellJob.extra.why === 'release') {
+    const curSell = (mine || []).find((o) => o.side === 'sell');
+    noteSyncSkip(state, row.symbol, 'sell', quiet ? 'quiet' : 'focus', sellJob.extra.releaseStep, sellJob.target, curSell ? Number(curSell.price) || 0 : 0);
   }
   const slot = state.orders[row.symbol] || {};
   return {
@@ -3446,16 +3588,33 @@ async function main() {
             }
           } else if (klass === 'dust') dustNow += usd;
         }
-        const restingAsks = restingAskUsd(book.mine);
-        const restingBids = restingBidUsd(book.mine);
-        const tradable = Math.max(0, Number(book.equity || 0) - dustNow - reserve);
-        const room = tradableBookTarget({ equity: book.equity, dust: dustNow, reserve, frac: BOOK_TARGET, restingAsks });
-        state.bookReserve = reserve;
-        state.coverSnap = { cover: restingAsks + restingBids, target: room.target };
-        budgetLeft = bidRoomShare({
-          bidRoom: room.bidRoom, free: Number(book.cash || 0), tradable, share: MIN_BID_SHARE, target: room.target,
+        state.dustArmed = migrateDustArmed(state.dustArmed, book.positions || {});
+        const restingOrders = [];
+        for (const [sym, list] of Object.entries(book.mine || {})) {
+          const sampled = (bookSample && bookSample.rows && bookSample.rows.get(sym)) || {};
+          const cached = (state.touches && state.touches[sym]) || {};
+          const pos = book.positions[sym] || {};
+          const midPx = Number(sampled.mid) || Number(cached.mid) || Number(pos.mid) || 0;
+          const bidTouch = Number(sampled.bid) || Number(cached.bid) || Number(pos.bid) || midPx;
+          const askTouch = Number(sampled.ask) || Number(cached.ask) || midPx;
+          for (const o of list || []) {
+            const px = Number(o.price) || 0;
+            const usd = px * (Number(o.size) || 0);
+            if (!(usd > 0)) continue;
+            restingOrders.push({
+              side: o.side, px, usd,
+              touch: o.side === 'buy' ? bidTouch : askTouch,
+              mid: midPx || px,
+            });
+          }
+        }
+        const room = tradableBookTarget({
+          equity: book.equity, dust: dustNow, reserve, frac: BOOK_TARGET,
+          restingOrders, maxDistBps: MAX_QUOTE_DIST, free: Number(book.cash || 0), share: MIN_BID_SHARE,
         });
-        budgetLeft = Math.min(Math.max(0, budgetLeft), Math.max(0, Number(book.cash || 0) + heldBuys));
+        state.bookReserve = reserve;
+        state.coverSnap = { cover: room.cover, target: room.target, parked: room.parkedUsd };
+        budgetLeft = room.budget;
         if (halve) {
           const cap = Number(state.budgetPreHalve) > 0 ? Number(state.budgetPreHalve) * 0.5 : budgetLeft * 0.5;
           budgetLeft = Math.min(applyBudgetHalve(budgetLeft, true), cap);
@@ -3467,15 +3626,16 @@ async function main() {
         loopClip = loopClipUsd({ budget: budgetStart, slots: slotN, venueMin });
         freeCash = Math.max(0, Number(book.cash || 0) - reserve);
         cbReserve = reserve;
-        budgetLeft = Math.max(0, budgetStart - restingBidUsd(book.mine));
         if (Math.abs(budgetStart - (state.lastBudget ?? budgetStart)) >= 1 || slotN !== state.lastSlots) {
           console.log('BOOK replan budget=$' + budgetStart.toFixed(2) + ' slots=' + slotN);
         }
         state.lastBudget = budgetStart;
         state.lastSlots = slotN;
-        console.log('BUDGET free=' + freeCash.toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetStart.toFixed(2) + ' slots=' + slotN + ' clip=$' + loopClip.toFixed(2) + ' cover=$' + (restingAsks + restingBids).toFixed(2) + '/$' + room.target.toFixed(2));
+        console.log('BUDGET free=' + freeCash.toFixed(2) + ' held=' + heldBuys.toFixed(2) + ' reserve=' + reserve.toFixed(2) + ' → b=' + budgetStart.toFixed(2) + ' slots=' + slotN + ' clip=$' + loopClip.toFixed(2) + ' reach=$' + room.cover.toFixed(2) + ' parked=$' + room.parkedUsd.toFixed(2) + ' cover=$' + room.cover.toFixed(2) + '/$' + room.target.toFixed(2));
       } else state.bookReserve = 0;
-      state.releasePick = pickRelease(state, book, now);
+      const releaseBook = fitReleaseBook(state, book, now);
+      state.releasePick = releaseBook.best;
+      state.releaseFit = releaseBook.fit;
       const heldForBid = new Set(Object.keys(book.positions || {}).filter((s) => {
         const p = book.positions[s];
         return Number(p.long) > 0 || Number(p.short) > 0;
@@ -3755,7 +3915,8 @@ async function main() {
         carrySrc: state.carryShown ? state.carryShown.src : 'venue',
         unexplained: state.unexplained == null ? null : state.unexplained,
       });
-      const bookLabel = (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? 'book=stale' : ('book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%)');
+      const parkPct = book.equity > 0 ? Math.round(100 * (((state.parkedSnap && state.parkedSnap.usd) || 0) / book.equity)) : 0;
+      const bookLabel = (state.ordersSyncedAt && now - state.ordersSyncedAt > 2 * LOOP) ? 'book=stale' : ('book=' + Math.round(bookFrac * 100) + '% (ex-dust ' + Math.round(bookEx * 100) + '%) park=' + parkPct + '%');
       console.log('  AS ' + money + ' free=$' + book.cash.toFixed(2) + ' maker=$' + (state.makerCapture || 0).toFixed(2) + ' fees=$' + (state.fees || 0).toFixed(2) + ' inv=$' + invUsd.toFixed(2) + ' (' + invN + ') dust=$' + dustUsd.toFixed(2) + ' (' + dustN + ') fund=$' + (state.fundingBorrow || 0).toFixed(2) + ' fills=' + fillsN + '/' + fillsH + ' ' + bookLabel + ' tracked=' + tracked + ' lev=' + (Object.values(levBySymbol)[0] || (state.levRamp && state.levRamp.lev) || 0) + ' ml=' + (book.ml == null ? '-' : book.ml) + haltTxt + xferTxt + idleTxt + cmdTxt + ' | ' + (line || 'no names'));
     } catch (e) {
       console.warn('as loop', e.message);

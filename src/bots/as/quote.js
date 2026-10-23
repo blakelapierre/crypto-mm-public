@@ -648,7 +648,21 @@ export function widenOpenDecision({ px = 0, side = 'buy', mid = 0, needBps = 0, 
   const wide = need > 0 && touchSpread > 2 * need;
   const cap = Math.max(capBase, spreadMed / 2 + need);
   const measured = wide ? half : distTouch;
-  if (measured > cap + 1e-6) return { px: 0, why: 'max-dist', need, distTouch, cap, half, spreadMed };
+  if (measured > cap + 1e-6) {
+    const srcTouch = Number(touch) > 0 ? Number(touch) : m;
+    let clamped = buy
+      ? snapOpen(srcTouch * (1 - cap / 10000), inc, 'buy')
+      : snapOpen(srcTouch * (1 + cap / 10000), inc, 'sell');
+    if (buy && clamped > m) clamped = snapOpen(m * (1 - Math.min(cap, 9999) / 10000), inc, 'buy');
+    if (!buy && clamped < m) clamped = snapOpen(m * (1 + cap / 10000), inc, 'sell');
+    const cross = buy ? (ask > 0 && clamped >= ask - 1e-12) : (bid > 0 && clamped <= bid + 1e-12);
+    const halfC = Math.abs(clamped - m) / m * 10000;
+    const distC = Number(touch) > 0 ? Math.abs(clamped - Number(touch)) / m * 10000 : halfC;
+    if (cross || !(clamped > 0) || halfC + 0.5 < need) {
+      return { px: 0, why: 'max-dist', need, distTouch, cap, half, spreadMed, fromBps: measured };
+    }
+    return { px: clamped, why: 'clamped', need, distTouch: distC, cap, half: halfC, spreadMed, fromBps: measured };
+  }
   if (half + 0.5 < need) return { px: 0, why: 'below-need', need, distTouch, cap, half, spreadMed };
   return { px: next, why: 'ok', need, distTouch, cap, half, spreadMed };
 }
@@ -666,7 +680,105 @@ export function openGateWhy(decision) {
     return 'fee-edge half=' + Math.round(half) + ' need=' + need;
   }
   if (decision.why === 'no-mid') return 'no-mid';
+  if (decision.why === 'clamped') return '';
   return '';
+}
+
+// A last-fill anchor dies of age, of a move bigger than the quote needs, or of a flat book.
+export function anchorActive({
+  fill = 0, mid = 0, sigma = 0, ageMin = 0, posQty = 0, minQty = 0, minNotional = 1,
+  ttlH = 4, sigmaK = 3, needBps = 0, flatExpire = true, warming = false,
+} = {}) {
+  const f = Number(fill) || 0;
+  const m = Number(mid) || 0;
+  const age = Math.max(0, Number(ageMin) || 0);
+  const ageH = age / 60;
+  const moveBps = f > 0 && m > 0 ? Math.abs(m - f) / f * 10000 : 0;
+  if (!(f > 0)) return { active: false, reason: 'none', ageH, moveBps, thresh: 0 };
+  if (ageH + 1e-9 >= Math.max(0, Number(ttlH) || 4)) return { active: false, reason: 'ttl', ageH, moveBps, thresh: 0 };
+  const need = Math.max(0, Number(needBps) || 0);
+  const sig = Number(sigma) || 0;
+  const thresh = (warming || !(sig > 0))
+    ? need
+    : Math.max(need, (Number(sigmaK) || 3) * sig * Math.sqrt(age) * 10000);
+  if (m > 0 && thresh > 0 && moveBps + 1e-9 >= thresh) return { active: false, reason: 'move', ageH, moveBps, thresh };
+  if (flatExpire && !positionAboveMin({ qty: posQty, mid: m || 1, minNotional, minSize: minQty })) {
+    return { active: false, reason: 'flat', ageH, moveBps, thresh };
+  }
+  return { active: true, reason: '', ageH, moveBps, thresh };
+}
+
+// The anchor may widen a quote only up to the distance cap. It never pins the quote off the book.
+export function followMidQuote({
+  px = 0, side = 'buy', mid = 0, touch = 0, anchorPx = 0, anchorOn = false, capBps = 150,
+} = {}) {
+  const buy = String(side) !== 'sell';
+  let next = Number(px) || 0;
+  const t = Number(touch) || 0;
+  const cap = Math.max(0, Number(capBps) || 0);
+  const rawAnchor = anchorOn ? Number(anchorPx) || 0 : 0;
+  if (!(rawAnchor > 0)) return { px: next, effAnchor: 0 };
+  next = buy ? Math.min(next > 0 ? next : rawAnchor, rawAnchor) : Math.max(next > 0 ? next : rawAnchor, rawAnchor);
+  const limit = t > 0 && cap > 0 ? (buy ? t * (1 - cap / 10000) : t * (1 + cap / 10000)) : 0;
+  if (limit > 0 && next > 0) {
+    if (buy && next + 1e-12 < limit) next = limit;
+    if (!buy && next - 1e-12 > limit) next = limit;
+  }
+  const effAnchor = limit > 0
+    ? (buy ? Math.max(rawAnchor, limit) : Math.min(rawAnchor, limit))
+    : rawAnchor;
+  return { px: next, effAnchor };
+}
+
+// A resting quote already inside the last 2bp of the cap stays put.
+export function capHysteresis({ restingPx = 0, targetPx = 0, capBps = 150, mid = 0, touch = 0, bandBps = 2 } = {}) {
+  const rest = Number(restingPx) || 0;
+  const tgt = Number(targetPx) || 0;
+  const m = Number(mid) || 0;
+  if (!(rest > 0) || !(tgt > 0) || !(m > 0)) return false;
+  if (Math.abs(rest - tgt) / tgt > 0.0015 + 1e-12) return false;
+  const cap = Number(capBps) || 0;
+  const ref = Number(touch) > 0 ? Number(touch) : m;
+  const dist = Math.abs(rest - ref) / m * 10000;
+  return dist + 1e-9 >= cap - Math.max(0, Number(bandBps) || 0) && dist <= cap + 1e-6;
+}
+
+// One exit price. A park or release step outranks a stale dust floor.
+export function exitAskPx({ releasePx = 0, parkPx = 0, touch = 0, lossBound = 0, costFloor = 0, dustFloor = 0 } = {}) {
+  const rel = Number(releasePx) || 0;
+  const park = Number(parkPx) || 0;
+  const t = Number(touch) || 0;
+  const bound = Number(lossBound) || 0;
+  if (rel > 0 || park > 0) {
+    const stepped = rel > 0 && park > 0 ? Math.min(rel, park) : (rel || park);
+    return Math.max(bound, t, stepped);
+  }
+  return Math.max(Number(costFloor) || 0, Number(dustFloor) || 0, t);
+}
+
+export function sentHalfFromPx({ mid = 0, px = 0 } = {}) {
+  const m = Number(mid) || 0;
+  const p = Number(px) || 0;
+  if (!(m > 0) || !(p > 0)) return 0;
+  return Math.abs(p - m) / m * 10000;
+}
+
+// An armed dust flag does not survive once the holding clears the venue minimum.
+export function migrateDustArmed(armed, positions) {
+  const next = { ...(armed || {}) };
+  for (const sym of Object.keys(next)) {
+    const p = (positions && positions[sym]) || {};
+    const qty = Math.abs(Number(p.long || p.qty || 0) - Number(p.short || 0));
+    const mid = Number(p.mid) || 0;
+    if (positionAboveMin({ qty, mid, minNotional: Number(p.quoteMin || p.minNotional || 1), minSize: Number(p.minSize || p.baseMin || 0) })) {
+      delete next[sym];
+    }
+  }
+  return next;
+}
+
+export function scanTradeable({ expEdge = 0, minNet = 8 } = {}) {
+  return Number(expEdge) + 1e-9 >= Number(minNet);
 }
 
 export function unexplainedJump({ prev = 0, next = 0, quiet = true } = {}) {
@@ -701,14 +813,42 @@ export function openClipUsd({ budget = 0, slots = 1, clipMax = 0, venueMin = 1 }
   return share;
 }
 
-export function tradableBookTarget({ equity = 0, dust = 0, reserve = 0, frac = 0.9, askCover = 0, restingAsks = null, restingBids = null } = {}) {
-  const base = Math.max(0, (Number(equity) || 0) - (Number(dust) || 0) - (Number(reserve) || 0));
+export function tradableBookTarget({
+  equity = 0, dust = 0, reserve = 0, frac = 0.9, askCover = 0,
+  restingAsks = null, restingBids = null, restingOrders = null,
+  maxDistBps = 150, free = null, share = 0,
+} = {}) {
+  const res = Math.max(0, Number(reserve) || 0);
+  const base = Math.max(0, (Number(equity) || 0) - (Number(dust) || 0) - res);
   const target = Math.max(0, Number(frac) || 0) * base;
-  const useResting = restingAsks != null || restingBids != null;
-  const asks = useResting ? Math.max(0, Number(restingAsks) || 0) : Math.max(0, Number(askCover) || 0);
-  const bids = useResting ? Math.max(0, Number(restingBids) || 0) : 0;
-  const cover = asks + bids;
-  return { target, bidRoom: Math.max(0, target - cover), base, cover };
+  let cover = 0;
+  let parkedUsd = 0;
+  if (Array.isArray(restingOrders)) {
+    const cap = Math.max(0, Number(maxDistBps) || 0);
+    for (const o of restingOrders) {
+      const usd = Math.max(0, Number(o && o.usd) || 0);
+      const px = Number(o && o.px) || 0;
+      const touch = Number(o && o.touch) || 0;
+      const mid = Number(o && o.mid) > 0 ? Number(o.mid) : 0;
+      const dist = mid > 0 && px > 0 && touch > 0 ? Math.abs(px - touch) / mid * 10000 : Infinity;
+      if (dist <= cap + 1e-6) cover += usd;
+      else parkedUsd += usd;
+    }
+  } else {
+    const useResting = restingAsks != null || restingBids != null;
+    const asks = useResting ? Math.max(0, Number(restingAsks) || 0) : Math.max(0, Number(askCover) || 0);
+    const bids = useResting ? Math.max(0, Number(restingBids) || 0) : 0;
+    cover = asks + bids;
+  }
+  const bidRoom = Math.max(0, target - cover);
+  let budget = bidRoom;
+  if (free != null) {
+    const spend = Math.max(0, Number(free) - res);
+    const floor = Math.min(spend, Math.max(0, Number(share) || 0) * base);
+    budget = Math.max(Math.min(bidRoom, spend), floor);
+    if (budget > spend) budget = spend;
+  }
+  return { target, bidRoom, base, cover, parkedUsd, budget };
 }
 
 // Missing price does not count as flat. A known price under the venue minimum does.
@@ -769,6 +909,19 @@ export function edgeGate({ px = 0, floor = 0, side = 'sell', risk = '' } = {}) {
   const through = sell ? p + 1e-12 < f : p - 1e-12 > f;
   if (!through) return { ok: true, why: '' };
   return { ok: false, why: 'edge need=' + f + ' have=' + p };
+}
+
+// Opening bid after the anchor. An expired anchor leaves the model price.
+export function buildOpenBid({
+  modelBid = 0, mid = 0, touch = 0, anchorPx = 0, anchorOn = false, capBps = 150, costShort = 0,
+} = {}) {
+  const followed = followMidQuote({
+    px: modelBid, side: 'buy', mid, touch, anchorPx, anchorOn, capBps,
+  });
+  const floors = [Number(costShort) || 0, Number(followed.effAnchor) || 0].filter((n) => n > 0);
+  const floor = floors.length ? Math.min(...floors) : 0;
+  const gate = edgeGate({ px: followed.px, floor, side: 'buy' });
+  return { bidPx: followed.px, effAnchor: followed.effAnchor, floor, ok: gate.ok, why: gate.why };
 }
 
 // (exit − entry) × qty − both fees. Short profits when exit is below entry.
@@ -857,8 +1010,11 @@ export function expectedEdgeRow(row, opts = {}) {
   const extra = Math.max(0, expHalf - quotedHalf);
   const fillp = Math.exp(-kappa * extra / 100);
   const expEdge = fillp * (2 * expHalf - 2 * fee);
-  const tradeable = expEdge > 0 && expHalf + 1e-9 >= need;
-  return { expHalf, need, fillp, expEdge, tradeable, quotedHalf };
+  const minNet = opts.scanMinNetBps != null
+    ? Math.max(0, Number(opts.scanMinNetBps) || 0)
+    : Math.max(0, Number(opts.minEdgeBps) || 0);
+  const tradeable = expEdge + 1e-9 >= minNet;
+  return { expHalf, need, fillp, expEdge, tradeable, quotedHalf, minNet };
 }
 
 export function rankByExpectedEdge(rows, opts = {}) {
@@ -890,7 +1046,7 @@ export function rankByExpectedEdge(rows, opts = {}) {
     else {
       edgeRow = expectedEdgeRow(row, opts);
       considered.push({ symbol: row.symbol, ...edgeRow, edge: edgeRow.expEdge, vol24: vol });
-      if (!edgeRow.tradeable) { rejected.edge += 1; rejected.feeSpread += 1; reason = 'fee-spread'; }
+      if (!edgeRow.tradeable) { rejected.edge += 1; rejected.feeSpread += 1; reason = 'min-net'; }
       else scored.push({ ...row, ...edgeRow, edge: edgeRow.expEdge, score: edgeRow.expEdge });
     }
     if (reason) reasons.push({
@@ -898,17 +1054,20 @@ export function rankByExpectedEdge(rows, opts = {}) {
       val: edgeRow ? edgeRow.expEdge : (reason === 'vol' ? vol : reason === 'tick' ? tickBps : spread),
       need: edgeRow ? edgeRow.expHalf : roundTripPadBps({ feeBps: opts.feeBps, minEdgeBps: opts.minEdgeBps }),
       net: edgeRow ? edgeRow.expEdge : null,
+      minNet: edgeRow ? edgeRow.minNet : (opts.scanMinNetBps != null ? Number(opts.scanMinNetBps) : Number(opts.minEdgeBps) || 0),
     });
   }
   scored.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
   considered.sort((a, b) => b.expEdge - a.expEdge || String(a.symbol).localeCompare(String(b.symbol)));
+  const tradeableBest = considered.filter((r) => r.tradeable);
+  const top = tradeableBest[0] || null;
   return {
     picked: maxPairs > 0 ? scored.slice(0, maxPairs) : scored,
     rejected,
     net: !!opts.net,
-    feeSpread: reasons.filter((r) => r.reason === 'fee-spread').map((r) => r.symbol),
-    best: considered[0] ? { symbol: considered[0].symbol, edge: considered[0].expEdge, h: considered[0].expHalf, fillp: considered[0].fillp } : null,
-    best5: considered.slice(0, 5),
+    feeSpread: reasons.filter((r) => r.reason === 'fee-spread' || r.reason === 'min-net').map((r) => r.symbol),
+    best: top ? { symbol: top.symbol, edge: top.expEdge, h: top.expHalf, fillp: top.fillp } : null,
+    best5: tradeableBest.slice(0, 5),
     evaluated: (rows || []).length,
     reasons,
   };
@@ -1450,15 +1609,33 @@ export function freshBookMid({ bookBid = 0, bookAsk = 0, feedMid = 0, needBps = 
 }
 
 // One step down from the cost floor every park window. Loss stays inside the stop room.
-export function parkStepPlan({ entry = 0, costFloor = 0, touch = 0, idleH = 0, stepH = 6, stepBps = 150, maxLossBps = 800, qty = 0, feeBps = 0, stopDistPp = 100, capital = 0 } = {}) {
+export function parkStepPlan({
+  entry = 0, costFloor = 0, touch = 0, idleH = 0, stepH = 6, stepBps = 150, maxLossBps = 800,
+  qty = 0, feeBps = 0, stopDistPp = 100, capital = 0, deepMode = 'hold', deepH = 72, deepMaxLossBps = 0,
+} = {}) {
   const idle = Number(idleH) || 0;
   const step = Math.max(0.01, Number(stepH) || 6);
-  if (idle + 1e-9 < step) return { k: 0, px: 0, worst: 0, ok: false };
-  const k = 1 + Math.floor((idle - step) / step + 1e-9);
-  const px = releaseStep({ entry, costFloor, touch, k, stepBps, maxLossBps });
-  const worst = releaseWorstLoss({ entry, floor: px, qty, feeBps });
+  const lossBound = Number(entry) > 0 ? Number(entry) * (1 - Math.max(0, Number(maxLossBps) || 0) / 10000) : 0;
+  const touchPx = Number(touch) || 0;
+  const stuck = touchPx > 0 && lossBound > touchPx + 1e-12;
   const room = Math.max(0, (Number(stopDistPp) - 2) / 100) * Math.max(0, Number(capital) || 0);
-  return { k, px, worst, ok: px > 0 && worst <= room + 1e-9 };
+  if (idle + 1e-9 < step) return { k: 0, px: 0, worst: 0, ok: false, stuck, mode: String(deepMode || 'hold') };
+  const k = 1 + Math.floor((idle - step) / step + 1e-9);
+  let px = releaseStep({ entry, costFloor, touch, k, stepBps, maxLossBps });
+  let mode = String(deepMode || 'hold');
+  if (stuck && mode === 'cap') {
+    const deep = Number(deepMaxLossBps) || 0;
+    if (deep > 0 && Number(entry) > 0) {
+      px = Math.max(Number(entry) * (1 - deep / 10000), touchPx);
+    } else mode = 'hold';
+  } else if (mode === 'trail' && stuck && idle + 1e-9 >= Math.max(0, Number(deepH) || 72)) {
+    const extra = 1 + Math.floor((idle - Number(deepH)) / step + 1e-9);
+    const widened = lossBound * (1 - extra * Math.max(0, Number(stepBps) || 0) / 10000);
+    px = Math.max(widened, touchPx);
+    mode = 'trail';
+  }
+  const worst = releaseWorstLoss({ entry, floor: px, qty, feeBps });
+  return { k, px, worst, ok: px > 0 && worst <= room + 1e-9, stuck, mode };
 }
 
 // A top-up that costs more than the holding, or a market we no longer list, stays dust.

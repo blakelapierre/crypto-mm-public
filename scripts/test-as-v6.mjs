@@ -49,8 +49,10 @@ check(haltTimeoutPx({ cost: 100, side: 'long', touch: 90, halfBps: 40, steps: 0,
 const wide = widenOpenDecision({ px: 100, side: 'buy', mid: 115, needBps: 110, touch: 100, otherTouch: 130, maxDistBps: 150 });
 check(wide.why === 'ok' && wide.half + 0.5 >= 110, 'a wide book is capped from the mid, not the far touch');
 const far = widenOpenDecision({ px: 70, side: 'buy', mid: 100, needBps: 50, touch: 99.5, otherTouch: 100.5, maxDistBps: 150 });
-check(far.why === 'max-dist' && far.half + 0.5 >= 200, 'distance past the cap is max-dist even when the half would have paid');
-check(openGateWhy(far).startsWith('max-dist') && !openGateWhy(far).includes('fee-edge'), 'a max-dist block is not called a fee miss');
+check(far.why === 'clamped' && far.px > 70 && far.half + 0.5 >= 50, 'a quote past the cap is clamped when the half still pays');
+const crossed = widenOpenDecision({ px: 70, side: 'buy', mid: 100, needBps: 50, touch: 99.5, otherTouch: 50, maxDistBps: 150 });
+check(crossed.why === 'max-dist', 'a clamp that would cross the book is still max-dist');
+check(openGateWhy(crossed).startsWith('max-dist') && !openGateWhy(crossed).includes('fee-edge'), 'a max-dist block is not called a fee miss');
 check(openGateWhy({ why: 'below-need', half: 40, need: 110 }) === 'fee-edge half=40 need=110', 'fee-edge is printed only when the sent half is short');
 check(openGateWhy({ why: 'below-need', half: 200, need: 110 }) === '', 'a half that already pays is not called fee-edge');
 check(widenOpenDecision({ mid: 0, side: 'buy', needBps: 10 }).why === 'no-mid', 'no mid is its own reason');
