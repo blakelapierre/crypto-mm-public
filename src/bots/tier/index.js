@@ -28,6 +28,8 @@ const orderRegistry = new Map();
 const pnl = createPnl();
 const ex = createExchange(cfg, orderRegistry);
 const bounds = { askFloor: {}, bidCeil: {} };
+const quoteMem = new Map();
+const inflight = new Map();
 const enteredAt = new Map();
 const watch = new Map();
 const noted = new Set();
@@ -392,10 +394,13 @@ async function main() {
         noteMid(a.symbol, book.mid);
         const bidLeg = byKey.get(a.pair + ':buy');
         const askLeg = byKey.get(a.pair + ':sell');
+        if (bidLeg) inflight.delete(a.symbol + ':buy');
+        if (askLeg) inflight.delete(a.symbol + ':sell');
+        const mem = quoteMem.get(a.symbol) || {};
         const tick = Number(a.quoteIncrement) || 0;
         const bidDec = trailDecision({
           side: 'buy', mid: book.mid, offsetBps: off,
-          resting: bidLeg ? bidLeg.price : 0,
+          resting: bidLeg ? bidLeg.price : (Number(mem.buy) || 0),
           bound: Number(bounds.bidCeil[a.symbol]) || 0,
           touchBid: book.bid, touchAsk: book.ask, tick, hystBps: hyst,
         });
@@ -406,7 +411,7 @@ async function main() {
         const canAsk = askQty + 1e-12 >= Number(a.baseMin || a.ordermin || 0) && askNotional + 1e-9 >= Number(a.quoteMin || cfg.minOrderUsd || 1);
         const askDec = canAsk || askLeg ? trailDecision({
           side: 'sell', mid: book.mid, offsetBps: off,
-          resting: askLeg ? askLeg.price : 0,
+          resting: askLeg ? askLeg.price : (Number(mem.sell) || 0),
           bound: Number(bounds.askFloor[a.symbol]) || 0,
           touchBid: book.bid, touchAsk: book.ask, tick, hystBps: hyst,
         }) : { action: 'skip', why: 'no-inv', px: 0 };
@@ -447,17 +452,25 @@ async function main() {
   }
 
   async function apply(a, side, decision, resting, clipUsd, qtyOrCash, mid) {
+    const mem = quoteMem.get(a.symbol) || {};
     const drop = decision.action === 'skip' && resting && (decision.why === 'ceiling' || decision.why === 'floor' || decision.why === 'cross');
     if (drop) {
+      delete mem[side];
+      quoteMem.set(a.symbol, mem);
       await cancelIds([resting.id], decision.why);
       return;
     }
-    if (decision.action === 'keep' || decision.action === 'skip') return;
-    if (decision.action === 'replace' && resting) {
-      await cancelIds([resting.id], decision.why);
+    if (decision.action === 'skip') return;
+    if (decision.action === 'keep' && resting) {
+      mem[side] = resting.price;
+      quoteMem.set(a.symbol, mem);
       return;
     }
-    if (decision.action !== 'place' && decision.action !== 'replace') return;
+    if (decision.action === 'keep' && !resting) {
+      if (decision.why === 'let-fill' || !(decision.px > 0)) return;
+      if (Date.now() - (inflight.get(a.symbol + ':' + side) || 0) < 15000) return;
+    }
+    if (decision.action === 'replace' && resting) await cancelIds([resting.id], decision.why);
     if (!(decision.px > 0) || !(mid > 0)) return;
     let base;
     if (side === 'buy') {
@@ -468,7 +481,11 @@ async function main() {
       const clipBase = (Number(clipUsd) > 0 ? Number(clipUsd) : num('CLIP_MAX_USD', 1.5)) / decision.px;
       base = Math.min(Number(qtyOrCash) || 0, clipBase);
     }
-    await send(a, side, decision.px, base);
+    mem[side] = decision.px;
+    quoteMem.set(a.symbol, mem);
+    inflight.set(a.symbol + ':' + side, Date.now());
+    const id = await send(a, side, decision.px, base);
+    if (!id) inflight.delete(a.symbol + ':' + side);
   }
 }
 
