@@ -214,10 +214,13 @@ export function startCoinbaseTickerWs(pairs, onTick) {
   if (!products.length) return { close() {} };
   let ws = null;
   let timer = null;
+  let dead = false;
   const connect = () => {
+    if (dead) return;
     try { ws = new WebSocket(COINBASE_MARKET_WS); }
     catch (e) { console.warn('Coinbase ticker WS create', e.message); schedule(); return; }
     ws.on('open', () => {
+      if (dead) { try { ws.close(); } catch { /* ignore */ } return; }
       const chunk = Number(process.env.TICKER_SUB_CHUNK || 40);
       console.log('Coinbase ticker WS n=' + products.length + ' chunk=' + chunk);
       ws.send(JSON.stringify({ type: 'subscribe', channel: 'heartbeats', product_ids: products.slice(0, 1) }));
@@ -239,10 +242,10 @@ export function startCoinbaseTickerWs(pairs, onTick) {
         if (rec && onTick) onTick(rec);
       }
     });
-    ws.on('close', () => { console.warn('Coinbase ticker WS closed'); schedule(); });
+    ws.on('close', () => { if (!dead) { console.warn('Coinbase ticker WS closed'); schedule(); } });
     ws.on('error', (e) => console.warn('Coinbase ticker WS', e.message));
   };
-  const schedule = () => { if (timer) return; timer = setTimeout(() => { timer = null; connect(); }, 4000); };
+  const schedule = () => { if (dead || timer) return; timer = setTimeout(() => { timer = null; connect(); }, 4000); };
   connect();
-  return { close() { try { if (ws) ws.close(); } catch { /* ignore */ } } };
+  return { close() { dead = true; if (timer) { clearTimeout(timer); timer = null; } try { if (ws) ws.close(); } catch { /* ignore */ } } };
 }
