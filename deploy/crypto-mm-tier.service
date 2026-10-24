@@ -1,0 +1,19 @@
+[Unit]
+Description=crypto-mm fee-tier trail Coinbase
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mm
+WorkingDirectory=/opt/crypto-mm
+Environment=BOT_CONFIG=configs/tier.env
+ExecStart=/usr/bin/node src/bots/tier/index.js
+Restart=always
+RestartSec=5
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target
